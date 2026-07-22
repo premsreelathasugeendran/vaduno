@@ -272,6 +272,15 @@ export function createX402Fetch(opts: X402FetchOptions): FetchLike {
     if (result.status === "denied" || result.status === "approval_rejected") {
       throw new X402PaymentBlockedError(result);
     }
+    if (result.status === "replayed") {
+      // This wrapper mints a fresh intent id per call, so a replay can only
+      // mean an id collision with an earlier consume. Nothing was signed or
+      // transmitted on THIS call — surface it, never re-pay.
+      throw new X402PaymentFailedError(
+        `intent id was already consumed under this mandate (original: ${result.original.status}); no new payment was made`,
+        false,
+      );
+    }
     // "failed": pay() threw before an authorization was transmitted.
     throw new X402PaymentFailedError(result.error ?? "payment could not be signed", false);
   };

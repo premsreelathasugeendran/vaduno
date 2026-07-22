@@ -34,10 +34,20 @@ export type {
 export {
   MandateManager,
   generateMandateKeyPair,
+  mandateContextHash,
 } from "./mandate/mandate.js";
 export type {
   Mandate,
   MandateCheck,
   MandateConstraints,
   MandateKeyPair,
+  ConsumeOutcome,
 } from "./mandate/mandate.js";
+export { MemoryConsumeStore, intentDigest } from "./enforce/consume-store.js";
+export type {
+  ConsumeStore,
+  ClaimResult,
+  StoredOutcome,
+  UseClaim,
+} from "./enforce/consume-store.js";
+export { FileConsumeStore } from "./enforce/file-consume-store.js";

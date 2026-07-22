@@ -33,6 +33,9 @@ licensing); no such adapter will be accepted.
 | A payment above policy is not executed *through Paygent* | Deterministic policy engine, fail-closed on any error | The agent actually routes spend through the guard (see limits) |
 | Human approval cannot be replayed onto a different payment | Approval bound to a fingerprint of amount+currency+merchant+rail | — |
 | A mandate cannot be over-used, reused after expiry, or forged | Ed25519 signature, time bounds, atomic consume-once use counting | Issuer's signing key stays private |
+| A retried/raced payment executes the rail exactly once | Runtime enforcement: atomic `claim(mandateId, intentId)` in a ConsumeStore; every duplicate returns `replayed` with the original outcome | All spend for that mandate routes through one guard/ConsumeStore |
+| A used intent id cannot be replayed as a *different* payment | The claim commits an `intentDigest` of amount+currency+merchant+rail; a mismatch is denied (`MANDATE_REPLAY_MISMATCH`), never replayed or executed | — |
+| A mandate is bound to one approved task run | Optional `contextHash`: the intent must present the exact context blob, and its `agentId`/`merchantId` fields must match the intent (`CONTEXT_MISMATCH`) | Issuer sets a contextHash at issue time |
 | Recorded history cannot be *silently* edited or reordered | Hash-chained ledger; `verify()` re-derives every link | Verifier runs; a retained head is compared |
 | A specific decision **is** in the published history (non-omission) | RFC 9162 Merkle inclusion proofs (`@paygent/transparency`) | The relying party checks proofs against a published head |
 | Published history only ever grows (append-only) | RFC 9162 consistency proofs between signed tree heads | At least one party retains a previous head |
@@ -57,10 +60,22 @@ licensing); no such adapter will be accepted.
 4. **Tamper-evidence is not tamper-proofness.** An attacker with full control
    of the store can destroy history; they cannot *fabricate* a history that
    passes verification against an externally retained head or signed root.
-5. **Settlement risk lives on the rails.** Peg/FX/finality risk of a
+5. **Runtime enforcement stops replay and misapplication, not a compromised
+   task.** Consume-once + context binding guarantee a mandate authorizes at
+   most its `maxUses` executions, each for the exact payment approved. It does
+   **not** stop a prompt-injected agent from getting a *fresh, correctly
+   formed* mandate for an attacker's goal — that is an intent-integrity
+   problem upstream of the firewall. A claim that is won but never settled
+   (crash mid-execution) replays as `unresolved`: money *may* have moved, so
+   the caller must reconcile, never blindly re-run.
+6. **The one-execution guarantee is per shared ConsumeStore.** Two guards over
+   two *separate* in-memory stores do not coordinate. Cross-process safety
+   requires a shared store with an atomic uniqueness constraint
+   (`FileConsumeStore` on one box; a DB unique index for multi-instance).
+7. **Settlement risk lives on the rails.** Peg/FX/finality risk of a
    stablecoin, chargeback outcomes on cards — Paygent records evidence and
    surfaces data; it does not (cannot) alter rail-level outcomes.
-6. **Timestamps are informational.** Signed tree heads assert tree state, not
+8. **Timestamps are informational.** Signed tree heads assert tree state, not
    trusted time.
 
 ## Threat model summary

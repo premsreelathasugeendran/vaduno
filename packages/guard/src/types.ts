@@ -36,6 +36,15 @@ export interface PaymentIntent {
   rail: string;
   /** Mandate this intent claims authorization under, if any. */
   mandateId?: string;
+  /**
+   * Task-context blob a context-bound mandate committed to (via
+   * `mandateContextHash`). When the mandate carries a contextHash, this exact
+   * object must hash to it — and its well-known fields (`agentId`,
+   * `merchantId`) must match the intent — or the mandate is refused
+   * (CONTEXT_MISMATCH). Binds a mandate to ONE approved task run, so a valid
+   * mandate cannot be misapplied by a different orchestration hop.
+   */
+  context?: Record<string, unknown>;
   description?: string;
   metadata?: Record<string, unknown>;
   /** ISO timestamp set by the caller. */
@@ -137,7 +146,8 @@ export type GuardStatus =
   | "executed"
   | "denied"
   | "approval_rejected"
-  | "failed";
+  | "failed"
+  | "replayed";
 
 /**
  * Discriminated on `status` so `value` and `error` narrow correctly:
@@ -146,6 +156,10 @@ export type GuardStatus =
  *    only for internal errors.
  *  - "approval_rejected": a human declined.
  *  - "failed": the executor itself threw; `error` holds the message.
+ *  - "replayed": this (mandate, intent id) was ALREADY consumed — the
+ *    executor did NOT run again; `original` reports the first attempt's
+ *    outcome ("unresolved" = the original claim never settled, e.g. a crash
+ *    mid-execution — reconcile before retrying with a new intent).
  */
 export type GuardResult<T> =
   | {
@@ -177,4 +191,14 @@ export type GuardResult<T> =
       intentId: string;
       policyResult?: PolicyResult;
       error: string;
+    }
+  | {
+      status: "replayed";
+      intentId: string;
+      mandateId: string;
+      original: {
+        status: "executed" | "failed" | "unresolved";
+        settledAt?: string;
+        error?: string;
+      };
     };

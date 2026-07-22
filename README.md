@@ -8,7 +8,8 @@ Paygent puts a deterministic guard between your agent and the money:
 
 - **Policy engine** — per-transaction / daily / weekly / monthly caps, merchant & category allowlists, rail restrictions, velocity limits, human-approval thresholds. Pure code; no model in the loop.
 - **Signed mandates** — Ed25519 "permission slips" binding what the human authorized (amount, merchant, time window) to what executes. Time-bound and **consume-once atomic**, closing the [mandate-replay attacks](https://arxiv.org/abs/2602.06345) published against agent-payment protocols.
-- **Flight recorder** — every attempt, decision, approval, and execution lands in a hash-chained, append-only audit ledger. Any edit, deletion, or reordering of history is detectable by `verify()`.
+- **Runtime enforcement** — a mandate's "consume-once, context-bound" isn't just signed, it's *enforced on the execution path*: a retry storm or duplicate orchestration hop firing the same payment N times runs the rail **exactly once** and replays the original outcome to the rest; a used intent id reused for a different payment is denied; an optional context hash binds a mandate to one approved task run.
+- **Flight recorder** — every attempt, decision, approval, and execution lands in a hash-chained, append-only audit ledger. Any edit, deletion, or reordering of history is detectable by `verify()`. Upgrade it to an [RFC 9162 Merkle transparency log](packages/transparency) for third-party inclusion (non-omission) and append-only consistency proofs.
 - **Kill switch** — `guard.freeze()` denies everything instantly, and the freeze itself is audited.
 
 **Paygent never holds funds, keys, or the ability to move money.** It decides whether *your* executor function may run, and records everything. Rail-agnostic by design: wrap an x402 client, a Stripe issuing call, a UPI collect — anything.
@@ -99,6 +100,25 @@ Attach `mandateId` to an intent (set `requireMandate: true` to demand it for eve
 
 A validating agent process needs only the **public** key. Never put the private key in an LLM's context.
 
+### Runtime enforcement: survive retries, races, and misapplication
+
+Signing a mandate proves it was *issued*; it does nothing to stop that valid mandate from being executed twice by a retry loop or raced by two workers. Paygent enforces it at execution time through a **consume-once registry** keyed on `(mandateId, intentId)`:
+
+```ts
+// The SAME payment fired 6x in parallel (a crashed/retried agent):
+const results = await Promise.all(
+  Array.from({ length: 6 }, () => guard.execute(sameIntent, payOnce)),
+);
+// rail ran exactly once → 1 "executed" + 5 "replayed" (original outcome), never a double charge.
+```
+
+- **`status: "replayed"`** carries the original attempt's outcome (`executed` / `failed` / `unresolved`); the executor does **not** run again.
+- A used intent id presented with **different money fields** is denied `MANDATE_REPLAY_MISMATCH` — an id-reuse attack, not a retry.
+- **Context binding** (`mandateContextHash`): set `constraints.contextHash` at issue time and the intent must present the exact context blob — with `agentId`/`merchantId` matching — or it's denied `CONTEXT_MISMATCH`. This binds a mandate to one approved task run so a valid mandate can't be redirected by a different orchestration hop.
+- **Cross-process:** the default `MemoryConsumeStore` covers one process; pass a `FileConsumeStore` (one box) or a DB store with a unique constraint (multi-instance) so a race between processes still yields exactly one execution. `hydrateFromLedger()` rebuilds the registry after a restart.
+
+Based on the runtime-verification results in [ZTRV](https://arxiv.org/abs/2602.06345) and APEX: signature-only checks intercept 0% of replays; an atomic consume registry intercepts 100%.
+
 ## Ledger stores
 
 | Store | Use |
@@ -146,6 +166,10 @@ Rail-specific security notes (see [SECURITY.md](SECURITY.md)):
   authorization the server can still settle even while returning an error. Bind a
   consume-once mandate (`maxUses`) to bound retries.
 
+## Transparency log (`@paygent/transparency`)
+
+Upgrade the hash chain to an [RFC 9162](https://www.rfc-editor.org/rfc/rfc9162) Merkle transparency log — the Certificate Transparency machinery, applied to payment decisions. It adds what a bare chain cannot: **inclusion proofs** (a specific decision *is* in the published history — proof of non-omission) and **consistency proofs** (a later root only ever extended the earlier one), both verifiable by a third party from Ed25519-signed tree heads. See [packages/transparency](packages/transparency/README.md) and [docs/SECURITY-MODEL.md](docs/SECURITY-MODEL.md).
+
 ## Design principles
 
 1. **Fail closed.** No approval handler? Approval-needing intents are denied. Internal error? Denied and audited. Unknown mandate? Denied.
@@ -156,9 +180,13 @@ Rail-specific security notes (see [SECURITY.md](SECURITY.md)):
 
 ## Roadmap
 
-- **x402 adapter** — wrap Coinbase x402 payments with policy + audit (next)
-- **Dashboard** — live spend view, approval inbox, ledger explorer
-- **Stripe issuing adapter** + consent-evidence dossiers (exportable dispute packets)
+- ✅ **x402 adapter** (`@paygent/x402`) — wrap Coinbase x402 payments with policy + audit
+- ✅ **Stripe issuing adapter** (`@paygent/stripe`) — the guard as the real-time card-authorization brain
+- ✅ **Dashboard** — live spend view, approval inbox, ledger explorer ("Vault Terminal")
+- ✅ **Runtime mandate enforcement** — consume-once + idempotent replay + context binding
+- ✅ **Transparency log** (`@paygent/transparency`) — RFC 9162 inclusion / consistency proofs
+- **Consent-evidence dossiers** — exportable dispute/representment packets built on the audit trail
+- **Cross-rail revocation registry** — one kill action across mandates + rails (W3C Bitstring Status List)
 - **UPI adapter** — ready for NPCI delegated-payment APIs the day they open
 
 ## License

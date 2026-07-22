@@ -352,13 +352,52 @@ export class PaygentGuard {
     await this.ledger.append("policy_decision", { policyResult: finalResult }, refs);
 
     // Consume the mandate atomically, as the final gate before money moves.
+    // consumeOnce also enforces idempotent replay: a RETRY of an already-
+    // consumed (mandate, intent id) must never reach the executor again.
+    let consumedMandateId: string | null = null;
     if (this.requireMandate || intent.mandateId) {
-      const consumed = await this.mandates!.consume(intent.mandateId!, intent);
-      if (!consumed.ok) {
-        const denied = internalDeny(this.policy, `MANDATE_${consumed.code}`, consumed.message);
+      const outcome = await this.mandates!.consumeOnce(intent.mandateId!, intent);
+      if (outcome.kind === "rejected") {
+        const denied = internalDeny(
+          this.policy,
+          `MANDATE_${outcome.check.code}`,
+          outcome.check.message,
+        );
         await this.ledger.append("policy_decision", { policyResult: denied }, refs);
         return { status: "denied", intentId: intent.id, policyResult: denied };
       }
+      if (outcome.kind === "replayed") {
+        if (!outcome.digestMatches) {
+          // Same intent id, different payment — an id-reuse attack, not a
+          // retry. Deny; never replay, never execute.
+          const denied = internalDeny(
+            this.policy,
+            "MANDATE_REPLAY_MISMATCH",
+            "intent id was already consumed by a DIFFERENT payment (amount/merchant/rail changed)",
+          );
+          await this.ledger.append("policy_decision", { policyResult: denied }, refs);
+          return { status: "denied", intentId: intent.id, policyResult: denied };
+        }
+        const claim = outcome.claim;
+        const original =
+          claim.status === "settled" && claim.outcome
+            ? {
+                status: claim.outcome.status,
+                settledAt: claim.outcome.settledAt,
+                ...(claim.outcome.error !== undefined ? { error: claim.outcome.error } : {}),
+              }
+            : // Claimed but never settled: the original attempt is in flight
+              // or crashed mid-execution. Money MAY have moved — surface
+              // "unresolved" for reconciliation; never re-execute.
+              { status: "unresolved" as const };
+        return {
+          status: "replayed",
+          intentId: intent.id,
+          mandateId: intent.mandateId!,
+          original,
+        };
+      }
+      consumedMandateId = intent.mandateId!;
     }
 
     // Snapshot the money-affecting fields BEFORE calling the executor, so the
@@ -387,6 +426,16 @@ export class PaygentGuard {
         { success: false, error: message, ...recorded },
         refs,
       );
+      // Settle so a retry of this intent replays "failed" instead of hanging
+      // on an unresolved claim. Best-effort: if it fails, retries see
+      // "unresolved" — fail closed either way.
+      if (consumedMandateId) {
+        await this.settleBestEffort(consumedMandateId, intent.id, {
+          status: "failed",
+          settledAt: this.now().toISOString(),
+          error: message,
+        });
+      }
       return { status: "failed", intentId: intent.id, policyResult: finalResult, error: message };
     }
 
@@ -398,6 +447,15 @@ export class PaygentGuard {
         ms: this.now().getTime(),
         amountMinor: recorded.amountMinor,
         currency: recorded.currency,
+      });
+    }
+
+    // Settle the consumed use so any retry of this intent id replays the
+    // executed outcome instead of re-running the rail.
+    if (consumedMandateId) {
+      await this.settleBestEffort(consumedMandateId, intent.id, {
+        status: "executed",
+        settledAt: this.now().toISOString(),
       });
     }
 
@@ -424,6 +482,19 @@ export class PaygentGuard {
     const policyResult = internalDeny(this.policy, code, message);
     await this.appendBestEffort("policy_decision", { policyResult }, refs);
     return { status: "denied", intentId: intent.id, policyResult };
+  }
+
+  private async settleBestEffort(
+    mandateId: string,
+    useKey: string,
+    outcome: { status: "executed" | "failed"; settledAt: string; error?: string },
+  ): Promise<void> {
+    try {
+      await this.mandates?.settleUse(mandateId, useKey, outcome);
+    } catch {
+      // Swallow: the money outcome is already decided and must be reported
+      // truthfully. An unsettled claim replays as "unresolved" — fail closed.
+    }
   }
 
   private async appendBestEffort(

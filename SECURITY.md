@@ -25,8 +25,11 @@ does **not** yet cover — so you can decide whether it fits your threat model.
 | Concurrent requests racing a limit | The decision→consume→execute→record section is serialized per guard (async mutex); limits are re-checked under the lock |
 | Cap reset by rotating `agentId` | Rolling limits are **guard-wide** by default (agentId is not trusted to scope spend) |
 | Overspend via a dropped/doctored audit write | Spend limits are enforced from an **in-memory authoritative counter** incremented under the lock the instant the executor succeeds — never from a read-back of the store. A lost `execution_result` write flags `auditDegraded` but cannot un-count the charge |
-| Mandate replay (same signed mandate used twice) | Mandates are consume-once, incremented atomically under a queue, immediately before execution |
-| Mandate replay across restart / second instance | `hydrateFromLedger()` rebuilds use-counts from a shared persistent ledger |
+| Mandate replay (same signed mandate used twice) | Mandates are consume-once, claimed atomically in a `ConsumeStore` keyed on (mandateId, intentId), immediately before execution |
+| Retry storm / duplicate orchestration hop double-charging | Runtime enforcement: the same (mandate, intent id) claims **one** use; every duplicate returns `replayed` with the original outcome and the executor never re-runs (the rail fires exactly once under N-way parallelism) |
+| A used intent id reused for a *different* payment | The claim commits an `intentDigest` of amount+currency+merchant+rail; a mismatch is denied `MANDATE_REPLAY_MISMATCH` — never replayed, never executed |
+| A mandate misapplied to a different task/merchant/agent | Optional context binding: `contextHash` must match the intent's context blob, and its `agentId`/`merchantId` fields must equal the intent (`CONTEXT_MISMATCH`) |
+| Mandate replay across restart / second instance | `hydrateFromLedger()` rebuilds use-counts **and** the consume registry from a shared persistent ledger; a `FileConsumeStore` (or DB unique index) makes claims atomic across live processes |
 | Field-value swap between check and execution (getter TOCTOU) | The intent is `structuredClone`d to a flat snapshot at entry; checks and the executor use that snapshot |
 | Timezone-offset expiry bypass | All timestamps compared as epoch ms via `Date.parse`; unparseable = fail closed |
 | Silent history tampering | Hash-chained ledger; `verify()` re-derives every hash; `verify(retainedHead)` also catches truncation/rewrite |
@@ -47,16 +50,34 @@ failures are first-class evidence, not dropped.
 
 These are documented, not hidden. Some are scope choices; some are on the roadmap.
 
-1. **Single live process for atomic guarantees.** The mutex (spend races), the
-   in-memory spend counter, and mandate consume-once are atomic *within one
-   process*. Two live processes sharing one ledger can still race unless the
-   shared store enforces a uniqueness constraint on `(mandateId, use)` and
-   serializes spend. Run one guard process per trust boundary, or supply a
-   `SpendHistory` backed by a transactional store. On restart, in-memory state
-   starts empty — call `guard.hydrateFromLedger()` (restores spend counter +
-   freeze state) and `MandateManager.hydrateFromLedger()` (restores consume-once
-   state) to rebuild from the ledger, which trusts the ledger at startup as a
-   documented boundary.
+1. **Single live process for atomic guarantees.** The mutex (spend races) and
+   the in-memory spend counter are atomic *within one process*. Two live
+   processes sharing one ledger can still race on rolling **spend limits**
+   unless the shared `SpendHistory` is backed by a transactional store. Run one
+   guard process per trust boundary, or supply such a store. On restart,
+   in-memory state starts empty — call `guard.hydrateFromLedger()` (restores
+   spend counter + freeze state) and `MandateManager.hydrateFromLedger()`
+   (restores consume-once + revocation state) to rebuild from the ledger, which
+   trusts the ledger at startup as a documented boundary.
+   - **Mandate consume-once IS cross-process safe** when you pass a shared
+     `ConsumeStore`: `FileConsumeStore` (one box) or a DB store with a UNIQUE
+     constraint enforce both per-intent idempotency and the `maxUses` budget
+     atomically. The default `MemoryConsumeStore` is single-process only.
+   - **`FileConsumeStore` residual:** its lock is advisory. A holder that
+     STALLS past `staleMs` (default 30s) mid-write is treated as dead and can be
+     reclaimed, briefly permitting two holders and a lost update. `staleMs` must
+     exceed any real stall (a >30s stall means the process is effectively dead).
+     For hard multi-**instance** guarantees use a transactional store whose
+     UNIQUE/CHECK constraint spans the mandate budget.
+   - **Revocation durability** rides on `hydrateFromLedger()` (rebuilt from
+     `mandate_revoked` entries), not the `ConsumeStore`. If you skip hydration
+     on restart, a revoked-but-unexpired mandate with uses left could be spent —
+     always hydrate.
+   - **Registry growth:** the consume registry keeps one record per distinct
+     intent id forever (idempotent replay depends on it). An agent spraying
+     unique ids grows it unbounded — cap upstream, or prune records for
+     mandates already past `expiresAt` (a retry of an expired mandate is denied
+     `EXPIRED`, not replayed, so pruning them is safe).
 2. **Ledger tamper-evidence needs external head retention to be complete.** A
    store that controls *all* rows can present an internally-consistent forged
    chain. `verify()` catches recompute-inconsistent tampering; to catch a

@@ -184,6 +184,59 @@ await attempt(
   }),
 );
 
+// ── Runtime enforcement: a retry storm that must NOT double-charge ───────
+// A crashed/retried agent (or a duplicate orchestration hop) fires the SAME
+// payment 6x in parallel. Signature-only mandates would let every retry
+// through; consume-once enforcement runs the rail exactly once and replays
+// the original outcome to the rest.
+console.log("\n— Runtime enforcement: same payment fired 6x (retry storm) —\n");
+// Fresh guard + mandate manager so the daily budget above doesn't interfere.
+const stormLedger = new AuditLedger(new MemoryLedgerStore());
+const stormMandates = new MandateManager(
+  { publicKeyPem: keys.publicKeyPem, privateKeyPem: keys.privateKeyPem },
+  stormLedger,
+);
+const stormGuard = new PaygentGuard({
+  policy: {
+    id: "storm-policy",
+    version: 1,
+    currency: "USD",
+    limits: { perTransactionMinor: 2_000, perDayMinor: 5_000 },
+  },
+  ledger: stormLedger,
+  mandates: stormMandates,
+});
+const stormMandate = await stormMandates.issue({
+  issuer: "prem@paygent.dev",
+  agentId: "shopper-agent-1",
+  constraints: {
+    maxAmountMinor: 1_000,
+    currency: "USD",
+    validFrom: new Date(Date.now() - 1000).toISOString(),
+    expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+    maxUses: 1,
+  },
+});
+const stormIntent = intent({
+  merchant: { id: "anthropic", url: "https://api.anthropic.com" },
+  amount: usd(700),
+  mandateId: stormMandate.id,
+});
+let railRuns = 0;
+const storm = await Promise.all(
+  Array.from({ length: 6 }, () =>
+    stormGuard.execute(stormIntent, async (safe) => {
+      railRuns += 1;
+      return mockRail(safe);
+    }),
+  ),
+);
+const executedOnce = storm.filter((r) => r.status === "executed").length;
+const replayed = storm.filter((r) => r.status === "replayed").length;
+console.log(
+  `  rail actually ran ${railRuns}x · ${executedOnce} executed + ${replayed} replayed · double-charge prevented: ${railRuns === 1 ? "✅" : "❌"}`,
+);
+
 // ── Kill switch ──────────────────────────────────────────────────────────
 console.log("\n— Kill switch —\n");
 await guard.freeze("operator hit the red button");

@@ -7,6 +7,7 @@ export type LedgerEntryType =
   | "approval_resolved"
   | "mandate_issued"
   | "mandate_consumed"
+  | "mandate_replayed"
   | "mandate_revoked"
   | "execution_started"
   | "execution_result"

@@ -145,7 +145,14 @@ export function createStripeAuthorizationHandler(
         const result = timedOut.result;
         status = result.status;
         approved = result.status === "executed";
-        reasons = result.policyResult?.reasons ?? [];
+        // "replayed" (this authorization already consumed its mandate use in a
+        // prior attempt) carries no policyResult and stays DECLINED here — the
+        // idempotency store serves the original answer for true webhook
+        // retries; a replay reaching this point is declined fail-closed.
+        reasons =
+          "policyResult" in result && result.policyResult
+            ? result.policyResult.reasons
+            : [];
         auditDegraded = result.status === "executed" && result.auditDegraded === true;
       }
     } catch (err) {
