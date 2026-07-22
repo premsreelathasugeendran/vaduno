@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useRef, useState, useTransition } from "react";
 import type { LedgerEntry } from "@paygent/guard";
 import { fetchTrail } from "../(dash)/ledger/actions";
 import { shortId, timeAgo } from "../../lib/format";
@@ -32,6 +32,9 @@ export function LedgerExplorer({ entries, nowMs }: { entries: LedgerEntry[]; now
   const [selected, setSelected] = useState<LedgerEntry | null>(null);
   const [trail, setTrail] = useState<LedgerEntry[]>([]);
   const [pending, startTransition] = useTransition();
+  // Tracks the intent whose trail we currently want, so a slower earlier
+  // request can't overwrite a newer selection's trail.
+  const currentIntent = useRef<string | null>(null);
 
   const rows = useMemo(
     () => (filter === "all" ? entries : entries.filter((e) => e.type === filter)),
@@ -41,8 +44,13 @@ export function LedgerExplorer({ entries, nowMs }: { entries: LedgerEntry[]; now
   const openRow = (e: LedgerEntry) => {
     setSelected(e);
     setTrail([]);
-    if (e.intentId) {
-      startTransition(async () => setTrail(await fetchTrail(e.intentId!)));
+    const id = e.intentId ?? null;
+    currentIntent.current = id;
+    if (id) {
+      startTransition(async () => {
+        const t = await fetchTrail(id);
+        if (currentIntent.current === id) setTrail(t);
+      });
     }
   };
 
@@ -89,7 +97,9 @@ export function LedgerExplorer({ entries, nowMs }: { entries: LedgerEntry[]; now
                 <td><span className="type-tag">{TYPE_LABEL[e.type] ?? e.type}</span></td>
                 <td className="mono">{e.intentId ? shortId(e.intentId) : "—"}</td>
                 <td>{e.agentId ?? "—"}</td>
-                <td className="mono" style={{ color: "var(--text-faint)" }}>{e.hash.slice(0, 10)}…</td>
+                <td className="mono" style={{ color: "var(--text-faint)" }}>
+                  {typeof e.hash === "string" ? e.hash.slice(0, 10) + "…" : "—"}
+                </td>
                 <td className="cell-time">{timeAgo(e.timestamp, nowMs)}</td>
               </tr>
             ))}
@@ -132,8 +142,8 @@ export function LedgerExplorer({ entries, nowMs }: { entries: LedgerEntry[]; now
               <pre className="drawer-json">{JSON.stringify(selected, null, 2)}</pre>
             </div>
 
-            <button className="btn btn-gold btn-block" onClick={exportEvidence}>
-              Download evidence packet
+            <button className="btn btn-gold btn-block" onClick={exportEvidence} disabled={pending}>
+              {pending ? "Loading trail…" : "Download evidence packet"}
             </button>
           </aside>
         </div>

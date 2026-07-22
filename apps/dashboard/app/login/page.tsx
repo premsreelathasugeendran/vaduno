@@ -1,5 +1,5 @@
 import { login } from "./actions";
-import { usingDefaultPasscode } from "../../lib/auth";
+import { serverMisconfigured, usingDefaultPasscode } from "../../lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -10,6 +10,26 @@ export default async function LoginPage({
 }) {
   const { error } = await searchParams;
   const isDefault = usingDefaultPasscode();
+  const misconfigured = serverMisconfigured();
+
+  if (misconfigured) {
+    return (
+      <div className="login-shell">
+        <div className="login-card reveal">
+          <div className="login-mark">
+            <span className="seal-dot" aria-hidden />
+            <span className="brand-word">Paygent</span>
+          </div>
+          <h1 className="login-title">Server not configured.</h1>
+          <p className="login-sub">
+            This console approves real agent payments, so it refuses to run in production without an
+            operator passcode. Set <code>PAYGENT_DASHBOARD_PASSCODE</code> (and optionally{" "}
+            <code>PAYGENT_SESSION_SECRET</code>) and restart.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="login-shell">

@@ -100,3 +100,12 @@ export function avatarColor(seed: string): string {
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) & 0xffff;
   return AVATAR_COLORS[h % AVATAR_COLORS.length]!;
 }
+
+/** Prefix/suffix/decimals for animating a money value with CountUp. */
+export function countupParts(currency: string): { prefix: string; suffix: string; decimals: number } {
+  const cur = currency.toUpperCase();
+  const d = decimalsFor(cur);
+  if (d === null) return { prefix: "", suffix: ` ${cur}`, decimals: 0 };
+  const sym = SYMBOLS[cur];
+  return sym ? { prefix: sym, suffix: "", decimals: Math.min(d, 2) } : { prefix: "", suffix: ` ${cur}`, decimals: Math.min(d, 2) };
+}

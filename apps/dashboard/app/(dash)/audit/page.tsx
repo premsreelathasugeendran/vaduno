@@ -50,9 +50,15 @@ export default async function AuditPage() {
             <div className="chain-row" key={e.seq}>
               <span className="chain-seq mono">#{e.seq}</span>
               <span className="chain-type">{TYPE_LABEL[e.type] ?? e.type}</span>
-              <span className="chain-hash mono">{e.hash.slice(0, 12)}…</span>
+              <span className="chain-hash mono">{typeof e.hash === "string" ? e.hash.slice(0, 12) + "…" : "—"}</span>
               <span className="chain-link" aria-hidden>⛓</span>
-              <span className="chain-prev mono">{e.prevHash === "0".repeat(64) ? "genesis" : e.prevHash.slice(0, 12) + "…"}</span>
+              <span className="chain-prev mono">
+                {typeof e.prevHash !== "string"
+                  ? "—"
+                  : e.prevHash === "0".repeat(64)
+                    ? "genesis"
+                    : e.prevHash.slice(0, 12) + "…"}
+              </span>
             </div>
           ))}
         </div>

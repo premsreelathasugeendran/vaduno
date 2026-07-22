@@ -13,7 +13,7 @@ export default async function FirewallPage() {
 
   const latestDay = data.spendByDay[data.spendByDay.length - 1];
   const daySpend = latestDay?.minor ?? 0;
-  const dayPct = perDay ? Math.min(100, (daySpend / perDay) * 100) : 0;
+  const dayPct = perDay && perDay > 0 ? Math.min(100, (daySpend / perDay) * 100) : perDay === 0 ? 100 : 0;
   const meterState = dayPct >= 100 ? "critical" : dayPct >= 80 ? "caution" : "ok";
 
   return (
@@ -56,11 +56,13 @@ export default async function FirewallPage() {
           <div className="meter-notch" />
         </div>
         <div className="meter-legend mono">
-          {perDay != null
-            ? dayPct >= 100
-              ? "Daily wall reached — further charges are blocked."
-              : `${(100 - dayPct).toFixed(0)}% headroom before the daily wall.`
-            : "No daily cap configured."}
+          {perDay == null
+            ? "No daily cap configured."
+            : perDay === 0
+              ? "Daily cap is 0 — every charge is blocked."
+              : dayPct >= 100
+                ? "Daily wall reached — further charges are blocked."
+                : `${(100 - dayPct).toFixed(0)}% headroom before the daily wall.`}
         </div>
       </div>
     </>
