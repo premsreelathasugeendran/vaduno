@@ -12,6 +12,8 @@
     "demo": "npm -w demo-agent run start",
     "demo:x402": "npm -w x402-agent run start",
     "dashboard:seed": "npm -w @paygent/dashboard run seed",
-    "dashboard": "npm -w @paygent/dashboard run dev"
+    "dashboard:build": "npm -w @paygent/dashboard run build",
+    "dashboard:dev": "npm -w @paygent/dashboard run dev",
+    "dashboard": "npm -w @paygent/dashboard run start"
   }
 }
