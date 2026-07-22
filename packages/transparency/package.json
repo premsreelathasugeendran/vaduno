@@ -1,0 +1,53 @@
+{
+  "name": "@paygent/transparency",
+  "version": "0.1.0",
+  "description": "RFC 9162 (Certificate Transparency v2) Merkle transparency log for Paygent's audit trail. Turns the hash-chained ledger into an append-only Merkle tree with signed tree heads, inclusion proofs (non-omission), and consistency proofs (append-only). Never holds funds or keys.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/premsreelathasugeendran/paygent.git",
+    "directory": "packages/transparency"
+  },
+  "homepage": "https://github.com/premsreelathasugeendran/paygent#readme",
+  "bugs": "https://github.com/premsreelathasugeendran/paygent/issues",
+  "license": "MIT",
+  "keywords": [
+    "transparency-log",
+    "merkle-tree",
+    "rfc9162",
+    "rfc6962",
+    "certificate-transparency",
+    "tamper-evident",
+    "audit",
+    "ai-agents",
+    "payments"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@paygent/guard": "^0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.9"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

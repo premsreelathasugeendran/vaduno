@@ -10,11 +10,12 @@
     "postcss": ">=8.4.31"
   },
   "scripts": {
-    "build": "npm -w @paygent/guard run build && npm -w @paygent/x402 run build && npm -w @paygent/stripe run build",
-    "test": "npm -w @paygent/guard run test && npm -w @paygent/x402 run test && npm -w @paygent/stripe run test",
+    "build": "npm -w @paygent/guard run build && npm -w @paygent/transparency run build && npm -w @paygent/x402 run build && npm -w @paygent/stripe run build",
+    "test": "npm -w @paygent/guard run test && npm -w @paygent/transparency run test && npm -w @paygent/x402 run test && npm -w @paygent/stripe run test",
     "demo": "npm -w demo-agent run start",
     "demo:x402": "npm -w x402-agent run start",
     "demo:stripe": "npm -w stripe-agent run start",
+    "demo:transparency": "npm -w transparency-agent run start",
     "dashboard:seed": "npm -w @paygent/dashboard run seed",
     "dashboard:build": "npm -w @paygent/dashboard run build",
     "dashboard:dev": "npm -w @paygent/dashboard run dev",
