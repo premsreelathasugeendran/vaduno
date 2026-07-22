@@ -1,4 +1,5 @@
-import { appendFile, readFile, stat } from "node:fs/promises";
+import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { LedgerEntry, LedgerStore } from "../ledger.js";
 
 /**
@@ -15,8 +16,15 @@ export class JsonlLedgerStore implements LedgerStore {
   private cache: LedgerEntry[] | null = null;
   /** Byte size of the file as last observed by this instance. */
   private knownSize = 0;
+  private dirEnsured = false;
 
   constructor(private readonly filePath: string) {}
+
+  private async ensureDir(): Promise<void> {
+    if (this.dirEnsured) return;
+    await mkdir(dirname(this.filePath), { recursive: true });
+    this.dirEnsured = true;
+  }
 
   private async currentSize(): Promise<number> {
     try {
@@ -54,8 +62,21 @@ export class JsonlLedgerStore implements LedgerStore {
 
   async append(entry: LedgerEntry): Promise<void> {
     const entries = await this.load();
+    await this.ensureDir();
     const line = JSON.stringify(entry) + "\n";
-    await appendFile(this.filePath, line, "utf8");
+    try {
+      await appendFile(this.filePath, line, "utf8");
+    } catch (err: unknown) {
+      // Directory vanished mid-run: don't trust the cached "ensured" flag —
+      // recreate and retry once before giving up (append is fail-closed above).
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        this.dirEnsured = false;
+        await this.ensureDir();
+        await appendFile(this.filePath, line, "utf8");
+      } else {
+        throw err;
+      }
+    }
     entries.push(entry);
     this.knownSize += Buffer.byteLength(line, "utf8");
   }

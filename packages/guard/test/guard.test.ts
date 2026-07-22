@@ -324,6 +324,98 @@ describe("PaygentGuard hostile-intent hardening", () => {
     expect(called).toBe(false);
   });
 
+  it("restores freeze state from the ledger on hydrate (survives restart)", async () => {
+    const store = new MemoryLedgerStore();
+    const ledgerA = new AuditLedger(store);
+    const guardA = new PaygentGuard({ policy: makePolicy(), ledger: ledgerA });
+    await guardA.freeze("incident");
+
+    // A fresh guard on the same ledger (simulating a restart).
+    const guardB = new PaygentGuard({ policy: makePolicy(), ledger: new AuditLedger(store) });
+    expect(guardB.isFrozen()).toBe(false); // not yet hydrated
+    await guardB.hydrateFromLedger();
+    expect(guardB.isFrozen()).toBe(true);
+    expect((await guardB.execute(makeIntent(), paidOk)).status).toBe("denied");
+
+    await guardA.unfreeze();
+    const guardC = new PaygentGuard({ policy: makePolicy(), ledger: new AuditLedger(store) });
+    await guardC.hydrateFromLedger();
+    expect(guardC.isFrozen()).toBe(false);
+  });
+
+  it("hydrate refuses (throws) on a tampered ledger", async () => {
+    const store = new MemoryLedgerStore();
+    const guardA = new PaygentGuard({ policy: makePolicy(), ledger: new AuditLedger(store) });
+    await guardA.execute(makeIntent(), paidOk);
+    // Tamper with a stored entry.
+    (store as unknown as { entries: { data: unknown }[] }).entries[1]!.data = { tampered: true };
+    const guardB = new PaygentGuard({ policy: makePolicy(), ledger: new AuditLedger(store) });
+    await expect(guardB.hydrateFromLedger()).rejects.toThrow(/verification/);
+  });
+
+  it("hydrate skips a malformed execution_result instead of NaN-poisoning the counter", async () => {
+    const store = new MemoryLedgerStore();
+    const ledger = new AuditLedger(store);
+    const guardA = new PaygentGuard({
+      policy: makePolicy({ limits: { perTransactionMinor: 6_000, perDayMinor: 10_000 } }),
+      ledger,
+    });
+    await guardA.execute(
+      makeIntent({ amount: { amountMinor: 6_000, currency: "USD" } }),
+      paidOk,
+    );
+    // A malformed row (non-integer amount) — must be skipped, not turn totals into NaN.
+    await ledger.append(
+      "execution_result",
+      { success: true, amountMinor: "not-a-number", currency: "USD" },
+      { intentId: "bad", agentId: "a" },
+    );
+
+    const guardB = new PaygentGuard({
+      policy: makePolicy({ limits: { perTransactionMinor: 6_000, perDayMinor: 10_000 } }),
+      ledger: new AuditLedger(store),
+    });
+    await guardB.hydrateFromLedger();
+    // Valid 6000 counted; +6000 would exceed the 10k/day cap -> denied
+    // (a NaN-poisoned total would have let this slip through).
+    const after = await guardB.execute(
+      makeIntent({ amount: { amountMinor: 6_000, currency: "USD" } }),
+      paidOk,
+    );
+    expect(after.status).toBe("denied");
+  });
+
+  it("hydrate is one-shot per instance", async () => {
+    const store = new MemoryLedgerStore();
+    const guard = new PaygentGuard({ policy: makePolicy(), ledger: new AuditLedger(store) });
+    await guard.hydrateFromLedger();
+    await expect(guard.hydrateFromLedger()).rejects.toThrow(/already/);
+  });
+
+  it("restores the spend counter from the ledger on hydrate", async () => {
+    const store = new MemoryLedgerStore();
+    const guardA = new PaygentGuard({
+      policy: makePolicy({ limits: { perTransactionMinor: 6_000, perDayMinor: 10_000 } }),
+      ledger: new AuditLedger(store),
+    });
+    await guardA.execute(
+      makeIntent({ amount: { amountMinor: 6_000, currency: "USD" } }),
+      paidOk,
+    );
+
+    const guardB = new PaygentGuard({
+      policy: makePolicy({ limits: { perTransactionMinor: 6_000, perDayMinor: 10_000 } }),
+      ledger: new AuditLedger(store),
+    });
+    await guardB.hydrateFromLedger();
+    // $6000 already spent (per hydrate) -> another $6000 exceeds the $10k/day cap.
+    const after = await guardB.execute(
+      makeIntent({ amount: { amountMinor: 6_000, currency: "USD" } }),
+      paidOk,
+    );
+    expect(after.status).toBe("denied");
+  });
+
   it("counts executed spend even when the success audit write is lost", async () => {
     // A store that drops the execution_result(success) write — simulating a
     // transient or hostile store. The spend must still count against limits.

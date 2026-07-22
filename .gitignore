@@ -4,3 +4,9 @@ dist/
 .env
 .env.*
 demo-ledger.jsonl
+
+# Next.js dashboard
+.next/
+next-env.d.ts
+apps/dashboard/data/
+*.tsbuildinfo

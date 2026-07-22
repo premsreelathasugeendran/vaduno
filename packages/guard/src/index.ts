@@ -20,6 +20,17 @@ export { JsonlLedgerStore } from "./ledger/stores/jsonl.js";
 export { SupabaseLedgerStore } from "./ledger/stores/supabase.js";
 export type { SupabaseLikeClient } from "./ledger/stores/supabase.js";
 export {
+  createQueuedApprovalHandler,
+  MemoryApprovalStore,
+} from "./approval/approval.js";
+export { FileApprovalStore } from "./approval/file-store.js";
+export type {
+  ApprovalStore,
+  ApprovalDecision,
+  PendingApproval,
+  QueuedApprovalOptions,
+} from "./approval/approval.js";
+export {
   MandateManager,
   generateMandateKeyPair,
 } from "./mandate/mandate.js";

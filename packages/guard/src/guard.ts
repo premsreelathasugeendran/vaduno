@@ -61,7 +61,7 @@ export class PaygentGuard {
    * mutex the instant the executor succeeds. This — not a read-back of the
    * ledger — is what enforces rolling/velocity limits by default, so a
    * dropped or doctored audit write can never un-count a real charge. See
-   * SECURITY.md for the single-process scope and rehydrateSpendFromLedger().
+   * SECURITY.md for the single-process scope and hydrateFromLedger().
    */
   private readonly executed: Array<{
     ms: number;
@@ -70,6 +70,7 @@ export class PaygentGuard {
   }> = [];
   private readonly usingInMemoryHistory: boolean;
   private auditDegraded = false;
+  private hydrated = false;
 
   constructor(opts: PaygentGuardOptions) {
     this.policy = opts.policy;
@@ -97,6 +98,7 @@ export class PaygentGuard {
         for (const e of this.executed) {
           if (e.ms < sinceMs) continue;
           if (e.currency.toUpperCase() !== want) continue;
+          if (!Number.isSafeInteger(e.amountMinor)) continue;
           totalMinor += e.amountMinor;
           count += 1;
         }
@@ -106,30 +108,69 @@ export class PaygentGuard {
   }
 
   /**
-   * Rebuild the in-memory spend counter from the ledger's execution_result
-   * entries. Call once on startup when using the default history with a
-   * persistent, shared ledger so limits survive a restart. Trusting the
-   * ledger at startup is a documented boundary (see SECURITY.md).
+   * Restore in-memory state from a persistent, shared ledger on startup:
+   *  - the spend counter (from execution_result entries), and
+   *  - the freeze state (from the last guard_frozen / guard_unfrozen entry).
+   *
+   * Gated on chain integrity: the ledger is verified first (optionally against
+   * a retained head) and hydrate FAILS CLOSED — throwing without changing
+   * state — if verification fails, so a tampered/truncated ledger cannot reset
+   * spend or lift a freeze. Runs inside the critical section and only once per
+   * instance. Trusting a verified ledger at startup is a documented boundary
+   * (see SECURITY.md).
    */
-  async rehydrateSpendFromLedger(): Promise<void> {
-    if (!this.usingInMemoryHistory) return;
-    this.executed.length = 0;
-    for (const entry of await this.ledger.all()) {
-      if (entry.type !== "execution_result") continue;
-      const data = entry.data as {
-        success?: boolean;
-        amountMinor?: number;
-        currency?: string;
-      };
-      if (data.success !== true) continue;
-      const ms = Date.parse(entry.timestamp);
-      if (Number.isNaN(ms)) continue;
-      this.executed.push({
-        ms,
-        amountMinor: data.amountMinor ?? 0,
-        currency: data.currency ?? "",
-      });
-    }
+  async hydrateFromLedger(expectedHead?: Parameters<AuditLedger["verify"]>[0]): Promise<void> {
+    return this.runExclusive(async () => {
+      if (this.hydrated) {
+        throw new Error("hydrateFromLedger already called on this guard instance");
+      }
+      const verdict = await this.ledger.verify(expectedHead);
+      if (!verdict.ok) {
+        throw new Error(
+          `hydrateFromLedger refused: ledger failed verification (${verdict.problem ?? "unknown"})`,
+        );
+      }
+      const entries = await this.ledger.all();
+
+      const executed: Array<{ ms: number; amountMinor: number; currency: string }> = [];
+      if (this.usingInMemoryHistory) {
+        for (const entry of entries) {
+          if (entry.type !== "execution_result") continue;
+          const data = entry.data;
+          if (data === null || typeof data !== "object") continue;
+          const d = data as { success?: unknown; amountMinor?: unknown; currency?: unknown };
+          if (d.success !== true) continue;
+          // Skip malformed rows rather than poisoning the counter with NaN
+          // (which would silently disable rolling limits).
+          if (!Number.isSafeInteger(d.amountMinor)) continue;
+          if (typeof d.currency !== "string") continue;
+          const ms = Date.parse(entry.timestamp);
+          if (Number.isNaN(ms)) continue;
+          executed.push({ ms, amountMinor: d.amountMinor as number, currency: d.currency });
+        }
+      }
+
+      // Compute freeze state into a local, assign once (never transiently null
+      // a live frozen flag while a concurrent commit might read it).
+      let frozen: { reason: string } | null = null;
+      for (const entry of entries) {
+        if (entry.type === "guard_frozen") {
+          const data = entry.data;
+          const reason =
+            data && typeof data === "object" && typeof (data as { reason?: unknown }).reason === "string"
+              ? ((data as { reason: string }).reason)
+              : "frozen";
+          frozen = { reason };
+        } else if (entry.type === "guard_unfrozen") {
+          frozen = null;
+        }
+      }
+
+      this.executed.length = 0;
+      this.executed.push(...executed);
+      this.frozen = frozen;
+      this.hydrated = true;
+    });
   }
 
   /** Emergency stop: every subsequent intent is denied until unfreeze(). */

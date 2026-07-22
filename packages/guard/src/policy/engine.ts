@@ -136,7 +136,9 @@ export async function evaluatePolicy(
         since,
         policy.currency,
       );
-      if (totalMinor + intent.amount.amountMinor > limit) {
+      // Fail closed if the history total isn't a usable safe integer, so a
+      // corrupt/NaN total can never satisfy `total + amount > limit` as false.
+      if (!Number.isSafeInteger(totalMinor) || totalMinor + intent.amount.amountMinor > limit) {
         reasons.push({
           code,
           message: `spent ${totalMinor} in window; +${intent.amount.amountMinor} would exceed limit ${limit}`,

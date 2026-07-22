@@ -52,10 +52,11 @@ These are documented, not hidden. Some are scope choices; some are on the roadma
    process*. Two live processes sharing one ledger can still race unless the
    shared store enforces a uniqueness constraint on `(mandateId, use)` and
    serializes spend. Run one guard process per trust boundary, or supply a
-   `SpendHistory` backed by a transactional store. On restart, the in-memory
-   spend counter starts empty — call `rehydrateSpendFromLedger()` (and
-   `MandateManager.hydrateFromLedger()`) to restore state, which trusts the
-   ledger at startup as a documented boundary.
+   `SpendHistory` backed by a transactional store. On restart, in-memory state
+   starts empty — call `guard.hydrateFromLedger()` (restores spend counter +
+   freeze state) and `MandateManager.hydrateFromLedger()` (restores consume-once
+   state) to rebuild from the ledger, which trusts the ledger at startup as a
+   documented boundary.
 2. **Ledger tamper-evidence needs external head retention to be complete.** A
    store that controls *all* rows can present an internally-consistent forged
    chain. `verify()` catches recompute-inconsistent tampering; to catch a
@@ -67,8 +68,11 @@ These are documented, not hidden. Some are scope choices; some are on the roadma
 4. **Node runtime only.** Uses `node:crypto`. No edge/workerd build yet.
 5. **One policy per guard.** No per-agent multi-policy routing yet; run separate
    guards for separate policies.
-6. **Approval is blocking.** No persisted/resumable out-of-band approval yet;
-   the handler is awaited in-line (outside the mutex).
+6. **Approval is blocking (but resolvable out-of-band).** The handler is awaited
+   in-line (outside the mutex), so the agent process stays alive during a wait.
+   `createQueuedApprovalHandler` + an `ApprovalStore` let a separate UI
+   (e.g. the dashboard) list and resolve pending approvals; on timeout the
+   handler fails closed (rejects).
 
 ## x402 rail adapter (`@paygent/x402`)
 
