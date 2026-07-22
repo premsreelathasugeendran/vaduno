@@ -109,6 +109,43 @@ A validating agent process needs only the **public** key. Never put the private 
 
 The chain is computed client-side; `verify()` re-derives every hash, so even a compromised database cannot silently rewrite history.
 
+## x402 rail adapter (`@paygent/x402`)
+
+Turn the guard into a real payment path. `@paygent/x402` wraps the HTTP 402
+"pay-per-request" flow: on a 402 it builds a `PaymentIntent` from the server's
+requirement, runs the guard, and only if allowed calls **your** signer. Paygent
+never sees keys.
+
+```ts
+import { createX402Fetch, usdc } from "@paygent/x402";
+
+const fetchWithPay = createX402Fetch({
+  guard,                                   // your PaygentGuard
+  agentId: "researcher-agent-1",
+  pay: (req) => myWallet.signX402(req),    // your signer — Paygent never holds keys
+  assets: [                                // bind spend to the REAL token, not a label
+    { network: "base", asset: "0x833589...2913", symbol: "USDC", decimals: 6 },
+  ],
+});
+
+// Use it like fetch(). 402s are paid under policy; everything else passes through.
+const res = await fetchWithPay("https://api.example.com/premium");
+```
+
+Rail-specific security notes (see [SECURITY.md](SECURITY.md)):
+
+- **`merchant.url` is the real endpoint you contact**, not the server's `resource`
+  claim — host allowlists bind where you actually connect. A server that claims a
+  different origin than the one reached is refused.
+- **In x402 the money goes to `payTo` (an address), decoupled from the request
+  host.** A host allowlist does *not* constrain the recipient — pin it with an
+  `id:<payTo>` pattern if that matters.
+- **Pass the `assets` registry.** Without it, `currency` comes from the server's
+  spoofable `extra.symbol`. With it, a token that isn't on your list is refused.
+- **Spend is counted once the `X-PAYMENT` is transmitted** — because it's a bearer
+  authorization the server can still settle even while returning an error. Bind a
+  consume-once mandate (`maxUses`) to bound retries.
+
 ## Design principles
 
 1. **Fail closed.** No approval handler? Approval-needing intents are denied. Internal error? Denied and audited. Unknown mandate? Denied.

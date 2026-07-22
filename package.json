@@ -6,8 +6,9 @@
     "examples/*"
   ],
   "scripts": {
-    "build": "npm -w @paygent/guard run build",
-    "test": "npm -w @paygent/guard run test",
-    "demo": "npm -w demo-agent run start"
+    "build": "npm -w @paygent/guard run build && npm -w @paygent/x402 run build",
+    "test": "npm -w @paygent/guard run test && npm -w @paygent/x402 run test",
+    "demo": "npm -w demo-agent run start",
+    "demo:x402": "npm -w x402-agent run start"
   }
 }

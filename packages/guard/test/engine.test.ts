@@ -201,6 +201,11 @@ describe("merchantMatches", () => {
     expect(merchantMatches(i, "id:other")).toBe(false);
   });
 
+  it("id match is not evaded by surrounding whitespace in merchant.id", () => {
+    const padded = makeIntent({ merchant: { id: "  0xBAD  " } });
+    expect(merchantMatches(padded, "id:0xbad")).toBe(true); // still blocked
+  });
+
   it("blocklist is not bypassed by a trailing-dot FQDN", async () => {
     const fqdn = makeIntent({
       merchant: { id: "x", url: "https://amazon.com./pay" },

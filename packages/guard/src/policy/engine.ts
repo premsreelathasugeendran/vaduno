@@ -227,9 +227,12 @@ export function merchantMatches(
 ): boolean {
   const raw = pattern.trim();
   const lower = raw.toLowerCase();
+  // merchant.id is attacker-controlled; normalize it the same way as the
+  // pattern so surrounding whitespace can't evade an allow/block match.
+  const merchantId = lc(intent.merchant.id.trim());
 
   if (lower.startsWith("id:")) {
-    return lc(intent.merchant.id) === lower.slice(3).trim();
+    return merchantId === lower.slice(3).trim();
   }
 
   let hostPattern = raw;
@@ -242,7 +245,7 @@ export function merchantMatches(
   const isHostPattern = forceHost || hostPattern.includes(".");
   if (!isHostPattern) {
     // Bare token, no dot: id match (documented weak path).
-    return lc(intent.merchant.id) === lc(hostPattern);
+    return merchantId === lc(hostPattern);
   }
 
   if (!intent.merchant.url) return false;

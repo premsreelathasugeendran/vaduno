@@ -70,6 +70,33 @@ These are documented, not hidden. Some are scope choices; some are on the roadma
 6. **Approval is blocking.** No persisted/resumable out-of-band approval yet;
    the handler is awaited in-line (outside the mutex).
 
+## x402 rail adapter (`@paygent/x402`)
+
+The x402 adapter maps an untrusted, server-controlled 402 response onto a
+PaymentIntent. Its threat model treats the **server as hostile** (it controls
+every field of the payment requirement) and the **agent as possibly
+prompt-injected** into calling arbitrary URLs. Guarantees:
+
+- **The policed endpoint is the real one.** `merchant.url` is set from the URL
+  the agent actually contacts, never the server's `resource` field. The server's
+  claim is kept in `metadata.resourceClaimed` for audit only. By default a
+  requirement whose `resource` origin differs from the request origin is refused
+  (`requireResourceOriginMatch`, fail closed).
+- **Host allowlist ≠ recipient control.** In x402 funds go to `payTo` (an
+  address), decoupled from the request host. Constrain the recipient explicitly
+  with an `id:<payTo>` merchant pattern; a host allowlist alone does not.
+- **The token is pinned by the `assets` registry, not a label.** `extra.symbol`
+  is attacker-controlled display text. Supply `assets: [{network, asset, symbol,
+  decimals}]` so a requirement whose `(network, asset)` pair is unlisted is
+  refused and the policy `currency` comes from your trusted symbol.
+- **Pessimistic spend accounting.** Once the `X-PAYMENT` bearer authorization is
+  transmitted, the spend is counted even if the server then returns an error —
+  the server can still settle it. A payer that throws *before* transmitting is
+  not counted. Bind a consume-once mandate to bound retries.
+- **Paygent still never holds keys.** `pay()` is your signer; it must sign for
+  exactly the requirement it is handed. Paygent polices the requirement, not the
+  bytes you sign.
+
 ## Reporting
 
 Found a bypass? Please open a private security advisory rather than a public
