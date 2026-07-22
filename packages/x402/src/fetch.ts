@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import {
   X_PAYMENT_HEADER,
   X_PAYMENT_RESPONSE_HEADER,
+  X402ProtocolError,
   decodeSettlementResponse,
   parsePaymentRequired,
 } from "./parse.js";
@@ -18,6 +19,9 @@ export type FetchLike = (
   input: string | URL | Request,
   init?: RequestInit,
 ) => Promise<Response>;
+
+/** Hard cap on the untrusted 402 body we will read (DoS guard). */
+const MAX_402_BYTES = 64 * 1024;
 
 /** A trusted (network, asset) -> token identity. Binds spend to a real token. */
 export interface AssetInfo {
@@ -124,6 +128,11 @@ async function normalizeRequest(
     ...(init ?? {}),
     method,
     headers,
+    // NEVER follow redirects: a 3xx could send the probe (or the paid retry,
+    // leaking the X-PAYMENT bearer) to a different origin, defeating the
+    // resource-origin check and the host allowlist. A redirect is surfaced as
+    // a non-402 response and never paid.
+    redirect: "manual",
     ...(body !== undefined ? { body } : {}),
   };
   return { url, init: finalInit };
@@ -157,7 +166,22 @@ export function createX402Fetch(opts: X402FetchOptions): FetchLike {
     const first = await doFetch(url, baseInit);
     if (first.status !== 402) return first;
 
-    const body = await first.clone().json().catch(() => null);
+    // Bound the untrusted 402 body: reject an over-large Content-Length, and
+    // cap the bytes actually read so a hostile server can't exhaust the agent.
+    const declared = Number(first.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared > MAX_402_BYTES) {
+      throw new X402ProtocolError(`402 body too large (${declared} bytes)`);
+    }
+    const text = await first.clone().text().catch(() => "");
+    if (text.length > MAX_402_BYTES) {
+      throw new X402ProtocolError(`402 body too large (${text.length} bytes)`);
+    }
+    let body: unknown = null;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = null;
+    }
     const parsed = parsePaymentRequired(body);
     const requirement = select(parsed.accepts);
     if (!requirement) {

@@ -22,6 +22,7 @@ export type { SupabaseLikeClient } from "./ledger/stores/supabase.js";
 export {
   createQueuedApprovalHandler,
   MemoryApprovalStore,
+  approvalFingerprint,
 } from "./approval/approval.js";
 export { FileApprovalStore } from "./approval/file-store.js";
 export type {

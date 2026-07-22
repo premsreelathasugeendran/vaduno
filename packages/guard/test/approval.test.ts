@@ -108,4 +108,28 @@ describe("PaygentGuard + queued approval", () => {
     const result = await exec;
     expect(result.status).toBe("approval_rejected");
   });
+
+  it("does not let an approval be replayed to a different payment (same intentId, different merchant)", async () => {
+    const { store, guard } = setup();
+    // Approve a charge to openai under intentId "reuse".
+    const exec1 = guard.execute(
+      makeIntent({ id: "reuse", merchant: { id: "openai" } }),
+      async () => ({ ok: true }),
+    );
+    const p1 = await vi.waitFor(async () => {
+      const l = await store.listPending();
+      expect(l).toHaveLength(1);
+      return l[0]!;
+    });
+    await store.resolve(p1.intentId, { approved: true, approver: "prem" });
+    expect((await exec1).status).toBe("executed");
+
+    // Replay the SAME id for a DIFFERENT merchant — the prior approval's
+    // fingerprint must not authorize it.
+    const r2 = await guard.execute(
+      makeIntent({ id: "reuse", merchant: { id: "evil-merchant" } }),
+      async () => ({ ok: true }),
+    );
+    expect(r2.status).toBe("approval_rejected");
+  });
 });

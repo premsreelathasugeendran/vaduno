@@ -3,8 +3,30 @@ import type {
   ApprovalResponse,
   Money,
   MerchantRef,
+  PaymentIntent,
   PolicyReason,
 } from "../types.js";
+import { sha256Hex } from "../ledger/hash.js";
+
+/**
+ * A binding fingerprint of the money-affecting fields of an intent. A human's
+ * approval is tied to THIS fingerprint, so an agent cannot get a small payment
+ * approved and then replay that approval to authorize a larger/different one
+ * (the queued handler rejects a decision whose fingerprint doesn't match).
+ */
+export function approvalFingerprint(
+  intent: Pick<PaymentIntent, "amount" | "merchant" | "rail">,
+): string {
+  return sha256Hex(
+    [
+      intent.amount.amountMinor,
+      intent.amount.currency.toUpperCase(),
+      intent.merchant.id,
+      intent.merchant.url ?? "",
+      intent.rail,
+    ].join("|"),
+  );
+}
 
 /** A payment waiting for a human decision, as surfaced to an approval UI. */
 export interface PendingApproval {
@@ -14,10 +36,13 @@ export interface PendingApproval {
   merchant: MerchantRef;
   policyReasons: PolicyReason[];
   requestedAt: string;
+  /** Binds the decision to the exact money fields (see approvalFingerprint). */
+  fingerprint?: string;
 }
 
 export interface ApprovalDecision extends ApprovalResponse {
   decidedAt: string;
+  fingerprint?: string;
 }
 
 /**
@@ -62,6 +87,7 @@ export function createQueuedApprovalHandler(
     options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 
   return async (req) => {
+    const fingerprint = approvalFingerprint(req.intent);
     await store.enqueue({
       intentId: req.intent.id,
       agentId: req.intent.agentId,
@@ -69,12 +95,20 @@ export function createQueuedApprovalHandler(
       merchant: req.intent.merchant,
       policyReasons: req.policyResult.reasons,
       requestedAt: req.requestedAt,
+      fingerprint,
     });
 
     const deadline = now().getTime() + timeoutMs;
     for (;;) {
       const decision = await store.getDecision(req.intent.id);
-      if (decision) return toResponse(decision);
+      if (decision) {
+        // Fail closed if the decision on file was made for a different payment
+        // (replay of an approval to authorize a larger/different charge).
+        if (decision.fingerprint !== fingerprint) {
+          return { approved: false, note: "approval does not match this payment" };
+        }
+        return toResponse(decision);
+      }
       if (now().getTime() >= deadline) {
         const timedOut: ApprovalResponse = {
           approved: false,
@@ -114,9 +148,11 @@ export class MemoryApprovalStore implements ApprovalStore {
   }
 
   async resolve(intentId: string, response: ApprovalResponse): Promise<void> {
+    const fp = this.pending.get(intentId)?.fingerprint;
     this.decisions.set(intentId, {
       ...response,
       decidedAt: this.now().toISOString(),
+      ...(fp !== undefined ? { fingerprint: fp } : {}),
     });
     this.pending.delete(intentId);
   }

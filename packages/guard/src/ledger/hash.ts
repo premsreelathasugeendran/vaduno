@@ -15,11 +15,31 @@ import { createHash } from "node:crypto";
  * "__proto__" to an accumulator object would mutate its prototype and drop
  * the key from the output, making the hash non-injective.
  */
-export function canonicalJson(value: unknown): string {
-  return serialize(value);
+/**
+ * Maximum nesting depth. Beyond this, canonicalJson throws a catchable
+ * CanonicalizeError instead of overflowing the call stack — so an
+ * attacker-shaped deeply-nested value becomes a fail-closed error at the
+ * callers (rejected append / {ok:false} verify / SIGNATURE_INVALID mandate)
+ * rather than an uncaught RangeError. Legitimate payment metadata never
+ * approaches this.
+ */
+const MAX_DEPTH = 256;
+
+export class CanonicalizeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CanonicalizeError";
+  }
 }
 
-function serialize(v: unknown): string {
+export function canonicalJson(value: unknown): string {
+  return serialize(value, 0);
+}
+
+function serialize(v: unknown, depth: number): string {
+  if (depth > MAX_DEPTH) {
+    throw new CanonicalizeError(`input nesting exceeds max depth ${MAX_DEPTH}`);
+  }
   if (v === null) return "null";
   const t = typeof v;
   if (t === "string") return JSON.stringify(v);
@@ -28,7 +48,7 @@ function serialize(v: unknown): string {
   if (t === "bigint") return JSON.stringify((v as bigint).toString() + "n");
   if (t === "undefined" || t === "function" || t === "symbol") return "null";
   if (Array.isArray(v)) {
-    return "[" + v.map(serializeArrayMember).join(",") + "]";
+    return "[" + v.map((x) => serializeArrayMember(x, depth + 1)).join(",") + "]";
   }
   if (v instanceof Date) return JSON.stringify(v.toISOString());
   // Plain object (or object-like). Use own enumerable string keys, sorted.
@@ -38,15 +58,15 @@ function serialize(v: unknown): string {
     const val = (v as Record<string, unknown>)[k];
     const tv = typeof val;
     if (val === undefined || tv === "function" || tv === "symbol") continue;
-    parts.push(JSON.stringify(k) + ":" + serialize(val));
+    parts.push(JSON.stringify(k) + ":" + serialize(val, depth + 1));
   }
   return "{" + parts.join(",") + "}";
 }
 
-function serializeArrayMember(v: unknown): string {
+function serializeArrayMember(v: unknown, depth: number): string {
   const t = typeof v;
   if (v === undefined || t === "function" || t === "symbol") return "null";
-  return serialize(v);
+  return serialize(v, depth);
 }
 
 export function sha256Hex(input: string): string {

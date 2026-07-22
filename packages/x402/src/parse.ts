@@ -22,6 +22,10 @@ export function parsePaymentRequired(body: unknown): PaymentRequiredBody {
   if (!Array.isArray(b.accepts)) {
     throw new X402ProtocolError("402 body has no `accepts` array");
   }
+  // Cap the array so a hostile server can't force unbounded mapping work.
+  if (b.accepts.length > 32) {
+    throw new X402ProtocolError(`402 body has too many accepts entries (${b.accepts.length} > 32)`);
+  }
   const accepts = b.accepts.map((r, i) => validateRequirement(r, i));
   if (accepts.length === 0) {
     throw new X402ProtocolError("402 body `accepts` is empty");

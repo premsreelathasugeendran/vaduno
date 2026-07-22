@@ -225,12 +225,18 @@ export class MandateManager {
   private checkState(state: MandateState, intent: PaymentIntent): MandateCheck {
     const { mandate } = state;
     const { signature, ...unsigned } = mandate;
-    const valid = edVerify(
-      null,
-      mandatePayload(unsigned),
-      this.publicKey,
-      Buffer.from(signature, "base64"),
-    );
+    let valid: boolean;
+    try {
+      valid = edVerify(
+        null,
+        mandatePayload(unsigned),
+        this.publicKey,
+        Buffer.from(signature, "base64"),
+      );
+    } catch {
+      // Non-canonicalizable / unverifiable payload -> treat as invalid, never throw.
+      valid = false;
+    }
     if (!valid) {
       return {
         ok: false,

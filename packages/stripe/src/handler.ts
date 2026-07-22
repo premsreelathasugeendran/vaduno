@@ -125,8 +125,16 @@ export function createStripeAuthorizationHandler(
       });
 
       // Race the decision against a hard deadline so we always answer in-window.
+      // The no-op executor also throws once the deadline has passed, so a
+      // decision that lost the race is recorded by the guard as "failed" (not
+      // counted / mandate not consumed) rather than a phantom settled charge —
+      // consistent with the DECLINE we return to Stripe.
+      const deadlineAt = now().getTime() + deadlineMs;
       const timedOut = await withDeadline(
-        opts.guard.execute(intent, async () => ({ approved: true })),
+        opts.guard.execute(intent, async () => {
+          if (now().getTime() >= deadlineAt) throw new Error("decision deadline exceeded");
+          return { approved: true };
+        }),
         deadlineMs,
       );
       if (timedOut.timedOut) {

@@ -135,10 +135,12 @@ export class FileApprovalStore implements ApprovalStore {
       // Precondition: only decide something a human is actually being shown,
       // and never overwrite a decision that already exists.
       if (data.decisions[intentId]) return;
-      if (!data.pending[intentId]) return;
+      const pending = data.pending[intentId];
+      if (!pending) return;
       data.decisions[intentId] = {
         ...response,
         decidedAt: this.now().toISOString(),
+        ...(pending.fingerprint !== undefined ? { fingerprint: pending.fingerprint } : {}),
       };
       delete data.pending[intentId];
       await this.atomicSave(data);

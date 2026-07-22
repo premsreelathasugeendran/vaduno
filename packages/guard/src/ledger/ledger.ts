@@ -170,7 +170,20 @@ export class AuditLedger {
         };
       }
       const { hash, ...rest } = entry;
-      if (entryHash(rest) !== hash) {
+      // A non-canonicalizable entry (e.g. planted with pathological nesting)
+      // is treated as tampered, not allowed to throw out of the verifier.
+      let recomputed: string;
+      try {
+        recomputed = entryHash(rest);
+      } catch {
+        return {
+          ok: false,
+          entries: entries.length,
+          firstBadSeq: entry.seq,
+          problem: "entry is not canonicalizable (rejected)",
+        };
+      }
+      if (recomputed !== hash) {
         return {
           ok: false,
           entries: entries.length,

@@ -4,9 +4,10 @@
   "private": true,
   "scripts": {
     "seed": "tsx scripts/seed.ts",
-    "dev": "next dev -p 3939",
+    "dev": "cross-env PAYGENT_ALLOW_DEFAULT_PASSCODE=1 next dev -p 3939",
     "build": "next build",
-    "start": "cross-env PAYGENT_ALLOW_DEFAULT_PASSCODE=1 next start -p 3939"
+    "start": "next start -p 3939",
+    "demo": "cross-env PAYGENT_ALLOW_DEFAULT_PASSCODE=1 next start -p 3939"
   },
   "dependencies": {
     "@paygent/guard": "*",

@@ -1,45 +1,45 @@
 // Portable session auth usable in BOTH the edge middleware and Node server
 // actions — uses Web Crypto (globalThis.crypto.subtle), available in both.
 //
-// The dashboard can approve real agent payments, so it must FAIL CLOSED:
-//  - In production, if no operator passcode is configured, no session is
-//    minted or accepted (the app refuses access rather than falling back to a
-//    public default). The default "paygent" passcode is a DEV-ONLY convenience.
-//  - The session token binds an expiry into the signature (can't be extended
-//    without the key) and mixes in an optional server secret so the cookie is
-//    not derivable from the passcode alone.
+// SECURITY MODEL (hardened after red-team):
+//  - The HMAC signing key is a MANDATORY high-entropy PAYGENT_SESSION_SECRET.
+//    The passcode is ONLY a login credential, never key material, so a
+//    known/guessed passcode cannot forge a cookie.
+//  - Fail closed INDEPENDENT of NODE_ENV: if no signing secret is available,
+//    no session is minted or accepted (the app refuses access).
+//  - The local demo opts into an INSECURE built-in key + default passcode
+//    explicitly via PAYGENT_ALLOW_DEFAULT_PASSCODE=1 (localhost only). A real
+//    deployment MUST set PAYGENT_SESSION_SECRET (>=16 chars, 32+ recommended).
 
 export const SESSION_COOKIE = "paygent_session";
-const SESSION_VERSION = "v2";
+const SESSION_VERSION = "v3";
 const TTL_MS = 12 * 60 * 60 * 1000;
+const DEMO_KEY = "paygent-demo-session-key-INSECURE-localhost-only";
 
-export function configuredPasscode(): string {
-  return process.env.PAYGENT_DASHBOARD_PASSCODE || "paygent";
+function allowDefault(): boolean {
+  return !!process.env.PAYGENT_ALLOW_DEFAULT_PASSCODE;
 }
 
 export function usingDefaultPasscode(): boolean {
   return !process.env.PAYGENT_DASHBOARD_PASSCODE;
 }
 
-/**
- * True when the server must refuse all sessions: production build, no operator
- * passcode set, and the insecure default not explicitly opted into. The local
- * demo (`npm run dashboard`) sets PAYGENT_ALLOW_DEFAULT_PASSCODE=1 to use the
- * default on purpose; a real deployment that forgets both fails closed.
- */
-export function serverMisconfigured(): boolean {
-  return (
-    usingDefaultPasscode() &&
-    process.env.NODE_ENV === "production" &&
-    !process.env.PAYGENT_ALLOW_DEFAULT_PASSCODE
-  );
+/** The login credential. Empty (no valid passcode) unless configured or demo. */
+export function configuredPasscode(): string {
+  return process.env.PAYGENT_DASHBOARD_PASSCODE || (allowDefault() ? "paygent" : "");
 }
 
-// The HMAC key is the passcode plus an optional independent server secret, so a
-// leaked/guessed passcode alone does not let an attacker mint tokens if a
-// secret is set, and operators can rotate all sessions by changing the secret.
-function signingKeyMaterial(): string {
-  return `${configuredPasscode()}|${process.env.PAYGENT_SESSION_SECRET ?? ""}`;
+/** The HMAC signing secret, or null if none is available (=> fail closed). */
+function sessionSecret(): string | null {
+  const s = process.env.PAYGENT_SESSION_SECRET;
+  if (s && s.length >= 16) return s;
+  if (allowDefault()) return DEMO_KEY; // explicit insecure localhost demo
+  return null;
+}
+
+/** True when the server must refuse all sessions (no signing secret). */
+export function serverMisconfigured(): boolean {
+  return sessionSecret() === null || configuredPasscode() === "";
 }
 
 const encoder = new TextEncoder();
@@ -48,10 +48,10 @@ function toHex(buf: ArrayBuffer): string {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-async function hmacHex(message: string): Promise<string> {
+async function hmacHex(secret: string, message: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
-    encoder.encode(signingKeyMaterial()),
+    encoder.encode(secret),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],
@@ -59,7 +59,7 @@ async function hmacHex(message: string): Promise<string> {
   return toHex(await crypto.subtle.sign("HMAC", key, encoder.encode(message)));
 }
 
-/** Constant-time-ish string compare (equal length, XOR accumulate). */
+/** Constant-time compare of two equal-length strings. */
 function safeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
@@ -67,23 +67,37 @@ function safeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
+/**
+ * Verify the login passcode against the configured one. Compares fixed-length
+ * SHA-256 digests so neither the compare nor its length leaks the passcode.
+ */
+async function passcodeMatches(candidate: string): Promise<boolean> {
+  const expected = configuredPasscode();
+  if (expected === "") return false;
+  const [a, b] = await Promise.all([
+    hmacHex(DEMO_KEY, `pc:${candidate}`),
+    hmacHex(DEMO_KEY, `pc:${expected}`),
+  ]);
+  return safeEqual(a, b);
+}
+
 /** Returns a signed, expiring session token if the passcode is correct, else null. */
 export async function mintSession(passcode: string): Promise<string | null> {
-  if (serverMisconfigured()) return null;
-  if (!safeEqual(passcode, configuredPasscode())) return null;
+  const secret = sessionSecret();
+  if (secret === null) return null; // fail closed
+  if (!(await passcodeMatches(passcode))) return null;
   const exp = Date.now() + TTL_MS;
-  const sig = await hmacHex(`${SESSION_VERSION}:${exp}`);
+  const sig = await hmacHex(secret, `${SESSION_VERSION}:${exp}`);
   return `${exp}.${sig}`;
 }
 
 export async function isValidSession(token: string | undefined): Promise<boolean> {
-  if (serverMisconfigured()) return false;
+  const secret = sessionSecret();
+  if (secret === null) return false; // fail closed
   if (!token) return false;
   const dot = token.indexOf(".");
   if (dot <= 0) return false;
-  const expStr = token.slice(0, dot);
-  const sig = token.slice(dot + 1);
-  const exp = Number(expStr);
+  const exp = Number(token.slice(0, dot));
   if (!Number.isFinite(exp) || Date.now() > exp) return false;
-  return safeEqual(sig, await hmacHex(`${SESSION_VERSION}:${exp}`));
+  return safeEqual(token.slice(dot + 1), await hmacHex(secret, `${SESSION_VERSION}:${exp}`));
 }

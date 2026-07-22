@@ -35,7 +35,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@paygent/guard": "*"
+    "@paygent/guard": "^0.1.0"
   },
   "peerDependencies": {
     "stripe": ">=17"

@@ -14,6 +14,8 @@ export async function login(formData: FormData): Promise<void> {
   jar.set(SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: "lax",
+    // Secure everywhere except an explicit localhost demo (plain http).
+    secure: !process.env.PAYGENT_ALLOW_DEFAULT_PASSCODE,
     path: "/",
     maxAge: 60 * 60 * 12,
   });
