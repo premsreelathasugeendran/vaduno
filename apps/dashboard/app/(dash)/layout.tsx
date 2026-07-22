@@ -3,6 +3,7 @@ import { loadOverview } from "../../lib/data";
 import { Sidebar } from "../components/Sidebar";
 import { Topbar } from "../components/Topbar";
 import { ApprovalRail } from "../components/ApprovalRail";
+import { MobileChrome } from "../components/MobileChrome";
 import { CommandPaletteProvider } from "../components/CommandPalette";
 
 export const dynamic = "force-dynamic";
@@ -29,6 +30,7 @@ export default async function DashLayout({ children }: { children: ReactNode }) 
 
   return (
     <CommandPaletteProvider>
+      <MobileChrome pending={data.pending} chain={data.chain} />
       <div className="shell">
         <Sidebar entries={data.entryCount} />
         <main className="main">

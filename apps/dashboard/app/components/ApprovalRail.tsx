@@ -17,18 +17,29 @@ export function ApprovalRail({ pending }: { pending: PendingApproval[] }) {
         </h2>
       </div>
       <div className="rail-body">
-        {pending.length === 0 ? (
-          <div className="rail-empty">
-            <div className="watermark" aria-hidden>
-              <Seal variant="verified" size={44} />
-            </div>
-            All clear. No agent charges awaiting your signature.
-          </div>
-        ) : (
-          pending.map((p) => <ApprovalCard key={p.intentId} p={p} />)
-        )}
+        <ApprovalCards pending={pending} />
       </div>
     </aside>
+  );
+}
+
+export function ApprovalCards({ pending }: { pending: PendingApproval[] }) {
+  if (pending.length === 0) {
+    return (
+      <div className="rail-empty">
+        <div className="watermark" aria-hidden>
+          <Seal variant="verified" size={44} />
+        </div>
+        All clear. No agent charges awaiting your signature.
+      </div>
+    );
+  }
+  return (
+    <>
+      {pending.map((p) => (
+        <ApprovalCard key={p.intentId} p={p} />
+      ))}
+    </>
   );
 }
 

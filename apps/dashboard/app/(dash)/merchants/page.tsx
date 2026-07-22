@@ -29,6 +29,7 @@ export default async function MerchantsPage() {
         <p className="lead-sub">Where your agents' money went — and where the firewall stopped it.</p>
       </div>
       <div className="panel reveal s2">
+        <div className="table-scroll">
         <table className="ledger-table">
           <thead>
             <tr>
@@ -58,6 +59,7 @@ export default async function MerchantsPage() {
             ))}
           </tbody>
         </table>
+        </div>
       </div>
     </>
   );

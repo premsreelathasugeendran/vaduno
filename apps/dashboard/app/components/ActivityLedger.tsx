@@ -13,6 +13,7 @@ export function ActivityLedger({
   nowMs: number;
 }) {
   return (
+    <div className="table-scroll">
     <table className="ledger-table">
       <thead>
         <tr>
@@ -57,5 +58,6 @@ export function ActivityLedger({
         ))}
       </tbody>
     </table>
+    </div>
   );
 }

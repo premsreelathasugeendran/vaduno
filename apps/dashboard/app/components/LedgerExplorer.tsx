@@ -70,6 +70,7 @@ export function LedgerExplorer({ entries, nowMs }: { entries: LedgerEntry[]; now
       </div>
 
       <div className="panel reveal s3" style={{ padding: 0, overflow: "hidden" }}>
+        <div className="table-scroll">
         <table className="ledger-table dense">
           <thead>
             <tr>
@@ -94,6 +95,7 @@ export function LedgerExplorer({ entries, nowMs }: { entries: LedgerEntry[]; now
             ))}
           </tbody>
         </table>
+        </div>
       </div>
 
       {selected && (
