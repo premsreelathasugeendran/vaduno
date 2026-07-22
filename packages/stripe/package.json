@@ -1,0 +1,56 @@
+{
+  "name": "@paygent/stripe",
+  "version": "0.1.0",
+  "description": "Stripe Issuing rail adapter for Paygent. Makes the guard the real-time authorization brain for card charges — approve/decline each issuing_authorization.request by policy, within Stripe's 2s window, hash-chained. Never holds keys.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/premsreelathasugeendran/paygent.git",
+    "directory": "packages/stripe"
+  },
+  "license": "MIT",
+  "keywords": [
+    "stripe",
+    "stripe-issuing",
+    "ai-agents",
+    "payments",
+    "spend-control",
+    "real-time-authorization"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@paygent/guard": "*"
+  },
+  "peerDependencies": {
+    "stripe": ">=17"
+  },
+  "peerDependenciesMeta": {
+    "stripe": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.9"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
