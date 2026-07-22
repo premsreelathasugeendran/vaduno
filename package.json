@@ -6,6 +6,10 @@
     "examples/*",
     "apps/*"
   ],
+  "overrides": {
+    "postcss": ">=8.4.31",
+    "sharp": ">=0.35.0"
+  },
   "scripts": {
     "build": "npm -w @paygent/guard run build && npm -w @paygent/x402 run build && npm -w @paygent/stripe run build",
     "test": "npm -w @paygent/guard run test && npm -w @paygent/x402 run test && npm -w @paygent/stripe run test",
