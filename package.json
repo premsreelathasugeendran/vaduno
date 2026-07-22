@@ -1,0 +1,13 @@
+{
+  "name": "paygent",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "examples/*"
+  ],
+  "scripts": {
+    "build": "npm -w @paygent/guard run build",
+    "test": "npm -w @paygent/guard run test",
+    "demo": "npm -w demo-agent run start"
+  }
+}
