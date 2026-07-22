@@ -253,3 +253,72 @@ async function computeOverview(): Promise<Overview> {
     pending,
   };
 }
+
+export interface RawLedger {
+  ok: boolean;
+  entries: LedgerEntry[];
+  chain: VerifyResult;
+  head: { seq: number; hash: string; entries: number };
+}
+
+/** Raw ledger entries (most-recent first, capped) + chain + head. */
+export async function loadRawLedger(limit = 500): Promise<RawLedger> {
+  const ledger = getLedger();
+  try {
+    const [all, chain, head] = await Promise.all([ledger.all(), ledger.verify(), ledger.head()]);
+    const entries = [...all].reverse().slice(0, limit);
+    return { ok: true, entries, chain, head };
+  } catch {
+    return { ok: false, entries: [], chain: { ok: true, entries: 0 }, head: { seq: -1, hash: "", entries: 0 } };
+  }
+}
+
+export async function loadIntentTrail(intentId: string): Promise<LedgerEntry[]> {
+  try {
+    return await getLedger().trailFor(intentId);
+  } catch {
+    return [];
+  }
+}
+
+export interface ActivePolicy {
+  id: string;
+  version: number;
+  currency: string;
+  limits?: Record<string, number>;
+  merchants?: { allow?: string[]; block?: string[] };
+  categories?: { allow?: string[]; block?: string[] };
+  rails?: { allow?: string[] };
+  approval?: { aboveMinor?: number; always?: boolean };
+  velocity?: { maxTransactions?: { count: number; perSeconds: number } };
+  updatedAt: string | null;
+}
+
+/** The latest policy the guard logged (via setPolicy), for the Firewall view. */
+export async function loadActivePolicy(): Promise<ActivePolicy | null> {
+  let entries: LedgerEntry[];
+  try {
+    entries = await getLedger().all();
+  } catch {
+    return null;
+  }
+  let policy: ActivePolicy | null = null;
+  for (const e of entries) {
+    if (e.type === "policy_updated" && isObj(e.data) && isObj(e.data.policy)) {
+      const p = e.data.policy as Record<string, unknown>;
+      policy = {
+        id: typeof p.id === "string" ? p.id : "policy",
+        version: typeof p.version === "number" ? p.version : 1,
+        currency: typeof p.currency === "string" ? p.currency : "USD",
+        limits: isObj(p.limits) ? (p.limits as Record<string, number>) : undefined,
+        merchants: isObj(p.merchants) ? (p.merchants as ActivePolicy["merchants"]) : undefined,
+        categories: isObj(p.categories) ? (p.categories as ActivePolicy["categories"]) : undefined,
+        rails: isObj(p.rails) ? (p.rails as ActivePolicy["rails"]) : undefined,
+        approval: isObj(p.approval) ? (p.approval as ActivePolicy["approval"]) : undefined,
+        velocity: isObj(p.velocity) ? (p.velocity as ActivePolicy["velocity"]) : undefined,
+        updatedAt: typeof e.timestamp === "string" ? e.timestamp : null,
+      };
+    }
+  }
+  return policy;
+}

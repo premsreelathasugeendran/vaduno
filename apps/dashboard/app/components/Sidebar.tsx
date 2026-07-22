@@ -1,11 +1,16 @@
-const NAV = [
-  { label: "Overview", icon: "grid", active: true },
-  { label: "Firewall", icon: "shield" },
-  { label: "Agents", icon: "bot" },
-  { label: "Ledger", icon: "list" },
-  { label: "Merchants", icon: "store" },
-  { label: "Rules", icon: "sliders" },
-  { label: "Audit", icon: "seal" },
+"use client";
+
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+
+export const NAV = [
+  { label: "Overview", href: "/", icon: "grid" },
+  { label: "Firewall", href: "/firewall", icon: "shield" },
+  { label: "Agents", href: "/agents", icon: "bot" },
+  { label: "Ledger", href: "/ledger", icon: "list" },
+  { label: "Merchants", href: "/merchants", icon: "store" },
+  { label: "Rules", href: "/rules", icon: "sliders" },
+  { label: "Audit", href: "/audit", icon: "seal" },
 ];
 
 const PATHS: Record<string, string> = {
@@ -16,6 +21,7 @@ const PATHS: Record<string, string> = {
   store: "M4 9l1-5h14l1 5M5 9v11h14V9M5 9h14",
   sliders: "M4 6h10M18 6h2M4 12h2M10 12h10M4 18h13M20 18h.01",
   seal: "M12 3l2.5 2 3-1 1 3 2.5 2-1 3 1 3-2.5 2-1 3-3-1-2.5 2-2.5-2-3 1-1-3L4 15l1-3-1-3 2.5-2 1-3 3 1z",
+  gear: "M12 9a3 3 0 100 6 3 3 0 000-6zM19.4 15a1.6 1.6 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.6 1.6 0 00-2.7.7 2 2 0 01-3.8 0 1.6 1.6 0 00-2.7-.7l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.6 1.6 0 00-1.3-2.7 2 2 0 010-3.8 1.6 1.6 0 001.3-2.7l-.1-.1a2 2 0 112.8-2.8l.1.1a1.6 1.6 0 002.7-.7 2 2 0 013.8 0 1.6 1.6 0 002.7.7l.1-.1a2 2 0 112.8 2.8l-.1.1a1.6 1.6 0 001.3 2.7 2 2 0 010 3.8 1.6 1.6 0 00-1.3 1z",
 };
 
 function Ico({ name }: { name: string }) {
@@ -27,6 +33,9 @@ function Ico({ name }: { name: string }) {
 }
 
 export function Sidebar({ entries }: { entries: number }) {
+  const pathname = usePathname();
+  const isActive = (href: string) => (href === "/" ? pathname === "/" : pathname.startsWith(href));
+
   return (
     <aside className="sidebar">
       <div className="side-brand">
@@ -35,18 +44,18 @@ export function Sidebar({ entries }: { entries: number }) {
       </div>
       <nav className="side-nav">
         {NAV.map((n) => (
-          <div key={n.label} className={`nav-item${n.active ? " active" : ""}`}>
+          <Link key={n.label} href={n.href} className={`nav-item${isActive(n.href) ? " active" : ""}`}>
             <Ico name={n.icon} />
             {n.label}
-          </div>
+          </Link>
         ))}
       </nav>
       <div className="side-section eyebrow">System</div>
       <nav className="side-nav">
-        <div className="nav-item">
-          <Ico name="sliders" />
+        <Link href="/settings" className={`nav-item${isActive("/settings") ? " active" : ""}`}>
+          <Ico name="gear" />
           Settings
-        </div>
+        </Link>
       </nav>
       <div className="side-foot">
         <div className="org">Acme AI · Team plan</div>

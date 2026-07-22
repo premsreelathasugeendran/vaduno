@@ -93,3 +93,10 @@ export function timeAgo(iso: string, nowMs: number): string {
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
 }
+
+const AVATAR_COLORS = ["#e7b84e", "#6aa6ff", "#37c793", "#e8a13c", "#c98bff", "#5fd2d6"];
+export function avatarColor(seed: string): string {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) & 0xffff;
+  return AVATAR_COLORS[h % AVATAR_COLORS.length]!;
+}
