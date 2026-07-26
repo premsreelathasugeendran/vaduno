@@ -35,6 +35,8 @@ does **not** yet cover — so you can decide whether it fits your threat model.
 | Silent history tampering | Hash-chained ledger; `verify()` re-derives every hash; `verify(retainedHead)` also catches truncation/rewrite |
 | Human-in-the-loop for large spends | `approval` thresholds; **fails closed** if no approval handler is configured |
 | Emergency stop | `freeze()` denies everything and is re-checked inside the critical section |
+| Compromised agent must be cut off mid-flight | `@paygent/revocation`: revoking a mandate or an entire agent is checked inside the critical section **after** human approval, so a kill switch pulled while an approval is pending still wins. An unreachable registry denies (`REVOCATION_CHECK_FAILED`) — an outage never reads as "not revoked" |
+| Un-revoking by tampering with a published status list | Status lists are Ed25519-signed with `validUntil` freshness and a monotonic version floor; a forged bitstring, a stale list, or a replayed pre-revocation snapshot all fail closed |
 
 Every attempt — allowed, denied, approved, failed — is recorded. Denials and
 failures are first-class evidence, not dropped.

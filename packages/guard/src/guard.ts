@@ -27,9 +27,25 @@ export interface PaygentGuardOptions {
    * aggregate query (see SpendHistory docs on the agentId caveat).
    */
   history?: SpendHistory;
+  /**
+   * Consulted immediately before money moves: has this mandate (or agent) been
+   * revoked? Supply `createRegistryCheck(registry)` from @paygent/revocation.
+   *
+   * It runs INSIDE the critical section, after any human approval, so a
+   * revocation racing a long-pending approval still wins. It MUST fail closed
+   * — a check that throws denies the payment.
+   */
+  revocationCheck?: RevocationCheck;
   /** Injectable clock for tests. */
   now?: () => Date;
 }
+
+export type RevocationVerdict =
+  | { allowed: true }
+  | { allowed: false; code: string; message: string };
+
+/** Authorization-time revocation gate. Must fail closed. */
+export type RevocationCheck = (intent: PaymentIntent) => Promise<RevocationVerdict>;
 
 /**
  * PaygentGuard wraps a payment executor with deterministic policy checks,
@@ -52,6 +68,7 @@ export class PaygentGuard {
   private readonly mandates: MandateManager | undefined;
   private readonly requireMandate: boolean;
   private readonly approvalHandler: ApprovalHandler | undefined;
+  private readonly revocationCheck: RevocationCheck | undefined;
   private readonly now: () => Date;
   private readonly history: SpendHistory;
   /** Serializes the spend-accounting critical section. */
@@ -78,6 +95,7 @@ export class PaygentGuard {
     this.mandates = opts.mandates;
     this.requireMandate = opts.requireMandate ?? false;
     this.approvalHandler = opts.approvalHandler;
+    this.revocationCheck = opts.revocationCheck;
     this.now = opts.now ?? (() => new Date());
     this.usingInMemoryHistory = opts.history === undefined;
     this.history = opts.history ?? this.inMemoryHistory();
@@ -350,6 +368,27 @@ export class PaygentGuard {
       return { status: "denied", intentId: intent.id, policyResult: denied };
     }
     await this.ledger.append("policy_decision", { policyResult: finalResult }, refs);
+
+    // Revocation gate: checked HERE — inside the critical section, after any
+    // human approval — so a kill switch pulled while an approval was pending
+    // still wins the race. Fails closed on any error.
+    if (this.revocationCheck) {
+      let verdict: RevocationVerdict;
+      try {
+        verdict = await this.revocationCheck(intent);
+      } catch (err) {
+        verdict = {
+          allowed: false,
+          code: "REVOCATION_CHECK_FAILED",
+          message: `revocation status could not be determined (fail closed): ${errMsg(err)}`,
+        };
+      }
+      if (!verdict.allowed) {
+        const denied = internalDeny(this.policy, verdict.code, verdict.message);
+        await this.ledger.append("policy_decision", { policyResult: denied }, refs);
+        return { status: "denied", intentId: intent.id, policyResult: denied };
+      }
+    }
 
     // Consume the mandate atomically, as the final gate before money moves.
     // consumeOnce also enforces idempotent replay: a RETRY of an already-

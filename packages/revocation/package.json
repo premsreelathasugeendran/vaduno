@@ -1,0 +1,52 @@
+{
+  "name": "@paygent/revocation",
+  "version": "0.1.0",
+  "description": "Revocation registry for Paygent mandates: W3C Bitstring Status List credentials, instant fail-closed revocation at authorization time, agent-wide kill, and best-effort fan-out to rail-native revocation. Never holds funds or keys.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/premsreelathasugeendran/paygent.git",
+    "directory": "packages/revocation"
+  },
+  "homepage": "https://github.com/premsreelathasugeendran/paygent#readme",
+  "bugs": "https://github.com/premsreelathasugeendran/paygent/issues",
+  "license": "MIT",
+  "keywords": [
+    "revocation",
+    "bitstring-status-list",
+    "verifiable-credentials",
+    "mandate",
+    "kill-switch",
+    "ai-agents",
+    "payments",
+    "agentic-commerce"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@paygent/guard": "^0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.9"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

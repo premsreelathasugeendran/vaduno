@@ -1,6 +1,10 @@
 export * from "./types.js";
 export { PaygentGuard, ledgerSpendHistory } from "./guard.js";
-export type { PaygentGuardOptions } from "./guard.js";
+export type {
+  PaygentGuardOptions,
+  RevocationCheck,
+  RevocationVerdict,
+} from "./guard.js";
 export { evaluatePolicy, merchantMatches } from "./policy/engine.js";
 export {
   AuditLedger,
