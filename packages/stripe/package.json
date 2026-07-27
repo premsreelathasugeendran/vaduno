@@ -1,7 +1,7 @@
 {
   "name": "@paygent/stripe",
   "version": "0.1.0",
-  "description": "Stripe Issuing rail adapter for Paygent. Makes the guard the real-time authorization brain for card charges — approve/decline each issuing_authorization.request by policy, within Stripe's 2s window, hash-chained. Never holds keys.",
+  "description": "Stripe Issuing rail adapter for Paygent. Makes the guard the real-time authorization brain for card charges \u2014 approve/decline each issuing_authorization.request by policy, within Stripe's 2s window, hash-chained. Never holds keys.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -32,7 +32,8 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepublishOnly": "npm run build && npm run test"
   },
   "dependencies": {
     "@paygent/guard": "^0.1.0"
@@ -52,5 +53,8 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

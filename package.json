@@ -20,6 +20,8 @@
     "dashboard:seed": "npm -w @paygent/dashboard run seed",
     "dashboard:build": "npm -w @paygent/dashboard run build",
     "dashboard:dev": "npm -w @paygent/dashboard run dev",
-    "dashboard": "npm -w @paygent/dashboard run demo"
+    "dashboard": "npm -w @paygent/dashboard run demo",
+    "release:check": "npm run build && npm run test && node scripts/check-release.mjs",
+    "release:pack": "npm -w @paygent/guard pack --dry-run && npm -w @paygent/transparency pack --dry-run && npm -w @paygent/revocation pack --dry-run && npm -w @paygent/x402 pack --dry-run && npm -w @paygent/stripe pack --dry-run"
   }
 }
