@@ -15,8 +15,49 @@ export type { TreeStore, TreeHead, AppendResult, BatchAppendResult } from "./tre
 export { JsonlTreeStore } from "./stores/jsonl.js";
 export { generateLogKeyPair, signTreeHead, verifyTreeHead } from "./sth.js";
 export type { SignedTreeHead, LogKeyPair } from "./sth.js";
-export { witnessObserve, detectSplitView } from "./witness.js";
-export type { WitnessState, WitnessResult, SplitViewResult } from "./witness.js";
+export {
+  witnessObserve,
+  detectSplitView,
+  witnessCosign,
+  CosigningWitness,
+} from "./witness.js";
+export type {
+  WitnessState,
+  WitnessResult,
+  SplitViewResult,
+  CosigningWitnessState,
+  CosignResult,
+} from "./witness.js";
+export {
+  checkpointBody,
+  signCheckpoint,
+  parseNote,
+  verifyNoteSignature,
+  assembleNote,
+  signatureLine,
+  keyId,
+  rawEd25519PublicKey,
+  CheckpointError,
+  SIG_TYPE_ED25519,
+  SIG_TYPE_COSIGNATURE_V1,
+  EMPTY_TREE_ROOT_HEX,
+} from "./checkpoint.js";
+export type { Checkpoint, ParsedNote, NoteSignature } from "./checkpoint.js";
+export {
+  cosignCheckpoint,
+  cosignaturePayload,
+  attachCosignatures,
+  verifyCosignatures,
+  checkCosignatureQuorum,
+} from "./cosign.js";
+export type {
+  CosignatureRecord,
+  KnownWitness,
+  VerifiedCosignature,
+  QuorumResult,
+  CosignatureVerifyOptions,
+  LogBinding,
+} from "./cosign.js";
 export { LedgerMirror, ledgerEntryLeaf } from "./mirror.js";
 export type {
   LedgerMirrorOptions,

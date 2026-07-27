@@ -39,6 +39,7 @@ licensing); no such adapter will be accepted.
 | A revoked mandate or agent can never spend again | The guard consults the revocation registry inside its critical section (after approval, before mandate consumption) and fails closed | Spend flows through a guard wired with `revocationCheck` |
 | A revocation beats work already in flight | The check runs after any human approval, so a kill switch pulled mid-approval still denies | — |
 | A tampered, stale, or rolled-back status list cannot un-revoke | Ed25519-signed status lists with `validUntil` freshness and a monotonic version floor; every failure mode denies | Issuer's signing key stays private |
+| The log cannot show two different histories to two parties | C2SP witness cosigning: k independent witnesses each refuse to cosign a checkpoint contradicting one they already cosigned, so a fork cannot reach quorum | The k witnesses are genuinely independent parties, and each persists its state |
 | Recorded history cannot be *silently* edited or reordered | Hash-chained ledger; `verify()` re-derives every link | Verifier runs; a retained head is compared |
 | A specific decision **is** in the published history (non-omission) | RFC 9162 Merkle inclusion proofs (`@paygent/transparency`) | The relying party checks proofs against a published head |
 | Published history only ever grows (append-only) | RFC 9162 consistency proofs between signed tree heads | At least one party retains a previous head |
@@ -75,7 +76,15 @@ licensing); no such adapter will be accepted.
    two *separate* in-memory stores do not coordinate. Cross-process safety
    requires a shared store with an atomic uniqueness constraint
    (`FileConsumeStore` on one box; a DB unique index for multi-instance).
-7. **Revocation binds only where Paygent mediates.** Killing a mandate is
+7. **Witnessing gives non-equivocation, not completeness — and only from
+   genuinely independent witnesses.** A k-of-n cosignature quorum proves every
+   relying party sees the *same* log; it does **not** prove the log recorded
+   every event that happened. And witnesses run by the log operator provide
+   exactly zero assurance — independence is a social property no code can
+   check. A witness that does not persist its last-cosigned state also
+   provides nothing, because it has no baseline to contradict. Cosignature
+   freshness is judged against the verifier's own clock, not trusted time.
+8. **Revocation binds only where Paygent mediates.** Killing a mandate is
    instant and guaranteed for spend that flows through the guard. For
    authority Paygent does not mediate — a raw wallet key the agent holds, a
    card issued outside Paygent — revocation is a **best-effort fan-out** to
@@ -83,11 +92,11 @@ licensing); no such adapter will be accepted.
    failures are recorded, never assumed away. Money already settled on-chain
    cannot be clawed back by anyone. Do not call this a "universal kill
    switch."
-8. **Settlement risk lives on the rails.** Peg/FX/finality risk of a
+9. **Settlement risk lives on the rails.** Peg/FX/finality risk of a
    stablecoin, chargeback outcomes on cards — Paygent records evidence and
    surfaces data; it does not (cannot) alter rail-level outcomes.
-9. **Timestamps are informational.** Signed tree heads assert tree state, not
-   trusted time.
+10. **Timestamps are informational.** Signed tree heads assert tree state, not
+    trusted time.
 
 ## Threat model summary
 

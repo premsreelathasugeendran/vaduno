@@ -187,7 +187,9 @@ The check runs **inside the guard's critical section, after human approval** —
 
 ## Transparency log (`@paygent/transparency`)
 
-Upgrade the hash chain to an [RFC 9162](https://www.rfc-editor.org/rfc/rfc9162) Merkle transparency log — the Certificate Transparency machinery, applied to payment decisions. It adds what a bare chain cannot: **inclusion proofs** (a specific decision *is* in the published history — proof of non-omission) and **consistency proofs** (a later root only ever extended the earlier one), both verifiable by a third party from Ed25519-signed tree heads. See [packages/transparency](packages/transparency/README.md) and [docs/SECURITY-MODEL.md](docs/SECURITY-MODEL.md).
+Upgrade the hash chain to an [RFC 9162](https://www.rfc-editor.org/rfc/rfc9162) Merkle transparency log — the Certificate Transparency machinery, applied to payment decisions. It adds what a bare chain cannot: **inclusion proofs** (a specific decision *is* in the published history — proof of non-omission) and **consistency proofs** (a later root only ever extended the earlier one), both verifiable by a third party from Ed25519-signed tree heads.
+
+On top of that, **witness cosigning** ([C2SP](https://github.com/C2SP/C2SP) `tlog-checkpoint` / `tlog-cosignature`) closes the one hole the log's own math cannot: an operator who signs *two* histories and shows a different one to each party. Independent witnesses refuse to cosign a checkpoint that contradicts one they already cosigned, so a fork can never reach a k-of-n quorum. Honest limit: this proves everyone sees the *same* log, not that the log is *complete* — and witnesses you run yourself count for nothing. See [packages/transparency](packages/transparency/README.md) and [docs/SECURITY-MODEL.md](docs/SECURITY-MODEL.md).
 
 ## Design principles
 
@@ -205,8 +207,8 @@ Upgrade the hash chain to an [RFC 9162](https://www.rfc-editor.org/rfc/rfc9162) 
 - ✅ **Runtime mandate enforcement** — consume-once + idempotent replay + context binding
 - ✅ **Transparency log** (`@paygent/transparency`) — RFC 9162 inclusion / consistency proofs
 - ✅ **Revocation registry** (`@paygent/revocation`) — targeted kill switch + W3C Bitstring Status Lists
+- ✅ **Witness cosigning** — C2SP checkpoints + cosignatures; independent witnesses attest the log never forked
 - **Consent-evidence dossiers** — exportable dispute/representment packets built on the audit trail
-- **Witness cosigning** — independent witnesses attest the transparency log never forked
 - **UPI adapter** — ready for NPCI delegated-payment APIs the day they open
 
 ## License
