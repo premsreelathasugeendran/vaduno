@@ -19,7 +19,7 @@ you're unsure whether something qualifies, report it privately anyway.
 ```bash
 npm install
 npm run build
-npm run test        # 275 tests across five packages
+npm run test        # 309 tests across five packages
 ```
 
 Then run the scenarios — each is a story from the README, and they are the
@@ -67,6 +67,33 @@ surface that (`auditDegraded`), not swallow it.
   touching concurrency, that test should actually exercise concurrency —
   `Promise.all` of the same operation, asserting exactly one wins. The
   double-spend bug in the consume store was invisible to sequential tests.
+
+## Writing a ConsumeStore (the most wanted contribution)
+
+`ConsumeStore` is what makes consume-once hold across processes. A
+`MemoryConsumeStore` (one process) and a `FileConsumeStore` (one box) ship
+today; **a Postgres/Redis/DynamoDB store does not, and that is the single most
+useful thing anyone could add.** Multi-instance deployments need it.
+
+Do not just satisfy the interface. The types are satisfied by an
+implementation that double-spends — that is exactly the bug this project
+already shipped once. Run the conformance suite instead:
+
+```bash
+npx vitest run packages/guard/test/consume-store.conformance.test.ts
+```
+
+[`packages/guard/test/consume-store-conformance.ts`](packages/guard/test/consume-store-conformance.ts)
+exports `runConsumeStoreConformance(harness)` — 17 cases per store covering
+duplicate claims, budget exhaustion, idempotent settle, and concurrent races
+of both the same and different intents. Your harness returns **two independent
+handles to the same backing store**; that is what exercises the cross-process
+contract, and a single handle is precisely how the original bug hid.
+
+The one rule the whole contract reduces to: within a **single** `claim()` call,
+the duplicate check, the `maxUses` budget check, and the insert must happen
+atomically across every process sharing the store. In SQL that is one statement
+with a unique constraint and a conditional count — not `SELECT` then `INSERT`.
 - **Honest comments.** Explain the constraint the code is under, not what the
   next line does. If something is a deliberate trade-off, say so and say why.
 - **No new runtime dependencies in `@vaduno/guard`.** It has zero, and that is

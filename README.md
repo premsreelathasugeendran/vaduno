@@ -17,16 +17,17 @@ Vaduno puts a deterministic guard between your agent and the money:
 - **Flight recorder** — every attempt, decision, approval, and execution lands in a hash-chained, append-only audit ledger. Any edit, deletion, or reordering of history is detectable by `verify()`. Upgrade it to an [RFC 9162 Merkle transparency log](packages/transparency) for third-party inclusion (non-omission) and append-only consistency proofs.
 - **Kill switch & revocation** — `guard.freeze()` denies everything instantly. For targeted kills, [`@vaduno/revocation`](packages/revocation) revokes a single mandate or an agent's entire authority, checked *after* human approval so a switch pulled mid-approval still wins — plus signed [W3C Bitstring Status Lists](https://www.w3.org/TR/vc-bitstring-status-list/) so third parties can verify status themselves.
 
-**Vaduno never holds funds, keys, or the ability to move money.** It decides whether *your* executor function may run, and records everything. Rail-agnostic by design: wrap an x402 client, a Stripe issuing call, a UPI collect — anything.
+**Vaduno never holds funds, keys to funds, or the ability to move money.** It decides whether *your* executor function may run, and records everything. (Precisely: it has no custody, no card PANs, and no wallet or bank credentials. It *does* use Ed25519 keys to sign and verify mandates — the private half belongs to whoever issues them, and a guard that only validates and consumes needs nothing but the public key.) Rail-agnostic by design: wrap an x402 client, a Stripe issuing call, a UPI collect — anything.
 
 ## Status: v0.1.0, new, and honest about it
 
 Read this before you put it anywhere near real money.
 
-- **Published today. Zero users. Never run in production.** The tests are thorough (275 across five packages, including concurrency and adversarial cases) but tests are not production.
-- **The Stripe adapter has never run against Stripe.** Not even in test mode. It is verified against an in-process mock of the `issuing_authorization.request` webhook — the decision logic and the 2-second deadline are exercised, the network path is not. Live Issuing needs a business entity and Stripe approval the author doesn't have. Treat it as a reference implementation, not a tested integration.
+- **Published today. Zero users. Never run in production.** The tests are thorough (309 across five packages, including concurrency and adversarial cases) but tests are not production.
+- **The Stripe adapter has never run against Stripe.** Not even in test mode. It is verified against an in-process mock of the `issuing_authorization.request` webhook — the decision logic and the 1.3-second fail-closed deadline are exercised, the network path is not. Live Issuing needs a business entity and Stripe approval the author doesn't have. Treat it as a reference implementation, not a tested integration.
 - **The API will break.** It's 0.x; breaking changes land in minor versions. Two API changes in the last week came from security review, and more review is planned.
 - **In-process, it can be routed around.** A library the agent's own process imports is a guardrail against a *confused* agent, not a *compromised runtime* — an injected agent holding a raw wallet key can simply not call it. The one configuration where it is genuinely non-bypassable today is **Stripe Issuing**, where the guard answers the card authorization itself and the network enforces the answer. Out-of-process and rail-side enforcement is what would make the rest of it as strong.
+- **Spend caps are per-guard-instance.** Consume-once is cross-process safe when you supply a shared store; **rolling spend limits are not**. The authoritative spend counter lives in the instance's memory, so two guard processes each enforcing a $50/day cap will let through $100. Run one guard process per trust boundary, or write a store-backed limiter. This is the sharpest edge in the project and [`SECURITY.md`](SECURITY.md) has always said so — it's repeated here because a reader shouldn't have to find it there.
 - **Caps don't prevent prompt injection. They bound the loss.** No policy engine stops an agent being tricked; it stops the tricked agent from spending more than you allowed, at a merchant you didn't allow, twice.
 - **"Fully secure" is never claimed.** Bybit lost $1.5B and Ronin ~$600M with sound cryptography underneath; both broke at the human and supply-chain layer. [`docs/SECURITY-MODEL.md`](docs/SECURITY-MODEL.md) states the precise guarantees **and** the precise non-guarantees. If a claim anywhere contradicts that file, that file is right.
 
@@ -231,7 +232,7 @@ On top of that, **witness cosigning** ([C2SP](https://github.com/C2SP/C2SP) `tlo
 2. **Deterministic last line.** An attacker is assumed to fully control the agent and every field of the intent. Policy checks are pure code over integer minor units.
 3. **Amounts are integers.** Minor units (cents, paise) everywhere. Floats are denied, not rounded.
 4. **Everything is evidence.** Denials and failures are recorded as thoroughly as successes — the audit trail is the product.
-5. **Not in the money path.** No custody, no keys, no transmission. Your executor moves money; Vaduno governs and records.
+5. **Not in the money path.** No custody, no keys to funds, no transmission. Your executor moves money; Vaduno governs and records.
 
 ## Roadmap
 
@@ -247,7 +248,7 @@ On top of that, **witness cosigning** ([C2SP](https://github.com/C2SP/C2SP) `tlo
 
 ## Prior art, and where this doesn't compete
 
-**Stripe's `spending_controls`, Lithic and Privacy.com already enforce caps at the network** — the strongest possible place, because an agent cannot route around them. If you're on one rail, use those. They're better at that job than this is.
+**Stripe's `spending_controls` and Lithic (whose consumer product is Privacy.com) already enforce caps at the network** — the strongest possible place, because an agent cannot route around them. If you're on one rail, use those. They're better at that job than this is.
 
 What Vaduno adds is one policy and one portable signed authority that survive *across* rails, plus an audit log a counterparty can verify without trusting you. On Stripe Issuing it sits behind their controls, not instead of them.
 
