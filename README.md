@@ -2,6 +2,11 @@
 
 **A spend firewall and flight recorder for AI agents.**
 
+[![CI](https://github.com/premsreelathasugeendran/vaduno/actions/workflows/ci.yml/badge.svg)](https://github.com/premsreelathasugeendran/vaduno/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/@vaduno/guard.svg)](https://www.npmjs.com/package/@vaduno/guard)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![deps](https://img.shields.io/badge/runtime%20deps-0-brightgreen.svg)](packages/guard/package.json)
+
 Your agent has an API key that can spend real money. Research says the agent *will* eventually be tricked — prompt-injection attacks against commerce agents succeed in [86% of attempts](https://arxiv.org/abs/2504.18575), and agents have bought from fake storefronts without hesitation. The model cannot be the last line of defense.
 
 Vaduno puts a deterministic guard between your agent and the money:
@@ -13,6 +18,18 @@ Vaduno puts a deterministic guard between your agent and the money:
 - **Kill switch & revocation** — `guard.freeze()` denies everything instantly. For targeted kills, [`@vaduno/revocation`](packages/revocation) revokes a single mandate or an agent's entire authority, checked *after* human approval so a switch pulled mid-approval still wins — plus signed [W3C Bitstring Status Lists](https://www.w3.org/TR/vc-bitstring-status-list/) so third parties can verify status themselves.
 
 **Vaduno never holds funds, keys, or the ability to move money.** It decides whether *your* executor function may run, and records everything. Rail-agnostic by design: wrap an x402 client, a Stripe issuing call, a UPI collect — anything.
+
+## Status: v0.1.0, new, and honest about it
+
+Read this before you put it anywhere near real money.
+
+- **Published today. Zero users. Never run in production.** The tests are thorough (275 across five packages, including concurrency and adversarial cases) but tests are not production.
+- **Stripe Issuing is test-mode only.** Production Issuing needs a business entity and Stripe approval the author doesn't have.
+- **The API will break.** It's 0.x; breaking changes land in minor versions. Two API changes in the last week came from security review, and more review is planned.
+- **It cannot stop spend that bypasses it.** An agent holding a raw funded wallet key just pays. The deployment pattern is to give agents *only* guarded paths.
+- **"Fully secure" is never claimed.** Bybit lost $1.5B and Ronin ~$600M with sound cryptography underneath; both broke at the human and supply-chain layer. [`docs/SECURITY-MODEL.md`](docs/SECURITY-MODEL.md) states the precise guarantees **and** the precise non-guarantees. If a claim anywhere contradicts that file, that file is right.
+
+Built ahead of demand on purpose: real agent-payment volume today is tiny. The bet is that the controls need to exist before the money shows up, not after.
 
 ## Install
 
@@ -210,6 +227,16 @@ On top of that, **witness cosigning** ([C2SP](https://github.com/C2SP/C2SP) `tlo
 - ✅ **Witness cosigning** — C2SP checkpoints + cosignatures; independent witnesses attest the log never forked
 - **Consent-evidence dossiers** — exportable dispute/representment packets built on the audit trail
 - **UPI adapter** — ready for NPCI delegated-payment APIs the day they open
+
+## How this was built
+
+Every package was put through adversarial review before release: 20–35 independent reviewers per round, each finding then independently verified before being accepted. That caught, among others, a cross-process double-spend (the `maxUses` check was check-then-act across separate locks), a hanging payment rail that could freeze the kill switch for every later revocation, a witness-quorum bypass that needed zero witness misbehaviour, and a C2SP wire-format error that would have broken interoperability with real Go/Sigsum witnesses while every local test still passed.
+
+None of those reached a published version. They're described in [`docs/SECURITY-MODEL.md`](docs/SECURITY-MODEL.md) and the commit history rather than buried, because a security tool that hides its near-misses is asking you to trust the wrong thing.
+
+## Contributing
+
+Bug reports and criticism are wanted, particularly on the concurrency and the cryptography. See [CONTRIBUTING.md](CONTRIBUTING.md). Security issues go to [GitHub Security Advisories](https://github.com/premsreelathasugeendran/vaduno/security/advisories/new), never a public issue.
 
 ## License
 
