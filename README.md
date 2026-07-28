@@ -26,7 +26,8 @@ Read this before you put it anywhere near real money.
 - **Published today. Zero users. Never run in production.** The tests are thorough (275 across five packages, including concurrency and adversarial cases) but tests are not production.
 - **Stripe Issuing is test-mode only.** Production Issuing needs a business entity and Stripe approval the author doesn't have.
 - **The API will break.** It's 0.x; breaking changes land in minor versions. Two API changes in the last week came from security review, and more review is planned.
-- **It cannot stop spend that bypasses it.** An agent holding a raw funded wallet key just pays. The deployment pattern is to give agents *only* guarded paths.
+- **In-process, it can be routed around.** A library the agent's own process imports is a guardrail against a *confused* agent, not a *compromised runtime* — an injected agent holding a raw wallet key can simply not call it. The one configuration where it is genuinely non-bypassable today is **Stripe Issuing**, where the guard answers the card authorization itself and the network enforces the answer. Out-of-process and rail-side enforcement is what would make the rest of it as strong.
+- **Caps don't prevent prompt injection. They bound the loss.** No policy engine stops an agent being tricked; it stops the tricked agent from spending more than you allowed, at a merchant you didn't allow, twice.
 - **"Fully secure" is never claimed.** Bybit lost $1.5B and Ronin ~$600M with sound cryptography underneath; both broke at the human and supply-chain layer. [`docs/SECURITY-MODEL.md`](docs/SECURITY-MODEL.md) states the precise guarantees **and** the precise non-guarantees. If a claim anywhere contradicts that file, that file is right.
 
 Built ahead of demand on purpose: real agent-payment volume today is tiny. The bet is that the controls need to exist before the money shows up, not after.
@@ -115,7 +116,9 @@ const mandate = await mandates.issue({
 
 Attach `mandateId` to an intent (set `requireMandate: true` to demand it for every payment). Validation is checked pre-flight and **consumed atomically right before execution** — two concurrent uses of a single-use mandate cannot both succeed. The signed mandate + the hash-chained trail together answer the dispute question no current agent-payment spec answers: *prove what the human authorized and what actually happened.*
 
-A validating agent process needs only the **public** key. Never put the private key in an LLM's context.
+**Where the signing key lives is the whole design.** A human signs a scope ahead of time — merchants, ceiling, time window — with an Ed25519 key held offline or somewhere the agent process cannot reach. The agent then spends unattended *inside* that scope. A validating process needs only the **public** key.
+
+If you automate signing on the agent's own machine, the mandate stops being an authorization and becomes merely an audit format. That's a legitimate use, but be clear with yourself about which one you're deploying.
 
 ### Runtime enforcement: survive retries, races, and misapplication
 
@@ -126,8 +129,10 @@ Signing a mandate proves it was *issued*; it does nothing to stop that valid man
 const results = await Promise.all(
   Array.from({ length: 6 }, () => guard.execute(sameIntent, payOnce)),
 );
-// rail ran exactly once → 1 "executed" + 5 "replayed" (original outcome), never a double charge.
+// rail ran AT MOST once → 1 "executed" + 5 "replayed" (original outcome), never a double charge.
 ```
+
+**Scope of that guarantee:** at-most-once holds within one process by default, and across processes when you supply a shared store with an atomic uniqueness constraint. `FileConsumeStore` provides that on a single box. A Postgres-backed store is an *interface you implement*, not an adapter that ships today — if you run multiple instances, that's the piece you need to write.
 
 - **`status: "replayed"`** carries the original attempt's outcome (`executed` / `failed` / `unresolved`); the executor does **not** run again.
 - A used intent id presented with **different money fields** is denied `MANDATE_REPLAY_MISMATCH` — an id-reuse attack, not a retry.
@@ -228,11 +233,17 @@ On top of that, **witness cosigning** ([C2SP](https://github.com/C2SP/C2SP) `tlo
 - **Consent-evidence dossiers** — exportable dispute/representment packets built on the audit trail
 - **UPI adapter** — ready for NPCI delegated-payment APIs the day they open
 
+## Prior art, and where this doesn't compete
+
+**Stripe's `spending_controls`, Lithic and Privacy.com already enforce caps at the network** — the strongest possible place, because an agent cannot route around them. If you're on one rail, use those. They're better at that job than this is.
+
+What Vaduno adds is one policy and one portable signed authority that survive *across* rails, plus an audit log a counterparty can verify without trusting you. On Stripe Issuing it sits behind their controls, not instead of them.
+
 ## How this was built
 
-Every package was put through adversarial review before release: 20–35 independent reviewers per round, each finding then independently verified before being accepted. That caught, among others, a cross-process double-spend (the `maxUses` check was check-then-act across separate locks), a hanging payment rail that could freeze the kill switch for every later revocation, a witness-quorum bypass that needed zero witness misbehaviour, and a C2SP wire-format error that would have broken interoperability with real Go/Sigsum witnesses while every local test still passed.
+Every package went through adversarial review before release: 20–35 reviewers per round, each finding independently verified before being accepted. That caught a cross-process double-spend (the `maxUses` check was check-then-act across separate locks), a hanging payment rail that could freeze the kill switch for every later revocation, a witness-quorum bypass that needed *zero* witness misbehaviour, and a C2SP wire-format error that would have broken interoperability with real Go/Sigsum witnesses while every local test still passed.
 
-None of those reached a published version. They're described in [`docs/SECURITY-MODEL.md`](docs/SECURITY-MODEL.md) and the commit history rather than buried, because a security tool that hides its near-misses is asking you to trust the wrong thing.
+**To be precise about what that was:** multi-agent LLM review with findings verified by hand — not a professional audit, and you shouldn't take my word for the verification. The bugs are concrete enough to check against the commit history, which is the point of describing them here rather than burying them. A security tool that hides its near-misses is asking you to trust the wrong thing.
 
 ## Contributing
 
