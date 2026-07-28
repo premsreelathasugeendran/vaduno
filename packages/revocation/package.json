@@ -1,7 +1,7 @@
 {
-  "name": "@paygent/revocation",
+  "name": "@swale/revocation",
   "version": "0.1.0",
-  "description": "Revocation registry for Paygent mandates: W3C Bitstring Status List credentials, instant fail-closed revocation at authorization time, agent-wide kill, and best-effort fan-out to rail-native revocation. Never holds funds or keys.",
+  "description": "Revocation registry for Swale mandates: W3C Bitstring Status List credentials, instant fail-closed revocation at authorization time, agent-wide kill, and best-effort fan-out to rail-native revocation. Never holds funds or keys.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -18,11 +18,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/premsreelathasugeendran/paygent.git",
+    "url": "https://github.com/premsreelathasugeendran/swale.git",
     "directory": "packages/revocation"
   },
-  "homepage": "https://github.com/premsreelathasugeendran/paygent#readme",
-  "bugs": "https://github.com/premsreelathasugeendran/paygent/issues",
+  "homepage": "https://github.com/premsreelathasugeendran/swale#readme",
+  "bugs": "https://github.com/premsreelathasugeendran/swale/issues",
   "license": "MIT",
   "keywords": [
     "revocation",
@@ -40,7 +40,7 @@
     "prepublishOnly": "npm run build && npm run test"
   },
   "dependencies": {
-    "@paygent/guard": "^0.1.0"
+    "@swale/guard": "^0.1.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",

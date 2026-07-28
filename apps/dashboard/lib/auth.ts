@@ -2,36 +2,36 @@
 // actions — uses Web Crypto (globalThis.crypto.subtle), available in both.
 //
 // SECURITY MODEL (hardened after red-team):
-//  - The HMAC signing key is a MANDATORY high-entropy PAYGENT_SESSION_SECRET.
+//  - The HMAC signing key is a MANDATORY high-entropy SWALE_SESSION_SECRET.
 //    The passcode is ONLY a login credential, never key material, so a
 //    known/guessed passcode cannot forge a cookie.
 //  - Fail closed INDEPENDENT of NODE_ENV: if no signing secret is available,
 //    no session is minted or accepted (the app refuses access).
 //  - The local demo opts into an INSECURE built-in key + default passcode
-//    explicitly via PAYGENT_ALLOW_DEFAULT_PASSCODE=1 (localhost only). A real
-//    deployment MUST set PAYGENT_SESSION_SECRET (>=16 chars, 32+ recommended).
+//    explicitly via SWALE_ALLOW_DEFAULT_PASSCODE=1 (localhost only). A real
+//    deployment MUST set SWALE_SESSION_SECRET (>=16 chars, 32+ recommended).
 
-export const SESSION_COOKIE = "paygent_session";
+export const SESSION_COOKIE = "swale_session";
 const SESSION_VERSION = "v3";
 const TTL_MS = 12 * 60 * 60 * 1000;
-const DEMO_KEY = "paygent-demo-session-key-INSECURE-localhost-only";
+const DEMO_KEY = "swale-demo-session-key-INSECURE-localhost-only";
 
 function allowDefault(): boolean {
-  return !!process.env.PAYGENT_ALLOW_DEFAULT_PASSCODE;
+  return !!process.env.SWALE_ALLOW_DEFAULT_PASSCODE;
 }
 
 export function usingDefaultPasscode(): boolean {
-  return !process.env.PAYGENT_DASHBOARD_PASSCODE;
+  return !process.env.SWALE_DASHBOARD_PASSCODE;
 }
 
 /** The login credential. Empty (no valid passcode) unless configured or demo. */
 export function configuredPasscode(): string {
-  return process.env.PAYGENT_DASHBOARD_PASSCODE || (allowDefault() ? "paygent" : "");
+  return process.env.SWALE_DASHBOARD_PASSCODE || (allowDefault() ? "swale" : "");
 }
 
 /** The HMAC signing secret, or null if none is available (=> fail closed). */
 function sessionSecret(): string | null {
-  const s = process.env.PAYGENT_SESSION_SECRET;
+  const s = process.env.SWALE_SESSION_SECRET;
   if (s && s.length >= 16) return s;
   if (allowDefault()) return DEMO_KEY; // explicit insecure localhost demo
   return null;

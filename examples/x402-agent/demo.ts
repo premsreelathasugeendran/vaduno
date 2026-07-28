@@ -1,5 +1,5 @@
 /**
- * Paygent x402 demo: an AI agent pays for HTTP 402 resources with USDC, under
+ * Swale x402 demo: an AI agent pays for HTTP 402 resources with USDC, under
  * a spend policy, with a full audit trail — and NO real chain or keys. The
  * "server" and the "payer" are mocked in-process so you can see the whole
  * 402 → policy → pay → settle loop without a wallet.
@@ -9,8 +9,8 @@
 import {
   AuditLedger,
   MemoryLedgerStore,
-  PaygentGuard,
-} from "@paygent/guard";
+  SwaleGuard,
+} from "@swale/guard";
 import {
   createX402Fetch,
   encodePaymentHeader,
@@ -20,7 +20,7 @@ import {
   type AssetInfo,
   type FetchLike,
   type PaymentRequirements,
-} from "@paygent/x402";
+} from "@swale/x402";
 
 const money = (atomic: number) => `$${(atomic / 1e6).toFixed(2)}`;
 
@@ -55,7 +55,7 @@ function x402Server(priceAtomic: number, resource: string, payTo: string): Fetch
   };
 }
 
-// ── The agent's wallet lives HERE — Paygent never sees it. ───────────────────
+// ── The agent's wallet lives HERE — Swale never sees it. ───────────────────
 // In production this signs an EIP-3009 transferWithAuthorization (or similar)
 // and returns the base64 X-PAYMENT payload. Here we just fake the payload.
 async function mockPayer(req: PaymentRequirements): Promise<string> {
@@ -69,7 +69,7 @@ async function mockPayer(req: PaymentRequirements): Promise<string> {
 
 // ── Guard: $5/txn, $10/day in USDC, only a trusted API host ─────────────────
 const ledger = new AuditLedger(new MemoryLedgerStore());
-const guard = new PaygentGuard({
+const guard = new SwaleGuard({
   policy: {
     id: "x402-demo",
     version: 1,
@@ -122,7 +122,7 @@ async function callPaidApi(label: string, url: string, priceAtomic: number) {
 
 // A hostile server: the agent is tricked into calling evil.example, which
 // returns a 402 CLAIMING the resource is on trusted-api.com. The real endpoint
-// and the payTo are the attacker's — Paygent must refuse.
+// and the payTo are the attacker's — Swale must refuse.
 function hostileServer(): FetchLike {
   return async () =>
     new Response(
@@ -160,7 +160,7 @@ async function callHostile() {
   }
 }
 
-console.log("— Paygent x402 demo: agent paying for APIs in USDC, $5/txn $10/day —\n");
+console.log("— Swale x402 demo: agent paying for APIs in USDC, $5/txn $10/day —\n");
 
 await callPaidApi("Cheap API call", "https://trusted-api.com/weather", usdc(3));
 await callPaidApi("Another call", "https://trusted-api.com/news", usdc(4));

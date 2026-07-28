@@ -1,4 +1,4 @@
-import type { PaymentIntent } from "@paygent/guard";
+import type { PaymentIntent } from "@swale/guard";
 import type { StripeAuthorization } from "./types.js";
 
 export interface AuthorizationToIntentOptions {
@@ -12,7 +12,7 @@ export interface AuthorizationToIntentOptions {
 
 /**
  * Map a Stripe Issuing Authorization (from an issuing_authorization.request
- * event) to a Paygent PaymentIntent.
+ * event) to a Swale PaymentIntent.
  *
  * CRITICAL: the requested amount is read from `pending_request.amount`, never
  * the top-level `auth.amount` (which is 0 on the request event). A missing or

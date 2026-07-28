@@ -41,7 +41,7 @@ const PAGE_SIZE = 1000;
 export class SupabaseLedgerStore implements LedgerStore {
   constructor(
     private readonly client: SupabaseLikeClient,
-    private readonly table: string = "paygent_ledger",
+    private readonly table: string = "swale_ledger",
   ) {}
 
   async append(entry: LedgerEntry): Promise<void> {

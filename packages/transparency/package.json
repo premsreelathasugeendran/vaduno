@@ -1,7 +1,7 @@
 {
-  "name": "@paygent/transparency",
+  "name": "@swale/transparency",
   "version": "0.1.0",
-  "description": "RFC 9162 (Certificate Transparency v2) Merkle transparency log for Paygent's audit trail. Turns the hash-chained ledger into an append-only Merkle tree with signed tree heads, inclusion proofs (non-omission), and consistency proofs (append-only). Never holds funds or keys.",
+  "description": "RFC 9162 (Certificate Transparency v2) Merkle transparency log for Swale's audit trail. Turns the hash-chained ledger into an append-only Merkle tree with signed tree heads, inclusion proofs (non-omission), and consistency proofs (append-only). Never holds funds or keys.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -18,11 +18,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/premsreelathasugeendran/paygent.git",
+    "url": "https://github.com/premsreelathasugeendran/swale.git",
     "directory": "packages/transparency"
   },
-  "homepage": "https://github.com/premsreelathasugeendran/paygent#readme",
-  "bugs": "https://github.com/premsreelathasugeendran/paygent/issues",
+  "homepage": "https://github.com/premsreelathasugeendran/swale#readme",
+  "bugs": "https://github.com/premsreelathasugeendran/swale/issues",
   "license": "MIT",
   "keywords": [
     "transparency-log",
@@ -41,7 +41,7 @@
     "prepublishOnly": "npm run build && npm run test"
   },
   "dependencies": {
-    "@paygent/guard": "^0.1.0"
+    "@swale/guard": "^0.1.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",

@@ -17,7 +17,7 @@ export default async function DashLayout({ children }: { children: ReactNode }) 
         <div className="login-card">
           <div className="login-mark">
             <span className="seal-dot" aria-hidden />
-            <span className="brand-word">Paygent</span>
+            <span className="brand-word">Swale</span>
           </div>
           <h1 className="login-title">{data.errored ? "Ledger unreadable." : "No ledger yet."}</h1>
           <p className="login-sub">

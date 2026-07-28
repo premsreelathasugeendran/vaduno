@@ -7,7 +7,7 @@ import { JsonlLedgerStore } from "../src/ledger/stores/jsonl.js";
 
 const dirs: string[] = [];
 function tempFile(): string {
-  const dir = mkdtempSync(join(tmpdir(), "paygent-jsonl-"));
+  const dir = mkdtempSync(join(tmpdir(), "swale-jsonl-"));
   dirs.push(dir);
   return join(dir, "ledger.jsonl");
 }

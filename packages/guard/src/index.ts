@@ -1,7 +1,7 @@
 export * from "./types.js";
-export { PaygentGuard, ledgerSpendHistory } from "./guard.js";
+export { SwaleGuard, ledgerSpendHistory } from "./guard.js";
 export type {
-  PaygentGuardOptions,
+  SwaleGuardOptions,
   RevocationCheck,
   RevocationVerdict,
 } from "./guard.js";

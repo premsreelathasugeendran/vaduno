@@ -1,4 +1,4 @@
-import type { PaygentGuard } from "@paygent/guard";
+import type { SwaleGuard } from "@swale/guard";
 import { randomUUID } from "node:crypto";
 import {
   X_PAYMENT_HEADER,
@@ -33,12 +33,12 @@ export interface AssetInfo {
 }
 
 export interface X402FetchOptions {
-  guard: PaygentGuard;
+  guard: SwaleGuard;
   agentId: string;
   /**
    * Produce the `X-PAYMENT` header value for the selected requirement. THIS is
-   * where your wallet/signer lives — Paygent never sees keys. It MUST sign for
-   * exactly the requirement it is given (amount, payTo, asset); Paygent polices
+   * where your wallet/signer lives — Swale never sees keys. It MUST sign for
+   * exactly the requirement it is given (amount, payTo, asset); Swale polices
    * the requirement, not the bytes you sign.
    */
   pay: (req: PaymentRequirements) => Promise<string>;
@@ -140,7 +140,7 @@ async function normalizeRequest(
 
 /**
  * A fetch-compatible function that transparently handles x402 payments under
- * Paygent's policy + audit. On a 402 it binds the REAL request URL and (with an
+ * Swale's policy + audit. On a 402 it binds the REAL request URL and (with an
  * asset registry) the REAL token into a PaymentIntent, runs the guard, and only
  * if allowed invokes your `pay` signer and retries.
  *

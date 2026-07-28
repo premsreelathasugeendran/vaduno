@@ -7,7 +7,7 @@ import {
   type LedgerEntry,
   type PendingApproval,
   type VerifyResult,
-} from "@paygent/guard";
+} from "@swale/guard";
 import { APPROVALS_PATH, LEDGER_PATH } from "./paths";
 
 export function getLedger(): AuditLedger {

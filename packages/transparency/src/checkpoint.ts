@@ -10,10 +10,10 @@ import {
 /**
  * C2SP signed-note + tlog-checkpoint encoding — the INTEROP format.
  *
- * Paygent's own `SignedTreeHead` (sth.ts) is a JSON convenience shape. This
+ * Swale's own `SignedTreeHead` (sth.ts) is a JSON convenience shape. This
  * module speaks the format the transparency ecosystem actually uses (Go
  * sumdb notes, Sigsum, Trillian/tlog witnesses), so a third-party witness can
- * cosign a Paygent log without any Paygent-specific code.
+ * cosign a Swale log without any Swale-specific code.
  *
  * Note layout (signed-note):
  *
@@ -59,10 +59,10 @@ export class CheckpointError extends Error {
 }
 
 export interface Checkpoint {
-  /** Log identity, e.g. "paygent.example/ledger". */
+  /** Log identity, e.g. "swale.example/ledger". */
   origin: string;
   treeSize: number;
-  /** Root hash as lowercase hex (Paygent's internal representation). */
+  /** Root hash as lowercase hex (Swale's internal representation). */
   rootHash: string;
   /** Opaque extension lines. NOT RECOMMENDED — monitors cannot audit them. */
   extensions?: string[];

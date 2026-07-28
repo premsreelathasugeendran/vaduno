@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AuditLedger, MemoryLedgerStore, generateMandateKeyPair } from "@paygent/guard";
+import { AuditLedger, MemoryLedgerStore, generateMandateKeyPair } from "@swale/guard";
 import {
   Bitstring,
   MemoryRevocationStore,
@@ -17,8 +17,8 @@ function setup(
   const ledger = new AuditLedger(new MemoryLedgerStore());
   const store = new MemoryRevocationStore();
   const registry = new RevocationRegistry({
-    issuer: "prem@paygent.dev",
-    listId: "https://paygent.example/status/1",
+    issuer: "prem@swale.dev",
+    listId: "https://swale.example/status/1",
     privateKeyPem: keys.privateKeyPem,
     store,
     ledger,
@@ -130,8 +130,8 @@ describe("RevocationRegistry", () => {
 
     // "Restart": a brand-new registry over the SAME ledger.
     const fresh = new RevocationRegistry({
-      issuer: "prem@paygent.dev",
-      listId: "https://paygent.example/status/1",
+      issuer: "prem@swale.dev",
+      listId: "https://swale.example/status/1",
       privateKeyPem: keys.privateKeyPem,
       store: new MemoryRevocationStore(),
       ledger,

@@ -18,13 +18,13 @@ export default async function LoginPage({
         <div className="login-card reveal">
           <div className="login-mark">
             <span className="seal-dot" aria-hidden />
-            <span className="brand-word">Paygent</span>
+            <span className="brand-word">Swale</span>
           </div>
           <h1 className="login-title">Server not configured.</h1>
           <p className="login-sub">
             This console approves real agent payments, so it refuses to run in production without an
-            operator passcode. Set <code>PAYGENT_DASHBOARD_PASSCODE</code> (and optionally{" "}
-            <code>PAYGENT_SESSION_SECRET</code>) and restart.
+            operator passcode. Set <code>SWALE_DASHBOARD_PASSCODE</code> (and optionally{" "}
+            <code>SWALE_SESSION_SECRET</code>) and restart.
           </p>
         </div>
       </div>
@@ -36,7 +36,7 @@ export default async function LoginPage({
       <div className="login-card reveal">
         <div className="login-mark">
           <span className="seal-dot" aria-hidden />
-          <span className="brand-word">Paygent</span>
+          <span className="brand-word">Swale</span>
         </div>
         <h1 className="login-title">The vault is sealed.</h1>
         <p className="login-sub">
@@ -62,8 +62,8 @@ export default async function LoginPage({
         </form>
         {isDefault && (
           <div className="login-hint">
-            Demo mode — passcode is <code>paygent</code>. Set{" "}
-            <code>PAYGENT_DASHBOARD_PASSCODE</code> for production.
+            Demo mode — passcode is <code>swale</code>. Set{" "}
+            <code>SWALE_DASHBOARD_PASSCODE</code> for production.
           </div>
         )}
       </div>

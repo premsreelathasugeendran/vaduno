@@ -1,4 +1,4 @@
-import type { PaygentGuard, GuardStatus, PolicyReason } from "@paygent/guard";
+import type { SwaleGuard, GuardStatus, PolicyReason } from "@swale/guard";
 import { authorizationToIntent } from "./intent.js";
 import { MemoryDecisionStore, type DecisionStore } from "./idempotency.js";
 import type {
@@ -14,7 +14,7 @@ export interface StripeHandlerResponse {
 }
 
 export interface StripeAuthorizationHandlerOptions {
-  guard: PaygentGuard;
+  guard: SwaleGuard;
   /** The consumer's Stripe client — only `.webhooks.constructEvent` is used. */
   stripe: { webhooks: StripeWebhooksLike };
   /** Your webhook signing secret (whsec_…). */
@@ -60,7 +60,7 @@ const RECONCILE_TYPES = new Set([
 ]);
 
 /**
- * Build a framework-agnostic webhook handler that makes Paygent's guard the
+ * Build a framework-agnostic webhook handler that makes Swale's guard the
  * real-time authorization brain for Stripe Issuing cards.
  *
  * On issuing_authorization.request it maps the Authorization to a PaymentIntent,
@@ -102,9 +102,9 @@ export function createStripeAuthorizationHandler(
       body: JSON.stringify({
         approved,
         metadata: {
-          paygent_intent: authId,
-          paygent_decision: status,
-          paygent_reasons: reasons.map((r) => r.code).slice(0, 5).join(","),
+          swale_intent: authId,
+          swale_decision: status,
+          swale_reasons: reasons.map((r) => r.code).slice(0, 5).join(","),
         },
       }),
     };

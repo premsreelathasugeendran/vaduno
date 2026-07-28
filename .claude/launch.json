@@ -2,7 +2,7 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "paygent-dashboard",
+      "name": "swale-dashboard",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dashboard"],
       "port": 3939

@@ -7,8 +7,8 @@
     "start": "tsx demo.ts"
   },
   "dependencies": {
-    "@paygent/guard": "*",
-    "@paygent/x402": "*"
+    "@swale/guard": "*",
+    "@swale/x402": "*"
   },
   "devDependencies": {
     "tsx": "^4.19.0",

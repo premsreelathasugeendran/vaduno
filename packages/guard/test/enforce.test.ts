@@ -11,7 +11,7 @@ import {
 } from "../src/mandate/mandate.js";
 import { FileConsumeStore } from "../src/enforce/file-consume-store.js";
 import { MemoryConsumeStore, intentDigest } from "../src/enforce/consume-store.js";
-import { PaygentGuard } from "../src/guard.js";
+import { SwaleGuard } from "../src/guard.js";
 import { makeIntent, makePolicy } from "./helpers.js";
 
 const keys = generateMandateKeyPair();
@@ -19,7 +19,7 @@ const keys = generateMandateKeyPair();
 function setup(opts: { maxUses?: number; contextHash?: string } = {}) {
   const ledger = new AuditLedger(new MemoryLedgerStore());
   const mandates = new MandateManager(keys, ledger);
-  const guard = new PaygentGuard({ policy: makePolicy(), ledger, mandates });
+  const guard = new SwaleGuard({ policy: makePolicy(), ledger, mandates });
   return { ledger, mandates, guard, opts };
 }
 
@@ -190,7 +190,7 @@ describe("idempotent replay semantics", () => {
     const mandates = new MandateManager(keys, ledger, () => new Date(), {
       consumeStore: store,
     });
-    const guard = new PaygentGuard({ policy: makePolicy(), ledger, mandates });
+    const guard = new SwaleGuard({ policy: makePolicy(), ledger, mandates });
     const mandate = await issueMandate(mandates, { maxUses: 2 });
     const intent = makeIntent({ id: "crashed-run", mandateId: mandate.id });
 
@@ -298,7 +298,7 @@ describe("FileConsumeStore — cross-process atomicity", () => {
   }
 
   it("two separate store instances racing the same use: exactly one winner", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "paygent-consume-"));
+    const dir = await mkdtemp(join(tmpdir(), "swale-consume-"));
     try {
       const file = join(dir, "consume.json");
       // Two instances simulate two processes sharing the registry file.
@@ -319,7 +319,7 @@ describe("FileConsumeStore — cross-process atomicity", () => {
   it("REGRESSION: two DIFFERENT intents racing a single-use budget across instances — exactly one wins", async () => {
     // The confirmed critical: a check-then-act maxUses gate let both win.
     // maxUses is now enforced INSIDE the locked claim, so the budget holds.
-    const dir = await mkdtemp(join(tmpdir(), "paygent-budget-"));
+    const dir = await mkdtemp(join(tmpdir(), "swale-budget-"));
     try {
       const file = join(dir, "consume.json");
       const p1 = new FileConsumeStore(file);
@@ -340,7 +340,7 @@ describe("FileConsumeStore — cross-process atomicity", () => {
   });
 
   it("enforces a multi-use budget: N winners for maxUses=N under a racing storm", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "paygent-budgetN-"));
+    const dir = await mkdtemp(join(tmpdir(), "swale-budgetN-"));
     try {
       const file = join(dir, "consume.json");
       const stores = Array.from({ length: 8 }, () => new FileConsumeStore(file));
@@ -359,7 +359,7 @@ describe("FileConsumeStore — cross-process atomicity", () => {
     // instance never deletes the other's lock, so every distinct claim is
     // recorded exactly once (no lost update). Default lock window (~1s) so the
     // test is not racing the retry budget on a slow filesystem.
-    const dir = await mkdtemp(join(tmpdir(), "paygent-lock-"));
+    const dir = await mkdtemp(join(tmpdir(), "swale-lock-"));
     try {
       const file = join(dir, "consume.json");
       const a = new FileConsumeStore(file);
@@ -377,7 +377,7 @@ describe("FileConsumeStore — cross-process atomicity", () => {
   });
 
   it("settle is first-write-wins and survives a second instance", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "paygent-settle-"));
+    const dir = await mkdtemp(join(tmpdir(), "swale-settle-"));
     try {
       const file = join(dir, "consume.json");
       const p1 = new FileConsumeStore(file);
@@ -402,7 +402,7 @@ describe("FileConsumeStore — cross-process atomicity", () => {
 
   it("two MandateManagers over one FileConsumeStore: a single-use mandate executes exactly once", async () => {
     // End-to-end version of the critical finding, through the guard.
-    const dir = await mkdtemp(join(tmpdir(), "paygent-mgr-"));
+    const dir = await mkdtemp(join(tmpdir(), "swale-mgr-"));
     try {
       const file = join(dir, "consume.json");
       const store1 = new FileConsumeStore(file);
@@ -423,8 +423,8 @@ describe("FileConsumeStore — cross-process atomicity", () => {
         },
       });
       m2.register(mandate);
-      const g1 = new PaygentGuard({ policy: makePolicy(), ledger: ledger1, mandates: m1 });
-      const g2 = new PaygentGuard({ policy: makePolicy(), ledger: ledger2, mandates: m2 });
+      const g1 = new SwaleGuard({ policy: makePolicy(), ledger: ledger1, mandates: m1 });
+      const g2 = new SwaleGuard({ policy: makePolicy(), ledger: ledger2, mandates: m2 });
 
       let executions = 0;
       const exec = async () => {
@@ -448,7 +448,7 @@ describe("hydrateFromLedger rebuilds the consume registry", () => {
     const ledgerStore = new MemoryLedgerStore();
     const ledger = new AuditLedger(ledgerStore);
     const mandates = new MandateManager(keys, ledger);
-    const guard = new PaygentGuard({ policy: makePolicy(), ledger, mandates });
+    const guard = new SwaleGuard({ policy: makePolicy(), ledger, mandates });
     const mandate = await issueMandate(mandates, { maxUses: 3 });
     const intent = makeIntent({ id: "before-restart", mandateId: mandate.id });
     const first = await guard.execute(intent, async () => "ok");
@@ -458,7 +458,7 @@ describe("hydrateFromLedger rebuilds the consume registry", () => {
     const ledger2 = new AuditLedger(ledgerStore);
     const mandates2 = new MandateManager(keys, ledger2);
     await mandates2.hydrateFromLedger();
-    const guard2 = new PaygentGuard({ policy: makePolicy(), ledger: ledger2, mandates: mandates2 });
+    const guard2 = new SwaleGuard({ policy: makePolicy(), ledger: ledger2, mandates: mandates2 });
 
     let executions = 0;
     const retry = await guard2.execute(intent, async () => {

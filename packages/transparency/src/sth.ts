@@ -5,7 +5,7 @@ import {
   sign as edSign,
   verify as edVerify,
 } from "node:crypto";
-import { canonicalJson } from "@paygent/guard";
+import { canonicalJson } from "@swale/guard";
 import type { TreeHead } from "./tree.js";
 
 /**
@@ -45,11 +45,11 @@ export function generateLogKeyPair(): LogKeyPair {
 
 /**
  * Domain-separation tag: STH signatures can never be replayed as (or forged
- * from) any other Paygent Ed25519 payload — mandates sign bare canonical
+ * from) any other Swale Ed25519 payload — mandates sign bare canonical
  * JSON, tree heads sign this tagged encoding. The \n makes the tag
  * unambiguous (canonical JSON never starts mid-line).
  */
-const STH_DOMAIN = "paygent-tlog-sth/v1\n";
+const STH_DOMAIN = "swale-tlog-sth/v1\n";
 
 function sthPayload(sth: Omit<SignedTreeHead, "signature">): Buffer {
   return Buffer.from(STH_DOMAIN + canonicalJson(sth), "utf8");

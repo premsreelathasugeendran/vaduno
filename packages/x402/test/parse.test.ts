@@ -98,7 +98,7 @@ describe("amount helpers", () => {
 });
 
 describe("requirementToIntent", () => {
-  it("maps a requirement into a Paygent intent, binding merchant.url to the REAL request url", () => {
+  it("maps a requirement into a Swale intent, binding merchant.url to the REAL request url", () => {
     const intent = requirementToIntent(
       {
         scheme: "exact",

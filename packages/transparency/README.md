@@ -1,6 +1,6 @@
-# @paygent/transparency
+# @swale/transparency
 
-**An RFC 9162 Merkle transparency log for Paygent's audit trail.**
+**An RFC 9162 Merkle transparency log for Swale's audit trail.**
 
 The guard's hash-chained ledger proves *ordering* and *tamper-evidence*. This
 package adds the two properties a bare hash chain cannot give you:
@@ -15,30 +15,30 @@ Both are verifiable by a third party from the roots alone — the same math that
 Certificate Transparency uses to watch the world's TLS certificate authorities
 (RFC 9162, RFC 6962), applied to AI-agent payment decisions.
 
-**Paygent never holds keys or funds.** The only key here signs *evidence*
+**Swale never holds keys or funds.** The only key here signs *evidence*
 (tree heads), not money.
 
 ## Install
 
 ```bash
-npm install @paygent/transparency @paygent/guard
+npm install @swale/transparency @swale/guard
 ```
 
-Zero runtime dependencies beyond `@paygent/guard` and Node's `crypto`.
+Zero runtime dependencies beyond `@swale/guard` and Node's `crypto`.
 
 ## Mirror the audit ledger, publish signed heads
 
 ```ts
-import { AuditLedger, MemoryLedgerStore, PaygentGuard } from "@paygent/guard";
+import { AuditLedger, MemoryLedgerStore, SwaleGuard } from "@swale/guard";
 import {
   LedgerMirror,
   TransparencyLog,
   MemoryTreeStore,
   generateLogKeyPair,
-} from "@paygent/transparency";
+} from "@swale/transparency";
 
 const ledger = new AuditLedger(new MemoryLedgerStore());
-const guard = new PaygentGuard({ policy, ledger });
+const guard = new SwaleGuard({ policy, ledger });
 
 const keys = generateLogKeyPair(); // Ed25519; keep the private key out of agent reach
 const tree = new TransparencyLog(new MemoryTreeStore());
@@ -55,7 +55,7 @@ const { head, signedHead } = await mirror.sync(); // append new entries, sign th
 ## Prove a decision is in the history (non-omission)
 
 ```ts
-import { leafHash, ledgerEntryLeaf, verifyInclusion } from "@paygent/transparency";
+import { leafHash, ledgerEntryLeaf, verifyInclusion } from "@swale/transparency";
 
 const entry = (await ledger.all())[seq];          // the decision in question
 const proof = await mirror.proveEntry(seq);        // from the operator
@@ -66,7 +66,7 @@ verifyInclusion(leafHash(ledgerEntryLeaf(entry)), proof, signedHead.rootHash); /
 ## Witness a log (catch rewrites and truncation)
 
 ```ts
-import { witnessObserve, type WitnessState } from "@paygent/transparency";
+import { witnessObserve, type WitnessState } from "@swale/transparency";
 
 let state: WitnessState = { logId, publicKeyPem, lastHead: null };
 
@@ -88,19 +88,19 @@ to each party — every signature verifies and every consistency proof passes.
 That is a **split view**, and the only defence is independent parties who
 refuse to vouch for a history that contradicts one they already vouched for.
 
-Paygent speaks the [C2SP](https://github.com/C2SP/C2SP) formats the
+Swale speaks the [C2SP](https://github.com/C2SP/C2SP) formats the
 transparency ecosystem actually uses (Go sumdb notes, Sigsum), so a
-third-party witness needs no Paygent-specific code:
+third-party witness needs no Swale-specific code:
 
 ```ts
 import {
   signCheckpoint, witnessCosign, attachCosignatures, checkCosignatureQuorum,
-} from "@paygent/transparency";
+} from "@swale/transparency";
 
 // Operator: publish an interop checkpoint note.
 const note = signCheckpoint(
-  { origin: "paygent.example/ledger", treeSize: head.treeSize, rootHash: head.rootHash },
-  { name: "paygent.example/ledger", privateKeyPem, publicKeyPem },
+  { origin: "swale.example/ledger", treeSize: head.treeSize, rootHash: head.rootHash },
+  { name: "swale.example/ledger", privateKeyPem, publicKeyPem },
 );
 
 // Witness (someone else's server): cosign ONLY if append-only consistent
@@ -113,7 +113,7 @@ if (r.ok) send(r.cosignature);
 // Relying party: require a quorum before trusting the log.
 const witnessed = attachCosignatures(note, cosignatures);
 const quorum = checkCosignatureQuorum(witnessed, knownWitnesses, 2, {
-  origin: "paygent.example/ledger",   // REQUIRED — see below
+  origin: "swale.example/ledger",   // REQUIRED — see below
   logPublicKeyPem,
 });
 if (!quorum.ok) refuse(quorum.message);

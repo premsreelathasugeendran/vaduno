@@ -1,5 +1,5 @@
 {
-  "name": "paygent",
+  "name": "swale",
   "private": true,
   "workspaces": [
     "packages/*",
@@ -10,18 +10,18 @@
     "postcss": ">=8.4.31"
   },
   "scripts": {
-    "build": "npm -w @paygent/guard run build && npm -w @paygent/transparency run build && npm -w @paygent/revocation run build && npm -w @paygent/x402 run build && npm -w @paygent/stripe run build",
-    "test": "npm -w @paygent/guard run test && npm -w @paygent/transparency run test && npm -w @paygent/revocation run test && npm -w @paygent/x402 run test && npm -w @paygent/stripe run test",
+    "build": "npm -w @swale/guard run build && npm -w @swale/transparency run build && npm -w @swale/revocation run build && npm -w @swale/x402 run build && npm -w @swale/stripe run build",
+    "test": "npm -w @swale/guard run test && npm -w @swale/transparency run test && npm -w @swale/revocation run test && npm -w @swale/x402 run test && npm -w @swale/stripe run test",
     "demo": "npm -w demo-agent run start",
     "demo:x402": "npm -w x402-agent run start",
     "demo:stripe": "npm -w stripe-agent run start",
     "demo:transparency": "npm -w transparency-agent run start",
     "demo:revocation": "npm -w revocation-agent run start",
-    "dashboard:seed": "npm -w @paygent/dashboard run seed",
-    "dashboard:build": "npm -w @paygent/dashboard run build",
-    "dashboard:dev": "npm -w @paygent/dashboard run dev",
-    "dashboard": "npm -w @paygent/dashboard run demo",
+    "dashboard:seed": "npm -w @swale/dashboard run seed",
+    "dashboard:build": "npm -w @swale/dashboard run build",
+    "dashboard:dev": "npm -w @swale/dashboard run dev",
+    "dashboard": "npm -w @swale/dashboard run demo",
     "release:check": "npm run build && npm run test && node scripts/check-release.mjs",
-    "release:pack": "npm -w @paygent/guard pack --dry-run && npm -w @paygent/transparency pack --dry-run && npm -w @paygent/revocation pack --dry-run && npm -w @paygent/x402 pack --dry-run && npm -w @paygent/stripe pack --dry-run"
+    "release:pack": "npm -w @swale/guard pack --dry-run && npm -w @swale/transparency pack --dry-run && npm -w @swale/revocation pack --dry-run && npm -w @swale/x402 pack --dry-run && npm -w @swale/stripe pack --dry-run"
   }
 }

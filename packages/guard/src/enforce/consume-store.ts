@@ -21,7 +21,7 @@ import type { PaymentIntent } from "../types.js";
  * never replayed, never executed. */
 export function intentDigest(intent: PaymentIntent): string {
   return sha256Hex(
-    "paygent-consume-digest/v1\n" +
+    "swale-consume-digest/v1\n" +
       canonicalJson({
         amountMinor: intent.amount.amountMinor,
         currency: intent.amount.currency,

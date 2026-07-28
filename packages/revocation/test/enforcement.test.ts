@@ -3,11 +3,11 @@ import {
   AuditLedger,
   MandateManager,
   MemoryLedgerStore,
-  PaygentGuard,
+  SwaleGuard,
   generateMandateKeyPair,
   type PaymentIntent,
   type SpendPolicy,
-} from "@paygent/guard";
+} from "@swale/guard";
 import {
   Bitstring,
   MemoryRevocationStore,
@@ -45,18 +45,18 @@ function intent(over: Partial<PaymentIntent> = {}): PaymentIntent {
   };
 }
 
-function setup(extra: Partial<ConstructorParameters<typeof PaygentGuard>[0]> = {}) {
+function setup(extra: Partial<ConstructorParameters<typeof SwaleGuard>[0]> = {}) {
   const ledger = new AuditLedger(new MemoryLedgerStore());
   const store = new MemoryRevocationStore();
   const mandates = new MandateManager(keys, ledger);
   const registry = new RevocationRegistry({
     issuer: "prem",
-    listId: "https://paygent.example/status/1",
+    listId: "https://swale.example/status/1",
     privateKeyPem: keys.privateKeyPem,
     store,
     ledger,
   });
-  const guard = new PaygentGuard({
+  const guard = new SwaleGuard({
     policy: policy(),
     ledger,
     mandates,
@@ -152,7 +152,7 @@ describe("revocation is ENFORCED at authorization time", () => {
       releaseApproval = resolve;
     });
 
-    const guard = new PaygentGuard({
+    const guard = new SwaleGuard({
       policy: policy({ approval: { always: true } }),
       ledger,
       mandates,
@@ -197,7 +197,7 @@ describe("revocation is ENFORCED at authorization time", () => {
 
   it("FAILS CLOSED when the registry cannot answer (outage != not revoked)", async () => {
     const ledger = new AuditLedger(new MemoryLedgerStore());
-    const guard = new PaygentGuard({
+    const guard = new SwaleGuard({
       policy: policy(),
       ledger,
       revocationCheck: async () => {
@@ -228,7 +228,7 @@ describe("revocation is ENFORCED at authorization time", () => {
       store,
       ledger,
     });
-    const guard = new PaygentGuard({
+    const guard = new SwaleGuard({
       policy: policy(),
       ledger,
       mandates,
@@ -270,7 +270,7 @@ describe("createStatusListCheck — third-party verifier side", () => {
     const bits = new Bitstring();
     for (const i of revokedIndices) bits.set(i, true);
     return publishStatusList(bits, {
-      id: "https://paygent.example/status/1",
+      id: "https://swale.example/status/1",
       issuer: "prem",
       statusPurpose: "revocation",
       privateKeyPem: keys.privateKeyPem,
@@ -346,7 +346,7 @@ describe("createStatusListCheck — third-party verifier side", () => {
     // revoked mandate read as active.
     const bits = new Bitstring(); // no bits set
     const siblingSuspensionList = publishStatusList(bits, {
-      id: "https://paygent.example/status/1", // SAME id
+      id: "https://swale.example/status/1", // SAME id
       issuer: "prem", // SAME issuer
       statusPurpose: "suspension", // different purpose
       privateKeyPem: keys.privateKeyPem, // SAME key — signature is genuine
@@ -357,7 +357,7 @@ describe("createStatusListCheck — third-party verifier side", () => {
       publicKeyPem: keys.publicKeyPem,
       indexFor: () => 7,
       expectedPurpose: "revocation",
-      expectedListId: "https://paygent.example/status/1",
+      expectedListId: "https://swale.example/status/1",
       expectedIssuer: "prem",
     });
     const verdict = await check(intent());
@@ -368,7 +368,7 @@ describe("createStatusListCheck — third-party verifier side", () => {
 
   it("REGRESSION: a list from another id/issuer is rejected even with a valid signature", async () => {
     const foreign = publishStatusList(new Bitstring(), {
-      id: "https://paygent.example/status/OTHER",
+      id: "https://swale.example/status/OTHER",
       issuer: "prem",
       statusPurpose: "revocation",
       privateKeyPem: keys.privateKeyPem,
@@ -378,7 +378,7 @@ describe("createStatusListCheck — third-party verifier side", () => {
       fetchList: async () => foreign,
       publicKeyPem: keys.publicKeyPem,
       indexFor: () => 1,
-      expectedListId: "https://paygent.example/status/1",
+      expectedListId: "https://swale.example/status/1",
       expectedIssuer: "prem",
     });
     const verdict = await check(intent());

@@ -1,4 +1,4 @@
-import type { GuardResult, PolicyResult } from "@paygent/guard";
+import type { GuardResult, PolicyResult } from "@swale/guard";
 
 /** Thrown when policy/mandate/freeze blocked the payment (money never moved). */
 export class X402PaymentBlockedError extends Error {

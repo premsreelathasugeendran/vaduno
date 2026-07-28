@@ -3,7 +3,7 @@ import {
   MemoryApprovalStore,
   createQueuedApprovalHandler,
 } from "../src/approval/approval.js";
-import { PaygentGuard } from "../src/guard.js";
+import { SwaleGuard } from "../src/guard.js";
 import { AuditLedger } from "../src/ledger/ledger.js";
 import { MemoryLedgerStore } from "../src/ledger/stores/memory.js";
 import { makeIntent, makePolicy } from "./helpers.js";
@@ -71,11 +71,11 @@ describe("createQueuedApprovalHandler", () => {
   });
 });
 
-describe("PaygentGuard + queued approval", () => {
+describe("SwaleGuard + queued approval", () => {
   function setup() {
     const store = new MemoryApprovalStore();
     const ledger = new AuditLedger(new MemoryLedgerStore());
-    const guard = new PaygentGuard({
+    const guard = new SwaleGuard({
       policy: makePolicy({ approval: { always: true } }),
       ledger,
       approvalHandler: createQueuedApprovalHandler(store, { pollMs: 1, timeoutMs: 5000 }),

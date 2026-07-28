@@ -1,5 +1,5 @@
 /**
- * Paygent demo: an AI agent with a $50 budget tries a series of purchases —
+ * Swale demo: an AI agent with a $50 budget tries a series of purchases —
  * including the things that go wrong in the real attacks (over-limit spends,
  * off-allowlist merchants injected by a malicious page, a forged merchant id,
  * mandate replay). Every attempt lands in the tamper-evident flight recorder.
@@ -10,10 +10,10 @@ import {
   AuditLedger,
   MemoryLedgerStore,
   MandateManager,
-  PaygentGuard,
+  SwaleGuard,
   generateMandateKeyPair,
   type PaymentIntent,
-} from "@paygent/guard";
+} from "@swale/guard";
 import { randomUUID } from "node:crypto";
 
 const usd = (amountMinor: number) => ({ amountMinor, currency: "USD" });
@@ -27,7 +27,7 @@ const mandates = new MandateManager(
   ledger,
 );
 
-const guard = new PaygentGuard({
+const guard = new SwaleGuard({
   policy: {
     id: "demo-policy",
     version: 1,
@@ -55,7 +55,7 @@ const guard = new PaygentGuard({
 });
 
 // A mock rail executor — in real integrations this is your x402 client,
-// Stripe issuing call, or UPI collect. Paygent never touches the money and
+// Stripe issuing call, or UPI collect. Swale never touches the money and
 // hands the executor the SAFE, evaluated snapshot of the intent.
 const mockRail = (intent: PaymentIntent) => ({
   receipt: `mock-${intent.id.slice(0, 8)}`,
@@ -94,7 +94,7 @@ async function attempt(label: string, i: PaymentIntent) {
 }
 
 // ── Scenario ─────────────────────────────────────────────────────────────
-console.log("— Paygent demo: agent with $50/day budget, $20/txn cap —\n");
+console.log("— Swale demo: agent with $50/day budget, $20/txn cap —\n");
 
 await attempt("Buy API credits", intent({ amount: usd(900) }));
 
@@ -132,7 +132,7 @@ await attempt(
 // Without a mutex, all 4 read a stale $0 total and all execute (5x overspend).
 console.log("\n— Concurrency: 4 x $18 fired in parallel against a fresh $50/day cap —\n");
 const raceLedger = new AuditLedger(new MemoryLedgerStore());
-const raceGuard = new PaygentGuard({
+const raceGuard = new SwaleGuard({
   policy: {
     id: "race-policy",
     version: 1,
@@ -157,7 +157,7 @@ console.log(
 // ── Mandate: consume-once semantics ─────────────────────────────────────
 console.log("\n— Mandate demo: single-use signed authorization —\n");
 const mandate = await mandates.issue({
-  issuer: "prem@paygent.dev",
+  issuer: "prem@swale.dev",
   agentId: "shopper-agent-1",
   constraints: {
     maxAmountMinor: 1_000,
@@ -196,7 +196,7 @@ const stormMandates = new MandateManager(
   { publicKeyPem: keys.publicKeyPem, privateKeyPem: keys.privateKeyPem },
   stormLedger,
 );
-const stormGuard = new PaygentGuard({
+const stormGuard = new SwaleGuard({
   policy: {
     id: "storm-policy",
     version: 1,
@@ -207,7 +207,7 @@ const stormGuard = new PaygentGuard({
   mandates: stormMandates,
 });
 const stormMandate = await stormMandates.issue({
-  issuer: "prem@paygent.dev",
+  issuer: "prem@swale.dev",
   agentId: "shopper-agent-1",
   constraints: {
     maxAmountMinor: 1_000,

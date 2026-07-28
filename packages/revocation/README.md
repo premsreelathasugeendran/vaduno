@@ -1,11 +1,11 @@
-# @paygent/revocation
+# @swale/revocation
 
 **The kill switch for agent payment authority — honestly scoped.**
 
 An agent's credentials leak at 2am. You need every mandate it holds to stop working *now*, you need proof of when you pulled the trigger, and you need to know which rails actually acknowledged it.
 
 ```bash
-npm install @paygent/revocation
+npm install @swale/revocation
 ```
 
 ## What revocation actually guarantees
@@ -14,15 +14,15 @@ This package is deliberately **not** marketed as a "universal instant kill switc
 
 | Authority | Guarantee |
 |---|---|
-| Mandates the Paygent guard mediates | **Instant and guaranteed.** The guard consults the registry before money moves and fails closed. Nothing spends under a revoked mandate again. |
-| Authority Paygent does *not* mediate (a raw wallet key the agent holds, a card issued outside Paygent) | **Best-effort fan-out** to each rail's own revocation API. Every attempt *and every failure* is recorded, so the gap between "we asked" and "it took effect" is visible rather than assumed. |
+| Mandates the Swale guard mediates | **Instant and guaranteed.** The guard consults the registry before money moves and fails closed. Nothing spends under a revoked mandate again. |
+| Authority Swale does *not* mediate (a raw wallet key the agent holds, a card issued outside Swale) | **Best-effort fan-out** to each rail's own revocation API. Every attempt *and every failure* is recorded, so the gap between "we asked" and "it took effect" is visible rather than assumed. |
 | Money already settled on-chain | **Nothing.** Settled spend cannot be clawed back by anyone. |
 
 ## Quick start
 
 ```ts
-import { PaygentGuard } from "@paygent/guard";
-import { RevocationRegistry, createRegistryCheck } from "@paygent/revocation";
+import { SwaleGuard } from "@swale/guard";
+import { RevocationRegistry, createRegistryCheck } from "@swale/revocation";
 
 const registry = new RevocationRegistry({
   issuer: "you@company.com",
@@ -34,7 +34,7 @@ const registry = new RevocationRegistry({
   ],
 });
 
-const guard = new PaygentGuard({
+const guard = new SwaleGuard({
   policy, ledger, mandates,
   revocationCheck: createRegistryCheck(registry),   // <- makes it ENFORCED
 });
@@ -84,7 +84,7 @@ For counterparties who don't own your registry, publish a signed [W3C Bitstring 
 ```ts
 const credential = await registry.publish(version);   // version MUST increase
 // serve `credential` at listId; a verifier checks one entry:
-import { checkStatus } from "@paygent/revocation";
+import { checkStatus } from "@swale/revocation";
 checkStatus(credential, statusListIndex, { publicKeyPem });
 // → { valid, revoked, code, message }
 ```

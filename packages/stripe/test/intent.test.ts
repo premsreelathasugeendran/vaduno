@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { authorizationToIntent } from "../src/intent.js";
 import { policyToSpendingControls, createAgentCard } from "../src/provision.js";
 import type { StripeAuthorization } from "../src/types.js";
-import type { SpendPolicy } from "@paygent/guard";
+import type { SpendPolicy } from "@swale/guard";
 
 function auth(over: Partial<StripeAuthorization> = {}): StripeAuthorization {
   return {

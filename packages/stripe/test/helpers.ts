@@ -1,12 +1,12 @@
-import { AuditLedger, MemoryLedgerStore, PaygentGuard } from "@paygent/guard";
-import type { SpendPolicy } from "@paygent/guard";
+import { AuditLedger, MemoryLedgerStore, SwaleGuard } from "@swale/guard";
+import type { SpendPolicy } from "@swale/guard";
 import type { StripeAuthorization, StripeEvent } from "../src/types.js";
 
 let seq = 0;
 
 export function makeGuard(policyOver: Partial<SpendPolicy> = {}) {
   const ledger = new AuditLedger(new MemoryLedgerStore());
-  const guard = new PaygentGuard({
+  const guard = new SwaleGuard({
     policy: {
       id: "issuing-policy",
       version: 1,

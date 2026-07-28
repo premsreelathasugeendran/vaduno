@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AuditLedger, MemoryLedgerStore } from "@paygent/guard";
+import { AuditLedger, MemoryLedgerStore } from "@swale/guard";
 import {
   LedgerMirror,
   MemoryTreeStore,

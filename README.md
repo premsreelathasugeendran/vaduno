@@ -1,23 +1,23 @@
-# Paygent
+# Swale
 
 **A spend firewall and flight recorder for AI agents.**
 
 Your agent has an API key that can spend real money. Research says the agent *will* eventually be tricked — prompt-injection attacks against commerce agents succeed in [86% of attempts](https://arxiv.org/abs/2504.18575), and agents have bought from fake storefronts without hesitation. The model cannot be the last line of defense.
 
-Paygent puts a deterministic guard between your agent and the money:
+Swale puts a deterministic guard between your agent and the money:
 
 - **Policy engine** — per-transaction / daily / weekly / monthly caps, merchant & category allowlists, rail restrictions, velocity limits, human-approval thresholds. Pure code; no model in the loop.
 - **Signed mandates** — Ed25519 "permission slips" binding what the human authorized (amount, merchant, time window) to what executes. Time-bound and **consume-once atomic**, closing the [mandate-replay attacks](https://arxiv.org/abs/2602.06345) published against agent-payment protocols.
 - **Runtime enforcement** — a mandate's "consume-once, context-bound" isn't just signed, it's *enforced on the execution path*: a retry storm or duplicate orchestration hop firing the same payment N times runs the rail **exactly once** and replays the original outcome to the rest; a used intent id reused for a different payment is denied; an optional context hash binds a mandate to one approved task run.
 - **Flight recorder** — every attempt, decision, approval, and execution lands in a hash-chained, append-only audit ledger. Any edit, deletion, or reordering of history is detectable by `verify()`. Upgrade it to an [RFC 9162 Merkle transparency log](packages/transparency) for third-party inclusion (non-omission) and append-only consistency proofs.
-- **Kill switch & revocation** — `guard.freeze()` denies everything instantly. For targeted kills, [`@paygent/revocation`](packages/revocation) revokes a single mandate or an agent's entire authority, checked *after* human approval so a switch pulled mid-approval still wins — plus signed [W3C Bitstring Status Lists](https://www.w3.org/TR/vc-bitstring-status-list/) so third parties can verify status themselves.
+- **Kill switch & revocation** — `guard.freeze()` denies everything instantly. For targeted kills, [`@swale/revocation`](packages/revocation) revokes a single mandate or an agent's entire authority, checked *after* human approval so a switch pulled mid-approval still wins — plus signed [W3C Bitstring Status Lists](https://www.w3.org/TR/vc-bitstring-status-list/) so third parties can verify status themselves.
 
-**Paygent never holds funds, keys, or the ability to move money.** It decides whether *your* executor function may run, and records everything. Rail-agnostic by design: wrap an x402 client, a Stripe issuing call, a UPI collect — anything.
+**Swale never holds funds, keys, or the ability to move money.** It decides whether *your* executor function may run, and records everything. Rail-agnostic by design: wrap an x402 client, a Stripe issuing call, a UPI collect — anything.
 
 ## Install
 
 ```bash
-npm install @paygent/guard
+npm install @swale/guard
 ```
 
 Zero runtime dependencies. Node ≥ 18.
@@ -26,12 +26,12 @@ Zero runtime dependencies. Node ≥ 18.
 
 ```ts
 import {
-  PaygentGuard, AuditLedger, MemoryLedgerStore,
-} from "@paygent/guard";
+  SwaleGuard, AuditLedger, MemoryLedgerStore,
+} from "@swale/guard";
 
 const ledger = new AuditLedger(new MemoryLedgerStore());
 
-const guard = new PaygentGuard({
+const guard = new SwaleGuard({
   policy: {
     id: "shopper-policy", version: 1, currency: "USD",
     limits: { perTransactionMinor: 2_000, perDayMinor: 5_000 }, // $20/txn, $50/day
@@ -52,7 +52,7 @@ const result = await guard.execute(
     rail: "x402",
     requestedAt: new Date().toISOString(),
   },
-  () => myX402Client.pay(...),   // your executor — Paygent never touches the money
+  () => myX402Client.pay(...),   // your executor — Swale never touches the money
 );
 
 // result.status: "executed" | "denied" | "approval_rejected" | "failed"
@@ -75,7 +75,7 @@ What the guard blocks, from the demo (`npm run demo`):
 ## Mandates: provable authorization
 
 ```ts
-import { MandateManager, generateMandateKeyPair } from "@paygent/guard";
+import { MandateManager, generateMandateKeyPair } from "@swale/guard";
 
 const keys = generateMandateKeyPair();          // issuer keeps the private key
 const mandates = new MandateManager(
@@ -102,7 +102,7 @@ A validating agent process needs only the **public** key. Never put the private 
 
 ### Runtime enforcement: survive retries, races, and misapplication
 
-Signing a mandate proves it was *issued*; it does nothing to stop that valid mandate from being executed twice by a retry loop or raced by two workers. Paygent enforces it at execution time through a **consume-once registry** keyed on `(mandateId, intentId)`:
+Signing a mandate proves it was *issued*; it does nothing to stop that valid mandate from being executed twice by a retry loop or raced by two workers. Swale enforces it at execution time through a **consume-once registry** keyed on `(mandateId, intentId)`:
 
 ```ts
 // The SAME payment fired 6x in parallel (a crashed/retried agent):
@@ -129,20 +129,20 @@ Based on the runtime-verification results in [ZTRV](https://arxiv.org/abs/2602.0
 
 The chain is computed client-side; `verify()` re-derives every hash, so even a compromised database cannot silently rewrite history.
 
-## x402 rail adapter (`@paygent/x402`)
+## x402 rail adapter (`@swale/x402`)
 
-Turn the guard into a real payment path. `@paygent/x402` wraps the HTTP 402
+Turn the guard into a real payment path. `@swale/x402` wraps the HTTP 402
 "pay-per-request" flow: on a 402 it builds a `PaymentIntent` from the server's
-requirement, runs the guard, and only if allowed calls **your** signer. Paygent
+requirement, runs the guard, and only if allowed calls **your** signer. Swale
 never sees keys.
 
 ```ts
-import { createX402Fetch, usdc } from "@paygent/x402";
+import { createX402Fetch, usdc } from "@swale/x402";
 
 const fetchWithPay = createX402Fetch({
-  guard,                                   // your PaygentGuard
+  guard,                                   // your SwaleGuard
   agentId: "researcher-agent-1",
-  pay: (req) => myWallet.signX402(req),    // your signer — Paygent never holds keys
+  pay: (req) => myWallet.signX402(req),    // your signer — Swale never holds keys
   assets: [                                // bind spend to the REAL token, not a label
     { network: "base", asset: "0x833589...2913", symbol: "USDC", decimals: 6 },
   ],
@@ -166,14 +166,14 @@ Rail-specific security notes (see [SECURITY.md](SECURITY.md)):
   authorization the server can still settle even while returning an error. Bind a
   consume-once mandate (`maxUses`) to bound retries.
 
-## Revocation & kill switch (`@paygent/revocation`)
+## Revocation & kill switch (`@swale/revocation`)
 
 An agent's credentials leak at 2am. Revoke one mandate, or the agent's entire authority, and have it take effect before the next payment:
 
 ```ts
-import { RevocationRegistry, createRegistryCheck } from "@paygent/revocation";
+import { RevocationRegistry, createRegistryCheck } from "@swale/revocation";
 
-const guard = new PaygentGuard({
+const guard = new SwaleGuard({
   policy, ledger, mandates,
   revocationCheck: createRegistryCheck(registry),   // makes revocation ENFORCED
 });
@@ -185,7 +185,7 @@ The check runs **inside the guard's critical section, after human approval** —
 
 **Honest scope:** revocation is instant and guaranteed for mandates the guard mediates. For authority it doesn't mediate (a raw wallet key), fan-out to the rail's own API is best-effort — and every failure is recorded, never assumed away. Settled on-chain spend cannot be clawed back by anyone. See [packages/revocation](packages/revocation/README.md).
 
-## Transparency log (`@paygent/transparency`)
+## Transparency log (`@swale/transparency`)
 
 Upgrade the hash chain to an [RFC 9162](https://www.rfc-editor.org/rfc/rfc9162) Merkle transparency log — the Certificate Transparency machinery, applied to payment decisions. It adds what a bare chain cannot: **inclusion proofs** (a specific decision *is* in the published history — proof of non-omission) and **consistency proofs** (a later root only ever extended the earlier one), both verifiable by a third party from Ed25519-signed tree heads.
 
@@ -197,16 +197,16 @@ On top of that, **witness cosigning** ([C2SP](https://github.com/C2SP/C2SP) `tlo
 2. **Deterministic last line.** An attacker is assumed to fully control the agent and every field of the intent. Policy checks are pure code over integer minor units.
 3. **Amounts are integers.** Minor units (cents, paise) everywhere. Floats are denied, not rounded.
 4. **Everything is evidence.** Denials and failures are recorded as thoroughly as successes — the audit trail is the product.
-5. **Not in the money path.** No custody, no keys, no transmission. Your executor moves money; Paygent governs and records.
+5. **Not in the money path.** No custody, no keys, no transmission. Your executor moves money; Swale governs and records.
 
 ## Roadmap
 
-- ✅ **x402 adapter** (`@paygent/x402`) — wrap Coinbase x402 payments with policy + audit
-- ✅ **Stripe issuing adapter** (`@paygent/stripe`) — the guard as the real-time card-authorization brain
+- ✅ **x402 adapter** (`@swale/x402`) — wrap Coinbase x402 payments with policy + audit
+- ✅ **Stripe issuing adapter** (`@swale/stripe`) — the guard as the real-time card-authorization brain
 - ✅ **Dashboard** — live spend view, approval inbox, ledger explorer ("Vault Terminal")
 - ✅ **Runtime mandate enforcement** — consume-once + idempotent replay + context binding
-- ✅ **Transparency log** (`@paygent/transparency`) — RFC 9162 inclusion / consistency proofs
-- ✅ **Revocation registry** (`@paygent/revocation`) — targeted kill switch + W3C Bitstring Status Lists
+- ✅ **Transparency log** (`@swale/transparency`) — RFC 9162 inclusion / consistency proofs
+- ✅ **Revocation registry** (`@swale/revocation`) — targeted kill switch + W3C Bitstring Status Lists
 - ✅ **Witness cosigning** — C2SP checkpoints + cosignatures; independent witnesses attest the log never forked
 - **Consent-evidence dossiers** — exportable dispute/representment packets built on the audit trail
 - **UPI adapter** — ready for NPCI delegated-payment APIs the day they open

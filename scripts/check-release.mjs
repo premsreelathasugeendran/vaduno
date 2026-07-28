@@ -11,7 +11,7 @@
  *     they exist in the package directory; the repo root's copies do NOT ship)
  *   - dist/ exists and is newer than src/ (never ship a stale build)
  *   - the tarball contains no source, tests, secrets, or junk
- *   - internal @paygent/* deps use a real semver range, not "*" or "workspace:"
+ *   - internal @swale/* deps use a real semver range, not "*" or "workspace:"
  *   - version matches across the workspace (they release as a set)
  */
 import { execFileSync } from "node:child_process";
@@ -83,7 +83,7 @@ for (const name of PACKAGES) {
     fail(pkg.name, "src/ is newer than dist/ — the build is STALE, rebuild before publishing");
   }
   for (const [dep, range] of Object.entries(pkg.dependencies ?? {})) {
-    if (!dep.startsWith("@paygent/")) continue;
+    if (!dep.startsWith("@swale/")) continue;
     if (range === "*" || range.startsWith("workspace:")) {
       fail(pkg.name, `dependency ${dep}="${range}" will not resolve for consumers`);
     }
@@ -119,9 +119,9 @@ if (failures > 0) {
 }
 console.log(`✓ all packages look publishable${warnings ? ` (${warnings} warning(s))` : ""}`);
 console.log(`
-Publish order matters — the others depend on @paygent/guard:
-  1. @paygent/guard
-  2. @paygent/transparency, @paygent/revocation, @paygent/x402, @paygent/stripe
+Publish order matters — the others depend on @swale/guard:
+  1. @swale/guard
+  2. @swale/transparency, @swale/revocation, @swale/x402, @swale/stripe
 
 Reminder: publishes are effectively permanent. Use --dry-run first, and
 consider --tag next for a pre-release you can retract from "latest".
