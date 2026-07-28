@@ -23,7 +23,7 @@ const guard = new VadunoGuard({
   policy: {
     id: "shopper-policy", version: 1, currency: "USD",
     limits: { perTransactionMinor: 2_000, perDayMinor: 5_000 }, // $20/txn, $50/day
-    merchants: { allow: ["openai", "anthropic", "aws"] },
+    merchants: { allow: ["openai.com", "anthropic.com", "aws.amazon.com"] },
     approval: { aboveMinor: 1_500 },                            // human sign-off at $15+
   },
   ledger,

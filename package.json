@@ -11,6 +11,7 @@
   },
   "scripts": {
     "build": "npm -w @vaduno/guard run build && npm -w @vaduno/transparency run build && npm -w @vaduno/revocation run build && npm -w @vaduno/x402 run build && npm -w @vaduno/stripe run build",
+    "prepare": "npm run build",
     "test": "npm -w @vaduno/guard run test && npm -w @vaduno/transparency run test && npm -w @vaduno/revocation run test && npm -w @vaduno/x402 run test && npm -w @vaduno/stripe run test",
     "demo": "npm -w demo-agent run start",
     "demo:x402": "npm -w x402-agent run start",

@@ -10,3 +10,7 @@ demo-ledger.jsonl
 next-env.d.ts
 apps/dashboard/data/
 *.tsbuildinfo
+
+# Internal launch notes and market research — not for publication
+docs/LAUNCH.md
+docs/research/

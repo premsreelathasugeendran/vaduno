@@ -7,13 +7,13 @@
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![deps](https://img.shields.io/badge/runtime%20deps-0-brightgreen.svg)](packages/guard/package.json)
 
-Your agent has an API key that can spend real money. Research says the agent *will* eventually be tricked — prompt-injection attacks against commerce agents succeed in [86% of attempts](https://arxiv.org/abs/2504.18575), and agents have bought from fake storefronts without hesitation. The model cannot be the last line of defense.
+Your agent has an API key that can spend real money. Research says the agent *will* eventually be tricked — in the [WASP benchmark](https://arxiv.org/abs/2504.18575), prompt-injection attacks against autonomous web agents *partially* succeed in **up to 86%** of cases. The model cannot be the last line of defense.
 
 Vaduno puts a deterministic guard between your agent and the money:
 
 - **Policy engine** — per-transaction / daily / weekly / monthly caps, merchant & category allowlists, rail restrictions, velocity limits, human-approval thresholds. Pure code; no model in the loop.
 - **Signed mandates** — Ed25519 "permission slips" binding what the human authorized (amount, merchant, time window) to what executes. Time-bound and **consume-once atomic**, closing the [mandate-replay attacks](https://arxiv.org/abs/2602.06345) published against agent-payment protocols.
-- **Runtime enforcement** — a mandate's "consume-once, context-bound" isn't just signed, it's *enforced on the execution path*: a retry storm or duplicate orchestration hop firing the same payment N times runs the rail **exactly once** and replays the original outcome to the rest; a used intent id reused for a different payment is denied; an optional context hash binds a mandate to one approved task run.
+- **Runtime enforcement** — a mandate's "consume-once, context-bound" isn't just signed, it's *enforced on the execution path*: a retry storm or duplicate orchestration hop firing the same payment N times runs the rail **at most once** and replays the original outcome to the rest; a used intent id reused for a different payment is denied; an optional context hash binds a mandate to one approved task run.
 - **Flight recorder** — every attempt, decision, approval, and execution lands in a hash-chained, append-only audit ledger. Any edit, deletion, or reordering of history is detectable by `verify()`. Upgrade it to an [RFC 9162 Merkle transparency log](packages/transparency) for third-party inclusion (non-omission) and append-only consistency proofs.
 - **Kill switch & revocation** — `guard.freeze()` denies everything instantly. For targeted kills, [`@vaduno/revocation`](packages/revocation) revokes a single mandate or an agent's entire authority, checked *after* human approval so a switch pulled mid-approval still wins — plus signed [W3C Bitstring Status Lists](https://www.w3.org/TR/vc-bitstring-status-list/) so third parties can verify status themselves.
 
@@ -40,12 +40,19 @@ npm install @vaduno/guard
 
 Zero runtime dependencies. Node ≥ 18.
 
+Or clone and run the scenarios locally — `npm install` builds the workspace for you:
+
+```bash
+git clone https://github.com/premsreelathasugeendran/vaduno.git
+cd vaduno && npm install
+npm run demo
+```
+
 ## 60-second example
 
 ```ts
-import {
-  VadunoGuard, AuditLedger, MemoryLedgerStore,
-} from "@vaduno/guard";
+import { randomUUID } from "node:crypto";
+import { VadunoGuard, AuditLedger, MemoryLedgerStore } from "@vaduno/guard";
 
 const ledger = new AuditLedger(new MemoryLedgerStore());
 
@@ -53,16 +60,17 @@ const guard = new VadunoGuard({
   policy: {
     id: "shopper-policy", version: 1, currency: "USD",
     limits: { perTransactionMinor: 2_000, perDayMinor: 5_000 }, // $20/txn, $50/day
-    merchants: { allow: ["openai", "anthropic", "aws"] },
+    merchants: { allow: ["openai.com", "anthropic.com", "aws.amazon.com"] },
     approval: { aboveMinor: 1_500 },                            // human sign-off at $15+
   },
   ledger,
-  approvalHandler: async ({ intent }) => askHumanSomehow(intent),
+  // Called when policy says a human must decide. Fails CLOSED if omitted.
+  approvalHandler: async ({ intent }) => ({ approved: true, approver: "you@company.com" }),
 });
 
 const result = await guard.execute(
   {
-    id: crypto.randomUUID(),
+    id: randomUUID(),
     agentId: "shopper-agent-1",
     merchant: { id: "openai", url: "https://api.openai.com" },
     amount: { amountMinor: 900, currency: "USD" },              // $9.00 (always integer minor units)
@@ -70,13 +78,17 @@ const result = await guard.execute(
     rail: "x402",
     requestedAt: new Date().toISOString(),
   },
-  () => myX402Client.pay(...),   // your executor — Vaduno never touches the money
+  // Your executor. Vaduno never touches the money — it only decides
+  // whether this function is allowed to run.
+  async () => ({ receipt: "paid-via-your-rail" }),
 );
 
-// result.status: "executed" | "denied" | "approval_rejected" | "failed"
+// result.status: "executed" | "denied" | "approval_rejected" | "failed" | "replayed"
 
 const audit = await ledger.verify();  // { ok: true, entries: n } — or exactly where history was tampered
 ```
+
+**On merchant patterns:** a pattern containing a dot (`openai.com`) matches the **URL host** — the thing you actually connected to, which an agent cannot forge. A bare token with no dot (`openai`) matches `merchant.id`, a field the agent supplies, so it is only safe for trusted integrator-assigned ids. Use host patterns for anything security-relevant.
 
 What the guard blocks, from the demo (`npm run demo`):
 
@@ -106,7 +118,7 @@ const mandate = await mandates.issue({
   agentId: "shopper-agent-1",
   constraints: {
     maxAmountMinor: 1_000, currency: "USD",
-    merchants: ["anthropic"],
+    merchants: ["anthropic.com"],
     validFrom: new Date().toISOString(),
     expiresAt: new Date(Date.now() + 3600_000).toISOString(),
     maxUses: 1,                                  // consume-once

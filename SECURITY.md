@@ -20,7 +20,7 @@ does **not** yet cover — so you can decide whether it fits your threat model.
 | Threat | Defense |
 |---|---|
 | Agent tries to overspend | Per-transaction / rolling day-week-month caps, evaluated deterministically |
-| Prompt-injected merchant swap | Merchant allowlist matched against the **URL host**, never the attacker-controlled `merchant.id` |
+| Prompt-injected merchant swap | Merchant allowlist matched against the **URL host** when the pattern contains a dot (`openai.com`) — never the attacker-controlled `merchant.id`. A bare token without a dot matches `merchant.id` and is weak by construction; see limitation 3 |
 | Forged `merchant.id` to impersonate an allowed host | Host patterns ignore `merchant.id` entirely; lookalikes and trailing-dot FQDNs are normalized out |
 | Concurrent requests racing a limit | The decision→consume→execute→record section is serialized per guard (async mutex); limits are re-checked under the lock |
 | Cap reset by rotating `agentId` | Rolling limits are **guard-wide** by default (agentId is not trusted to scope spend) |
@@ -126,6 +126,7 @@ prompt-injected** into calling arbitrary URLs. Guarantees:
 
 ## Reporting
 
-Found a bypass? Please open a private security advisory rather than a public
+Found a bypass? Please open a private security advisory at
+https://github.com/premsreelathasugeendran/vaduno/security/advisories/new rather than a public
 issue. Concrete reproductions (the exact intent/interleaving) are most useful —
 the test suite is organized around exactly these attack scenarios.
