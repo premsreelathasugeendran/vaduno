@@ -24,7 +24,7 @@ Vaduno puts a deterministic guard between your agent and the money:
 Read this before you put it anywhere near real money.
 
 - **Published today. Zero users. Never run in production.** The tests are thorough (275 across five packages, including concurrency and adversarial cases) but tests are not production.
-- **Stripe Issuing is test-mode only.** Production Issuing needs a business entity and Stripe approval the author doesn't have.
+- **The Stripe adapter has never run against Stripe.** Not even in test mode. It is verified against an in-process mock of the `issuing_authorization.request` webhook — the decision logic and the 2-second deadline are exercised, the network path is not. Live Issuing needs a business entity and Stripe approval the author doesn't have. Treat it as a reference implementation, not a tested integration.
 - **The API will break.** It's 0.x; breaking changes land in minor versions. Two API changes in the last week came from security review, and more review is planned.
 - **In-process, it can be routed around.** A library the agent's own process imports is a guardrail against a *confused* agent, not a *compromised runtime* — an injected agent holding a raw wallet key can simply not call it. The one configuration where it is genuinely non-bypassable today is **Stripe Issuing**, where the guard answers the card authorization itself and the network enforces the answer. Out-of-process and rail-side enforcement is what would make the rest of it as strong.
 - **Caps don't prevent prompt injection. They bound the loss.** No policy engine stops an agent being tricked; it stops the tricked agent from spending more than you allowed, at a merchant you didn't allow, twice.
