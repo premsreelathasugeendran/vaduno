@@ -252,11 +252,13 @@ On top of that, **witness cosigning** ([C2SP](https://github.com/C2SP/C2SP) `tlo
 
 What Vaduno adds is one policy and one portable signed authority that survive *across* rails, plus an audit log a counterparty can verify without trusting you. On Stripe Issuing it sits behind their controls, not instead of them.
 
-## How this was built
+## What review has and hasn't happened
 
-Every package went through adversarial review before release: 20–35 reviewers per round, each finding independently verified before being accepted. That caught a cross-process double-spend (the `maxUses` check was check-then-act across separate locks), a hanging payment rail that could freeze the kill switch for every later revocation, a witness-quorum bypass that needed *zero* witness misbehaviour, and a C2SP wire-format error that would have broken interoperability with real Go/Sigsum witnesses while every local test still passed.
+**No professional security audit has been done.** Nobody independent has been paid to break this, and for anything touching money that is the review that counts. Treat everything below as the author's own pre-release testing, not as assurance.
 
-**To be precise about what that was:** multi-agent LLM review with findings verified by hand — not a professional audit, and you shouldn't take my word for the verification. The bugs are concrete enough to check against the commit history, which is the point of describing them here rather than burying them. A security tool that hides its near-misses is asking you to trust the wrong thing.
+What that testing did catch, before release: a cross-process double-spend (the `maxUses` check was check-then-act across separate locks), a hanging payment rail that could freeze the kill switch for every later revocation, a witness-quorum bypass that required *zero* witness misbehaviour, and a C2SP wire-format error that would have broken interoperability with real Go/Sigsum witnesses while every local test still passed.
+
+Those are listed because a security tool that hides its near-misses is asking you to trust the wrong thing — and because each one is concrete enough to check against the code and the commit history rather than taken on faith. The concurrency and the cryptography are where the real bugs have been, and they are where outside review is most wanted.
 
 ## Contributing
 

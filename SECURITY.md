@@ -120,9 +120,31 @@ prompt-injected** into calling arbitrary URLs. Guarantees:
   transmitted, the spend is counted even if the server then returns an error —
   the server can still settle it. A payer that throws *before* transmitting is
   not counted. Bind a consume-once mandate to bound retries.
-- **Vaduno still never holds keys.** `pay()` is your signer; it must sign for
-  exactly the requirement it is handed. Vaduno polices the requirement, not the
-  bytes you sign.
+- **Vaduno still never holds keys to funds.** `pay()` is your signer; it must
+  sign for exactly the requirement it is handed. Vaduno polices the
+  requirement, not the bytes you sign. (Mandate signing uses a separate Ed25519
+  key that belongs to the *issuer* and cannot move money; a guard that only
+  validates and consumes needs nothing but the public half.)
+
+## Dependency posture
+
+`@vaduno/guard` has **zero runtime dependencies** — deliberately, because it is
+the package that sits between an agent and real money. The other four published
+packages depend only on `@vaduno/guard` and, for `@vaduno/stripe`, a `stripe`
+*peer* dependency you supply.
+
+Open advisories therefore live entirely in dev tooling and in `apps/dashboard`,
+which is **not published to npm**:
+
+- `next` → `sharp` (libvips CVEs). Next 15 pins `sharp@^0.34.3` and the fix is
+  in 0.35.x, so an override cannot satisfy both; clearing it needs a Next 16
+  migration of the demo dashboard. The dashboard does not use `next/image`, and
+  nothing in the published packages links against `sharp`.
+- `vite` / `esbuild` — dev-server advisories reachable only when a dev server is
+  running and a hostile page is open in the same browser. Neither ships.
+
+If an advisory ever lands in a published package's runtime dependency graph,
+that is a genuine security issue for this project — report it privately.
 
 ## Reporting
 
