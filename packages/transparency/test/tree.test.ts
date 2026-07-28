@@ -89,7 +89,7 @@ describe("TransparencyLog", () => {
 
 describe("JsonlTreeStore", () => {
   it("persists leaves across instances and keeps proofs identical", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "swale-tree-"));
+    const dir = await mkdtemp(join(tmpdir(), "vaduno-tree-"));
     const file = join(dir, "tree.leaves");
     try {
       const log1 = new TransparencyLog(new JsonlTreeStore(file));
@@ -114,7 +114,7 @@ describe("JsonlTreeStore", () => {
   });
 
   it("repairs a torn tail: completes an unterminated hash, truncates garbage", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "swale-torn-"));
+    const dir = await mkdtemp(join(tmpdir(), "vaduno-torn-"));
     try {
       // Case 1: the hash reached disk, the newline didn't.
       const f1 = join(dir, "complete.leaves");
@@ -146,7 +146,7 @@ describe("JsonlTreeStore", () => {
   });
 
   it("fails closed on a malformed line in the MIDDLE of the file", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "swale-corrupt-"));
+    const dir = await mkdtemp(join(tmpdir(), "vaduno-corrupt-"));
     try {
       const f = join(dir, "corrupt.leaves");
       const log = new TransparencyLog(new JsonlTreeStore(f));
@@ -164,7 +164,7 @@ describe("JsonlTreeStore", () => {
   });
 
   it("refuses to append a non-hash leaf line", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "swale-badleaf-"));
+    const dir = await mkdtemp(join(tmpdir(), "vaduno-badleaf-"));
     try {
       const store = new JsonlTreeStore(join(dir, "t.leaves"));
       await expect(store.append("not-hex")).rejects.toThrow(/refusing/);

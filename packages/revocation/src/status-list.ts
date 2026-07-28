@@ -1,5 +1,5 @@
 import { createPrivateKey, createPublicKey, sign as edSign, verify as edVerify } from "node:crypto";
-import { canonicalJson } from "@swale/guard";
+import { canonicalJson } from "@vaduno/guard";
 import { Bitstring, BitstringError, MINIMUM_ENTRIES } from "./bitstring.js";
 
 /**
@@ -7,14 +7,14 @@ import { Bitstring, BitstringError, MINIMUM_ENTRIES } from "./bitstring.js";
  * verifier fetches to learn which mandates are revoked or suspended.
  *
  * Shaped after the W3C Bitstring Status List credentialSubject (statusPurpose
- * + encodedList) but signed with the same Ed25519 construction Swale uses
+ * + encodedList) but signed with the same Ed25519 construction Vaduno uses
  * elsewhere, domain-separated so a status-list signature can never be
  * confused with a mandate or a transparency-log tree head.
  */
 
 /**
  * §2.1 purposes. `revocation` is PERMANENT ("not reversible"); `suspension`
- * is reversible. Swale enforces that distinction — un-revoking is refused.
+ * is reversible. Vaduno enforces that distinction — un-revoking is refused.
  */
 export type StatusPurpose = "revocation" | "suspension";
 
@@ -43,7 +43,7 @@ export interface StatusListCredential {
 }
 
 /** Domain separation: status-list signatures are their own namespace. */
-const STATUS_LIST_DOMAIN = "swale-status-list/v1\n";
+const STATUS_LIST_DOMAIN = "vaduno-status-list/v1\n";
 
 function payload(unsigned: Omit<StatusListCredential, "signature">): Buffer {
   return Buffer.from(STATUS_LIST_DOMAIN + canonicalJson(unsigned), "utf8");

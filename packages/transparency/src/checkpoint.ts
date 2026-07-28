@@ -10,10 +10,10 @@ import {
 /**
  * C2SP signed-note + tlog-checkpoint encoding — the INTEROP format.
  *
- * Swale's own `SignedTreeHead` (sth.ts) is a JSON convenience shape. This
+ * Vaduno's own `SignedTreeHead` (sth.ts) is a JSON convenience shape. This
  * module speaks the format the transparency ecosystem actually uses (Go
  * sumdb notes, Sigsum, Trillian/tlog witnesses), so a third-party witness can
- * cosign a Swale log without any Swale-specific code.
+ * cosign a Vaduno log without any Vaduno-specific code.
  *
  * Note layout (signed-note):
  *
@@ -59,10 +59,10 @@ export class CheckpointError extends Error {
 }
 
 export interface Checkpoint {
-  /** Log identity, e.g. "swale.example/ledger". */
+  /** Log identity, e.g. "vaduno.example/ledger". */
   origin: string;
   treeSize: number;
-  /** Root hash as lowercase hex (Swale's internal representation). */
+  /** Root hash as lowercase hex (Vaduno's internal representation). */
   rootHash: string;
   /** Opaque extension lines. NOT RECOMMENDED — monitors cannot audit them. */
   extensions?: string[];

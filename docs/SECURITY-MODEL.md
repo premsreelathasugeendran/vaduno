@@ -1,10 +1,10 @@
-# Swale Security Model
+# Vaduno Security Model
 
-This document states exactly what Swale guarantees, under what assumptions,
+This document states exactly what Vaduno guarantees, under what assumptions,
 and what it does **not** guarantee. If a marketing claim ever contradicts this
 document, this document is right.
 
-## What Swale is
+## What Vaduno is
 
 A **non-custodial control plane** for AI-agent payments. It decides whether a
 payment may happen (policy, mandates, approvals, kill-switch) and records what
@@ -12,13 +12,13 @@ happened (tamper-evident audit). Licensed rails move the money.
 
 ## The structural invariant (the most important control)
 
-**Swale never holds funds, private keys for funds, or card PANs.**
+**Vaduno never holds funds, private keys for funds, or card PANs.**
 
-- x402: the agent's own signer produces the payment; Swale polices the
+- x402: the agent's own signer produces the payment; Vaduno polices the
   *requirement* and never sees the wallet key.
-- Stripe Issuing: Stripe holds the card and moves the money; Swale only
+- Stripe Issuing: Stripe holds the card and moves the money; Vaduno only
   answers approve/decline for each authorization.
-- Consequence: a **full compromise of Swale cannot directly move money**. It
+- Consequence: a **full compromise of Vaduno cannot directly move money**. It
   could at worst approve payments the policy should have blocked — bounded by
   the rails' own caps — or deny service (fail-closed).
 
@@ -30,7 +30,7 @@ licensing); no such adapter will be accepted.
 
 | Property | Mechanism | Assumption it rests on |
 |---|---|---|
-| A payment above policy is not executed *through Swale* | Deterministic policy engine, fail-closed on any error | The agent actually routes spend through the guard (see limits) |
+| A payment above policy is not executed *through Vaduno* | Deterministic policy engine, fail-closed on any error | The agent actually routes spend through the guard (see limits) |
 | Human approval cannot be replayed onto a different payment | Approval bound to a fingerprint of amount+currency+merchant+rail | — |
 | A mandate cannot be over-used, reused after expiry, or forged | Ed25519 signature, time bounds, atomic consume-once use counting | Issuer's signing key stays private |
 | A retried/raced payment executes the rail exactly once | Runtime enforcement: atomic `claim(mandateId, intentId)` in a ConsumeStore; every duplicate returns `replayed` with the original outcome | All spend for that mandate routes through one guard/ConsumeStore |
@@ -41,7 +41,7 @@ licensing); no such adapter will be accepted.
 | A tampered, stale, or rolled-back status list cannot un-revoke | Ed25519-signed status lists with `validUntil` freshness and a monotonic version floor; every failure mode denies | Issuer's signing key stays private |
 | The log cannot show two different histories to two parties | C2SP witness cosigning: k independent witnesses each refuse to cosign a checkpoint contradicting one they already cosigned, so a fork cannot reach quorum | The k witnesses are genuinely independent parties, and each persists its state |
 | Recorded history cannot be *silently* edited or reordered | Hash-chained ledger; `verify()` re-derives every link | Verifier runs; a retained head is compared |
-| A specific decision **is** in the published history (non-omission) | RFC 9162 Merkle inclusion proofs (`@swale/transparency`) | The relying party checks proofs against a published head |
+| A specific decision **is** in the published history (non-omission) | RFC 9162 Merkle inclusion proofs (`@vaduno/transparency`) | The relying party checks proofs against a published head |
 | Published history only ever grows (append-only) | RFC 9162 consistency proofs between signed tree heads | At least one party retains a previous head |
 | Rewriting history is *cryptographically attributable* | Ed25519-signed tree heads; two signed heads of equal size with different roots are proof of equivocation | The log's signing key identifies the operator |
 
@@ -49,7 +49,7 @@ licensing); no such adapter will be accepted.
 
 1. **"Fully secure" does not exist.** Bybit ($1.5B) and Ronin (~$600M) were
    breached at the human/UI/supply-chain layer with provably-sound
-   cryptography underneath. Swale claims *specific properties under stated
+   cryptography underneath. Vaduno claims *specific properties under stated
    assumptions*, never "unhackable."
 2. **A single operator can equivocate.** The transparency log makes rewriting
    history *detectable and attributable*, not impossible. Detection requires
@@ -57,7 +57,7 @@ licensing); no such adapter will be accepted.
    `witnessObserve`). A log whose only witness is its own operator proves
    nothing to outsiders. We provide the mechanism and name this limit rather
    than claiming distributed trust we don't have.
-3. **Swale cannot stop spend that bypasses it.** An agent holding a raw
+3. **Vaduno cannot stop spend that bypasses it.** An agent holding a raw
    funded wallet key can pay without asking. The deployment pattern is to
    give agents *only* guarded paths (x402 fetch wrapper, issued cards) — the
    guard governs what flows through it.
@@ -84,16 +84,16 @@ licensing); no such adapter will be accepted.
    check. A witness that does not persist its last-cosigned state also
    provides nothing, because it has no baseline to contradict. Cosignature
    freshness is judged against the verifier's own clock, not trusted time.
-8. **Revocation binds only where Swale mediates.** Killing a mandate is
+8. **Revocation binds only where Vaduno mediates.** Killing a mandate is
    instant and guaranteed for spend that flows through the guard. For
-   authority Swale does not mediate — a raw wallet key the agent holds, a
-   card issued outside Swale — revocation is a **best-effort fan-out** to
+   authority Vaduno does not mediate — a raw wallet key the agent holds, a
+   card issued outside Vaduno — revocation is a **best-effort fan-out** to
    that rail's own API; the registry has no authority over it. Fan-out
    failures are recorded, never assumed away. Money already settled on-chain
    cannot be clawed back by anyone. Do not call this a "universal kill
    switch."
 9. **Settlement risk lives on the rails.** Peg/FX/finality risk of a
-   stablecoin, chargeback outcomes on cards — Swale records evidence and
+   stablecoin, chargeback outcomes on cards — Vaduno records evidence and
    surfaces data; it does not (cannot) alter rail-level outcomes.
 10. **Timestamps are informational.** Signed tree heads assert tree state, not
     trusted time.

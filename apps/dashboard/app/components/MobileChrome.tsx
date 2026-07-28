@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import type { PendingApproval, VerifyResult } from "@swale/guard";
+import type { PendingApproval, VerifyResult } from "@vaduno/guard";
 import { NAV } from "./Sidebar";
 import { ApprovalCards } from "./ApprovalRail";
 import { useCommandPalette } from "./CommandPalette";
@@ -66,7 +66,7 @@ export function MobileChrome({ pending, chain }: { pending: PendingApproval[]; c
           <nav className="m-drawer left" onClick={(e) => e.stopPropagation()}>
             <div className="side-brand">
               <span className="seal-dot" aria-hidden />
-              <span className="brand-word">Swale</span>
+              <span className="brand-word">Vaduno</span>
             </div>
             <div className="m-nav">
               {NAV.map((n) => (

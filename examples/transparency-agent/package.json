@@ -7,8 +7,8 @@
     "start": "tsx demo.ts"
   },
   "dependencies": {
-    "@swale/guard": "*",
-    "@swale/transparency": "*"
+    "@vaduno/guard": "*",
+    "@vaduno/transparency": "*"
   },
   "devDependencies": {
     "tsx": "^4.19.0",

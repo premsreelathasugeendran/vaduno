@@ -1,13 +1,13 @@
-# @swale/guard
+# @vaduno/guard
 
 **A spend firewall and flight recorder for AI agents.**
 
 Your agent has an API key that can spend real money. Research says it *will* eventually be tricked — prompt-injection attacks against commerce agents succeed in [86% of attempts](https://arxiv.org/abs/2504.18575). The model cannot be the last line of defense.
 
-Swale puts deterministic code between your agent and the money:
+Vaduno puts deterministic code between your agent and the money:
 
 ```bash
-npm install @swale/guard
+npm install @vaduno/guard
 ```
 
 Zero runtime dependencies. Node ≥ 18.
@@ -15,11 +15,11 @@ Zero runtime dependencies. Node ≥ 18.
 ## 60-second example
 
 ```ts
-import { SwaleGuard, AuditLedger, MemoryLedgerStore } from "@swale/guard";
+import { VadunoGuard, AuditLedger, MemoryLedgerStore } from "@vaduno/guard";
 
 const ledger = new AuditLedger(new MemoryLedgerStore());
 
-const guard = new SwaleGuard({
+const guard = new VadunoGuard({
   policy: {
     id: "shopper-policy", version: 1, currency: "USD",
     limits: { perTransactionMinor: 2_000, perDayMinor: 5_000 }, // $20/txn, $50/day
@@ -39,14 +39,14 @@ const result = await guard.execute(
     rail: "x402",
     requestedAt: new Date().toISOString(),
   },
-  () => myPaymentClient.pay(...),   // your executor — Swale never touches the money
+  () => myPaymentClient.pay(...),   // your executor — Vaduno never touches the money
 );
 
 // result.status: "executed" | "denied" | "approval_rejected" | "failed" | "replayed"
 await ledger.verify();  // { ok: true, entries: n } — or exactly where history was tampered
 ```
 
-**Swale never holds funds, keys, or the ability to move money.** It decides whether *your* executor function may run, and records everything.
+**Vaduno never holds funds, keys, or the ability to move money.** It decides whether *your* executor function may run, and records everything.
 
 ## What it enforces
 
@@ -86,16 +86,16 @@ const results = await Promise.all(
 
 | Package | What |
 |---|---|
-| [`@swale/x402`](https://www.npmjs.com/package/@swale/x402) | Governs Coinbase x402 HTTP-402 stablecoin payments |
-| [`@swale/stripe`](https://www.npmjs.com/package/@swale/stripe) | Makes the guard the real-time authorization brain for Stripe Issuing cards |
-| [`@swale/transparency`](https://www.npmjs.com/package/@swale/transparency) | RFC 9162 Merkle transparency log + C2SP witness cosigning |
-| [`@swale/revocation`](https://www.npmjs.com/package/@swale/revocation) | Enforced kill switch + W3C Bitstring Status Lists |
+| [`@vaduno/x402`](https://www.npmjs.com/package/@vaduno/x402) | Governs Coinbase x402 HTTP-402 stablecoin payments |
+| [`@vaduno/stripe`](https://www.npmjs.com/package/@vaduno/stripe) | Makes the guard the real-time authorization brain for Stripe Issuing cards |
+| [`@vaduno/transparency`](https://www.npmjs.com/package/@vaduno/transparency) | RFC 9162 Merkle transparency log + C2SP witness cosigning |
+| [`@vaduno/revocation`](https://www.npmjs.com/package/@vaduno/revocation) | Enforced kill switch + W3C Bitstring Status Lists |
 
 ## Security
 
-Read [SECURITY.md](https://github.com/premsreelathasugeendran/swale/blob/master/SECURITY.md) for the threat model, what this defends against, and the **known limitations** — they are documented, not hidden.
+Read [SECURITY.md](https://github.com/premsreelathasugeendran/vaduno/blob/master/SECURITY.md) for the threat model, what this defends against, and the **known limitations** — they are documented, not hidden.
 
-Report vulnerabilities via [GitHub Security Advisories](https://github.com/premsreelathasugeendran/swale/security/advisories/new).
+Report vulnerabilities via [GitHub Security Advisories](https://github.com/premsreelathasugeendran/vaduno/security/advisories/new).
 
 ## License
 

@@ -1,6 +1,6 @@
-# @swale/transparency
+# @vaduno/transparency
 
-**An RFC 9162 Merkle transparency log for Swale's audit trail.**
+**An RFC 9162 Merkle transparency log for Vaduno's audit trail.**
 
 The guard's hash-chained ledger proves *ordering* and *tamper-evidence*. This
 package adds the two properties a bare hash chain cannot give you:
@@ -15,30 +15,30 @@ Both are verifiable by a third party from the roots alone — the same math that
 Certificate Transparency uses to watch the world's TLS certificate authorities
 (RFC 9162, RFC 6962), applied to AI-agent payment decisions.
 
-**Swale never holds keys or funds.** The only key here signs *evidence*
+**Vaduno never holds keys or funds.** The only key here signs *evidence*
 (tree heads), not money.
 
 ## Install
 
 ```bash
-npm install @swale/transparency @swale/guard
+npm install @vaduno/transparency @vaduno/guard
 ```
 
-Zero runtime dependencies beyond `@swale/guard` and Node's `crypto`.
+Zero runtime dependencies beyond `@vaduno/guard` and Node's `crypto`.
 
 ## Mirror the audit ledger, publish signed heads
 
 ```ts
-import { AuditLedger, MemoryLedgerStore, SwaleGuard } from "@swale/guard";
+import { AuditLedger, MemoryLedgerStore, VadunoGuard } from "@vaduno/guard";
 import {
   LedgerMirror,
   TransparencyLog,
   MemoryTreeStore,
   generateLogKeyPair,
-} from "@swale/transparency";
+} from "@vaduno/transparency";
 
 const ledger = new AuditLedger(new MemoryLedgerStore());
-const guard = new SwaleGuard({ policy, ledger });
+const guard = new VadunoGuard({ policy, ledger });
 
 const keys = generateLogKeyPair(); // Ed25519; keep the private key out of agent reach
 const tree = new TransparencyLog(new MemoryTreeStore());
@@ -55,7 +55,7 @@ const { head, signedHead } = await mirror.sync(); // append new entries, sign th
 ## Prove a decision is in the history (non-omission)
 
 ```ts
-import { leafHash, ledgerEntryLeaf, verifyInclusion } from "@swale/transparency";
+import { leafHash, ledgerEntryLeaf, verifyInclusion } from "@vaduno/transparency";
 
 const entry = (await ledger.all())[seq];          // the decision in question
 const proof = await mirror.proveEntry(seq);        // from the operator
@@ -66,7 +66,7 @@ verifyInclusion(leafHash(ledgerEntryLeaf(entry)), proof, signedHead.rootHash); /
 ## Witness a log (catch rewrites and truncation)
 
 ```ts
-import { witnessObserve, type WitnessState } from "@swale/transparency";
+import { witnessObserve, type WitnessState } from "@vaduno/transparency";
 
 let state: WitnessState = { logId, publicKeyPem, lastHead: null };
 
@@ -88,19 +88,19 @@ to each party — every signature verifies and every consistency proof passes.
 That is a **split view**, and the only defence is independent parties who
 refuse to vouch for a history that contradicts one they already vouched for.
 
-Swale speaks the [C2SP](https://github.com/C2SP/C2SP) formats the
+Vaduno speaks the [C2SP](https://github.com/C2SP/C2SP) formats the
 transparency ecosystem actually uses (Go sumdb notes, Sigsum), so a
-third-party witness needs no Swale-specific code:
+third-party witness needs no Vaduno-specific code:
 
 ```ts
 import {
   signCheckpoint, witnessCosign, attachCosignatures, checkCosignatureQuorum,
-} from "@swale/transparency";
+} from "@vaduno/transparency";
 
 // Operator: publish an interop checkpoint note.
 const note = signCheckpoint(
-  { origin: "swale.example/ledger", treeSize: head.treeSize, rootHash: head.rootHash },
-  { name: "swale.example/ledger", privateKeyPem, publicKeyPem },
+  { origin: "vaduno.example/ledger", treeSize: head.treeSize, rootHash: head.rootHash },
+  { name: "vaduno.example/ledger", privateKeyPem, publicKeyPem },
 );
 
 // Witness (someone else's server): cosign ONLY if append-only consistent
@@ -113,7 +113,7 @@ if (r.ok) send(r.cosignature);
 // Relying party: require a quorum before trusting the log.
 const witnessed = attachCosignatures(note, cosignatures);
 const quorum = checkCosignatureQuorum(witnessed, knownWitnesses, 2, {
-  origin: "swale.example/ledger",   // REQUIRED — see below
+  origin: "vaduno.example/ledger",   // REQUIRED — see below
   logPublicKeyPem,
 });
 if (!quorum.ok) refuse(quorum.message);

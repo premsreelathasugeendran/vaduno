@@ -1,5 +1,5 @@
 /**
- * Core types for @swale/guard.
+ * Core types for @vaduno/guard.
  *
  * Money is ALWAYS an integer in the currency's minor unit (cents, paise).
  * Floats are never used for amounts.

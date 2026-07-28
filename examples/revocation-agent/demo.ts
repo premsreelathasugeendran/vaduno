@@ -1,5 +1,5 @@
 /**
- * Swale revocation demo — the kill switch, honestly scoped.
+ * Vaduno revocation demo — the kill switch, honestly scoped.
  *
  *   npm run demo:revocation
  *
@@ -12,11 +12,11 @@ import {
   AuditLedger,
   MandateManager,
   MemoryLedgerStore,
-  SwaleGuard,
+  VadunoGuard,
   generateMandateKeyPair,
   type PaymentIntent,
   type SpendPolicy,
-} from "@swale/guard";
+} from "@vaduno/guard";
 import {
   Bitstring,
   MemoryRevocationStore,
@@ -24,7 +24,7 @@ import {
   checkStatus,
   createRegistryCheck,
   type FanOutTarget,
-} from "@swale/revocation";
+} from "@vaduno/revocation";
 import { randomUUID } from "node:crypto";
 
 const keys = generateMandateKeyPair();
@@ -44,8 +44,8 @@ const fanOut: FanOutTarget[] = [
 ];
 
 const registry = new RevocationRegistry({
-  issuer: "prem@swale.dev",
-  listId: "https://swale.example/status/1",
+  issuer: "prem@vaduno.dev",
+  listId: "https://vaduno.example/status/1",
   privateKeyPem: keys.privateKeyPem,
   store,
   ledger,
@@ -59,7 +59,7 @@ const policy: SpendPolicy = {
   limits: { perTransactionMinor: 5_000, perDayMinor: 100_000 },
 };
 
-const guard = new SwaleGuard({
+const guard = new VadunoGuard({
   policy,
   ledger,
   mandates,
@@ -84,7 +84,7 @@ function intent(over: Partial<PaymentIntent> = {}): PaymentIntent {
 
 async function issueMandate(agentId = "shopper-agent-1") {
   const mandate = await mandates.issue({
-    issuer: "prem@swale.dev",
+    issuer: "prem@vaduno.dev",
     agentId,
     constraints: {
       maxAmountMinor: 5_000,
@@ -110,7 +110,7 @@ async function attempt(label: string, i: PaymentIntent): Promise<void> {
   console.log(`${icon} ${label}: ${usd(i.amount.amountMinor)} → ${result.status}${reason}`);
 }
 
-console.log("— Swale revocation registry demo —\n");
+console.log("— Vaduno revocation registry demo —\n");
 
 // ── 1. Normal operation, then revoke ─────────────────────────────────────
 console.log("— Revoking one mandate —\n");
@@ -135,7 +135,7 @@ const raceLedger = new AuditLedger(new MemoryLedgerStore());
 const raceMandates = new MandateManager(keys, raceLedger);
 const m2 = await (async () => {
   const mandate = await raceMandates.issue({
-    issuer: "prem@swale.dev",
+    issuer: "prem@vaduno.dev",
     agentId: "shopper-agent-1",
     constraints: {
       maxAmountMinor: 5_000,
@@ -153,7 +153,7 @@ let release: (() => void) | undefined;
 const humanThinking = new Promise<void>((r) => {
   release = r;
 });
-const raceGuard = new SwaleGuard({
+const raceGuard = new VadunoGuard({
   policy: { ...policy, approval: { always: true } },
   ledger: raceLedger,
   mandates: raceMandates,
@@ -190,7 +190,7 @@ await attempt("rogue-agent with a BRAND NEW mandate", intent({ agentId: "rogue-a
 // ── 4. Fail closed when the registry is unreachable ──────────────────────
 console.log("\n— Registry outage must NOT read as 'not revoked' —\n");
 const outageLedger = new AuditLedger(new MemoryLedgerStore());
-const outageGuard = new SwaleGuard({
+const outageGuard = new VadunoGuard({
   policy,
   ledger: outageLedger,
   revocationCheck: async () => {
@@ -206,8 +206,8 @@ console.log(
 console.log("\n— A rail that hangs (not just fails) must not delay the kill —\n");
 const hungLedger = new AuditLedger(new MemoryLedgerStore());
 const hungRegistry = new RevocationRegistry({
-  issuer: "prem@swale.dev",
-  listId: "https://swale.example/status/2",
+  issuer: "prem@vaduno.dev",
+  listId: "https://vaduno.example/status/2",
   privateKeyPem: keys.privateKeyPem,
   store: new MemoryRevocationStore(),
   ledger: hungLedger,
@@ -279,7 +279,7 @@ const verdict = await ledger.verify();
 console.log(`  chain verification: ${verdict.ok ? "✅ intact" : `❌ ${verdict.problem}`} (${verdict.entries} entries)`);
 
 console.log(
-  "\nScope note: revocation is INSTANT and GUARANTEED for mandates Swale mediates.",
+  "\nScope note: revocation is INSTANT and GUARANTEED for mandates Vaduno mediates.",
 );
 console.log(
   "For authority it does not mediate (a raw wallet key), fan-out is BEST-EFFORT — and",

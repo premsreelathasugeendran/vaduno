@@ -1,5 +1,5 @@
 /**
- * Swale Stripe Issuing demo: Swale's guard is the REAL-TIME AUTHORIZATION
+ * Vaduno Stripe Issuing demo: Vaduno's guard is the REAL-TIME AUTHORIZATION
  * BRAIN behind a card. Stripe delivers issuing_authorization.request webhooks;
  * the guard approves/declines each by policy within the 2s window, and every
  * decision is hash-chained. No real Stripe, no keys — the webhook + signature
@@ -7,14 +7,14 @@
  *
  * Run: npm run demo:stripe
  */
-import { AuditLedger, MemoryLedgerStore, SwaleGuard } from "@swale/guard";
-import { createStripeAuthorizationHandler, type StripeEvent } from "@swale/stripe";
+import { AuditLedger, MemoryLedgerStore, VadunoGuard } from "@vaduno/guard";
+import { createStripeAuthorizationHandler, type StripeEvent } from "@vaduno/stripe";
 
 const money = (atomic: number) => `$${(atomic / 100).toFixed(2)}`;
 
 // ── Guard: $20/txn, $50/day, no gambling, only these card categories ────────
 const ledger = new AuditLedger(new MemoryLedgerStore());
-const guard = new SwaleGuard({
+const guard = new VadunoGuard({
   policy: {
     id: "issuing-demo",
     version: 1,
@@ -70,13 +70,13 @@ function authEvent(o: { amount: number; category?: string; merchant?: string }):
 
 async function swipe(label: string, o: { amount: number; category?: string; merchant?: string }) {
   const res = await handle(JSON.stringify(authEvent(o)), "good");
-  const parsed = JSON.parse(res.body) as { approved: boolean; metadata?: { swale_reasons?: string } };
+  const parsed = JSON.parse(res.body) as { approved: boolean; metadata?: { vaduno_reasons?: string } };
   const icon = parsed.approved ? "✅" : "⛔";
-  const why = parsed.approved ? "" : ` — ${parsed.metadata?.swale_reasons}`;
+  const why = parsed.approved ? "" : ` — ${parsed.metadata?.vaduno_reasons}`;
   console.log(`${icon} ${label}: ${money(o.amount)} at ${o.merchant ?? "merchant"} → ${parsed.approved ? "approved" : "declined"}${why}`);
 }
 
-console.log("— Swale × Stripe Issuing: the guard decides each card authorization —\n");
+console.log("— Vaduno × Stripe Issuing: the guard decides each card authorization —\n");
 
 await swipe("SaaS subscription", { amount: 900, merchant: "vercel" });
 await swipe("API credits", { amount: 1_500, merchant: "openai" });

@@ -35,7 +35,7 @@ describe("createStripeAuthorizationHandler", () => {
     const { handler, ledger } = setup({ limits: { perTransactionMinor: 2_000, perDayMinor: 20_000 } });
     const res = await handler(raw(fakeAuthEvent({ amount: 5_000 })), "good");
     expect(body(res).approved).toBe(false);
-    expect(body(res).metadata?.swale_reasons).toContain("PER_TXN_LIMIT_EXCEEDED");
+    expect(body(res).metadata?.vaduno_reasons).toContain("PER_TXN_LIMIT_EXCEEDED");
     const exec = (await ledger.all()).find((e) => e.type === "execution_result");
     expect(exec).toBeUndefined(); // never executed
   });
@@ -76,21 +76,21 @@ describe("createStripeAuthorizationHandler", () => {
     await guard.freeze("incident");
     const res = await handler(raw(fakeAuthEvent({ amount: 100 })), "good");
     expect(body(res).approved).toBe(false);
-    expect(body(res).metadata?.swale_reasons).toContain("GUARD_FROZEN");
+    expect(body(res).metadata?.vaduno_reasons).toContain("GUARD_FROZEN");
   });
 
   it("declines a blocked category", async () => {
     const { handler } = setup({ categories: { block: ["gambling"] } });
     const res = await handler(raw(fakeAuthEvent({ amount: 500, category: "gambling" })), "good");
     expect(body(res).approved).toBe(false);
-    expect(body(res).metadata?.swale_reasons).toContain("CATEGORY_BLOCKED");
+    expect(body(res).metadata?.vaduno_reasons).toContain("CATEGORY_BLOCKED");
   });
 
   it("declines when the rail is not allowlisted", async () => {
     const { handler } = setup({ rails: { allow: ["x402"] } });
     const res = await handler(raw(fakeAuthEvent({ amount: 500 })), "good");
     expect(body(res).approved).toBe(false);
-    expect(body(res).metadata?.swale_reasons).toContain("RAIL_NOT_ALLOWED");
+    expect(body(res).metadata?.vaduno_reasons).toContain("RAIL_NOT_ALLOWED");
   });
 
   it("acks non-request events and fires onReconcile", async () => {
@@ -117,7 +117,7 @@ describe("createStripeAuthorizationHandler", () => {
     const { handler } = setup();
     const res = await handler(raw(fakeAuthEvent({ amount: 500, currency: "eur" })), "good");
     expect(body(res).approved).toBe(false);
-    expect(body(res).metadata?.swale_reasons).toContain("CURRENCY_MISMATCH");
+    expect(body(res).metadata?.vaduno_reasons).toContain("CURRENCY_MISMATCH");
   });
 
   it("calls onDecision with the outcome", async () => {
@@ -165,6 +165,6 @@ describe("createStripeAuthorizationHandler", () => {
     const res = await handler(raw(fakeAuthEvent({ amount: 900 })), "good");
     expect(res.status).toBe(200);
     expect(body(res).approved).toBe(false);
-    expect(body(res).metadata?.swale_reasons).toContain("DECISION_TIMEOUT");
+    expect(body(res).metadata?.vaduno_reasons).toContain("DECISION_TIMEOUT");
   });
 });

@@ -1,6 +1,6 @@
-# Swale security model
+# Vaduno security model
 
-Swale is a **deterministic control + audit layer**, not a custody system. This
+Vaduno is a **deterministic control + audit layer**, not a custody system. This
 document states what it defends against, what it assumes, and what it explicitly
 does **not** yet cover — so you can decide whether it fits your threat model.
 
@@ -15,7 +15,7 @@ does **not** yet cover — so you can decide whether it fits your threat model.
 - **Deterministic last line:** all allow/deny logic is pure code over integer
   minor units. No model output is ever trusted to enforce a limit.
 
-## What Swale defends against
+## What Vaduno defends against
 
 | Threat | Defense |
 |---|---|
@@ -35,16 +35,16 @@ does **not** yet cover — so you can decide whether it fits your threat model.
 | Silent history tampering | Hash-chained ledger; `verify()` re-derives every hash; `verify(retainedHead)` also catches truncation/rewrite |
 | Human-in-the-loop for large spends | `approval` thresholds; **fails closed** if no approval handler is configured |
 | Emergency stop | `freeze()` denies everything and is re-checked inside the critical section |
-| Compromised agent must be cut off mid-flight | `@swale/revocation`: revoking a mandate or an entire agent is checked inside the critical section **after** human approval, so a kill switch pulled while an approval is pending still wins. An unreachable registry denies (`REVOCATION_CHECK_FAILED`) — an outage never reads as "not revoked" |
+| Compromised agent must be cut off mid-flight | `@vaduno/revocation`: revoking a mandate or an entire agent is checked inside the critical section **after** human approval, so a kill switch pulled while an approval is pending still wins. An unreachable registry denies (`REVOCATION_CHECK_FAILED`) — an outage never reads as "not revoked" |
 | Un-revoking by tampering with a published status list | Status lists are Ed25519-signed with `validUntil` freshness and a monotonic version floor; a forged bitstring, a stale list, or a replayed pre-revocation snapshot all fail closed |
 
 Every attempt — allowed, denied, approved, failed — is recorded. Denials and
 failures are first-class evidence, not dropped.
 
-## What Swale does NOT do (by design)
+## What Vaduno does NOT do (by design)
 
 - **It never holds funds, private keys to funds, or the ability to move money.**
-  Your executor moves money; Swale decides whether it may run and records the
+  Your executor moves money; Vaduno decides whether it may run and records the
   outcome. This is the deliberate line that keeps it out of money-transmitter
   scope. Do not put it in the money path.
 
@@ -97,7 +97,7 @@ These are documented, not hidden. Some are scope choices; some are on the roadma
    (e.g. the dashboard) list and resolve pending approvals; on timeout the
    handler fails closed (rejects).
 
-## x402 rail adapter (`@swale/x402`)
+## x402 rail adapter (`@vaduno/x402`)
 
 The x402 adapter maps an untrusted, server-controlled 402 response onto a
 PaymentIntent. Its threat model treats the **server as hostile** (it controls
@@ -120,8 +120,8 @@ prompt-injected** into calling arbitrary URLs. Guarantees:
   transmitted, the spend is counted even if the server then returns an error —
   the server can still settle it. A payer that throws *before* transmitting is
   not counted. Bind a consume-once mandate to bound retries.
-- **Swale still never holds keys.** `pay()` is your signer; it must sign for
-  exactly the requirement it is handed. Swale polices the requirement, not the
+- **Vaduno still never holds keys.** `pay()` is your signer; it must sign for
+  exactly the requirement it is handed. Vaduno polices the requirement, not the
   bytes you sign.
 
 ## Reporting

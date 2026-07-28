@@ -7,7 +7,7 @@ import type { PendingApproval } from "../src/approval/approval.js";
 
 const dirs: string[] = [];
 function tempFile(): string {
-  const dir = mkdtempSync(join(tmpdir(), "swale-approvals-"));
+  const dir = mkdtempSync(join(tmpdir(), "vaduno-approvals-"));
   dirs.push(dir);
   return join(dir, "approvals.json");
 }

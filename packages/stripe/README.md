@@ -1,22 +1,22 @@
-# @swale/stripe
+# @vaduno/stripe
 
-**Make Swale's guard the real-time authorization brain for a Stripe Issuing card.**
+**Make Vaduno's guard the real-time authorization brain for a Stripe Issuing card.**
 
 Stripe Issuing can ask *your* server to approve or decline every card
 authorization in real time (the `issuing_authorization.request` webhook, ~2s to
-answer). This adapter routes that decision through `@swale/guard`: the same
+answer). This adapter routes that decision through `@vaduno/guard`: the same
 deterministic policy engine that governs your agents' spend now decides each
 physical/virtual card charge — and every decision is written to the
 hash-chained audit ledger.
 
-**Swale never holds keys or funds.** You pass in your own Stripe client; the
+**Vaduno never holds keys or funds.** You pass in your own Stripe client; the
 adapter only calls `stripe.webhooks.constructEvent`. Stripe moves the money the
 instant the handler answers `approved: true`.
 
 ## Install
 
 ```bash
-npm install @swale/stripe stripe
+npm install @vaduno/stripe stripe
 ```
 
 `stripe` is a peer dependency. Zero other runtime dependencies.
@@ -25,11 +25,11 @@ npm install @swale/stripe stripe
 
 ```ts
 import Stripe from "stripe";
-import { SwaleGuard } from "@swale/guard";
-import { createStripeAuthorizationHandler } from "@swale/stripe";
+import { VadunoGuard } from "@vaduno/guard";
+import { createStripeAuthorizationHandler } from "@vaduno/stripe";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
-const guard = new SwaleGuard({ policy, ledger });
+const guard = new VadunoGuard({ policy, ledger });
 
 const handle = createStripeAuthorizationHandler({
   guard,
@@ -81,7 +81,7 @@ Run `npm run demo:stripe` for the full loop against a mocked Stripe.
 ## Provisioning a card
 
 ```ts
-import { createAgentCardholder, createAgentCard } from "@swale/stripe";
+import { createAgentCardholder, createAgentCard } from "@vaduno/stripe";
 
 const cardholder = await createAgentCardholder(stripe, {
   name: "Acme AI",

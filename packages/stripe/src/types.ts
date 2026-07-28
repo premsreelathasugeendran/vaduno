@@ -2,7 +2,7 @@
  * Narrow structural types for the Stripe Issuing objects this adapter reads.
  * We deliberately do NOT depend on the `stripe` package's types — the consumer
  * passes their real Stripe client, which structurally satisfies these. This
- * keeps @swale/stripe dependency-free and trivially mockable.
+ * keeps @vaduno/stripe dependency-free and trivially mockable.
  */
 
 export interface StripeMerchantData {

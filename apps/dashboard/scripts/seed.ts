@@ -1,7 +1,7 @@
 /**
  * Seed a realistic, hash-chained ledger + a couple of pending approvals so the
  * dashboard shows authentic, verifiable data. Everything here is produced by
- * the real SwaleGuard, so the audit chain verifies.
+ * the real VadunoGuard, so the audit chain verifies.
  *
  * Run: npm run dashboard:seed
  */
@@ -11,9 +11,9 @@ import {
   AuditLedger,
   FileApprovalStore,
   JsonlLedgerStore,
-  SwaleGuard,
+  VadunoGuard,
   type PaymentIntent,
-} from "@swale/guard";
+} from "@vaduno/guard";
 import { APPROVALS_PATH, LEDGER_PATH } from "../lib/paths.js";
 
 const MERCHANTS = ["openai", "anthropic", "aws", "github", "vercel"];
@@ -36,7 +36,7 @@ async function main() {
     merchants: { allow: MERCHANTS.map((m) => `id:${m}`) },
     approval: { aboveMinor: 3_000 },
   };
-  const guard = new SwaleGuard({
+  const guard = new VadunoGuard({
     policy,
     ledger,
     approvalHandler: async () => ({ approved: true, approver: "prem" }),

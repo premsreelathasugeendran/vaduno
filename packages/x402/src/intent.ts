@@ -1,4 +1,4 @@
-import type { PaymentIntent } from "@swale/guard";
+import type { PaymentIntent } from "@vaduno/guard";
 import type { PaymentRequirements } from "./types.js";
 
 export interface RequirementToIntentOptions {
@@ -24,10 +24,10 @@ export interface RequirementToIntentOptions {
 }
 
 /**
- * Map a chosen x402 payment requirement to a Swale PaymentIntent.
+ * Map a chosen x402 payment requirement to a Vaduno PaymentIntent.
  *
  * AMOUNT UNITS: x402 amounts are the token's ATOMIC units (e.g. 6-decimal
- * USDC: $1 = 1_000_000). Swale's `amountMinor` must be an integer, so we
+ * USDC: $1 = 1_000_000). Vaduno's `amountMinor` must be an integer, so we
  * carry the atomic amount through unchanged. A non-integer / unsafe / non-
  * decimal amount is passed through as NaN so the policy engine denies it.
  *

@@ -1,7 +1,7 @@
 {
-  "name": "@swale/x402",
+  "name": "@vaduno/x402",
   "version": "0.1.0",
-  "description": "x402 rail adapter for Swale. Governs HTTP 402 stablecoin payments with policy, mandates, and a tamper-evident audit trail. Never signs or holds keys \u2014 you plug in your own payer.",
+  "description": "x402 rail adapter for Vaduno. Governs HTTP 402 stablecoin payments with policy, mandates, and a tamper-evident audit trail. Never signs or holds keys \u2014 you plug in your own payer.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -18,7 +18,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/premsreelathasugeendran/swale.git",
+    "url": "git+https://github.com/premsreelathasugeendran/vaduno.git",
     "directory": "packages/x402"
   },
   "license": "MIT",
@@ -36,7 +36,7 @@
     "prepublishOnly": "npm run build && npm run test"
   },
   "dependencies": {
-    "@swale/guard": "^0.1.0"
+    "@vaduno/guard": "^0.1.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",

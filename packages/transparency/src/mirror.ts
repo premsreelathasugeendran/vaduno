@@ -1,4 +1,4 @@
-import { canonicalJson, type AuditLedger, type LedgerEntry } from "@swale/guard";
+import { canonicalJson, type AuditLedger, type LedgerEntry } from "@vaduno/guard";
 import { leafHash } from "./merkle.js";
 import type { TransparencyLog, TreeHead } from "./tree.js";
 import { signTreeHead, type SignedTreeHead } from "./sth.js";
@@ -44,7 +44,7 @@ export interface LedgerMirrorOptions {
  * Note the leaf commits to the entry's canonical JSON VALUE (as the ledger
  * hash itself does), not to the JS object graph that produced it.
  */
-const LEAF_VERSION = "swale-ledger-entry/v1\n";
+const LEAF_VERSION = "vaduno-ledger-entry/v1\n";
 
 export function ledgerEntryLeaf(entry: LedgerEntry): string {
   return LEAF_VERSION + canonicalJson(entry);

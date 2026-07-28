@@ -1,5 +1,5 @@
 {
-  "name": "@swale/guard",
+  "name": "@vaduno/guard",
   "version": "0.1.0",
   "description": "Spend firewall + tamper-evident audit ledger for AI agents. Policy-gates any payment call with deterministic rules, signed consume-once mandates, and a hash-chained flight recorder. Never holds funds or keys.",
   "type": "module",
@@ -18,11 +18,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/premsreelathasugeendran/swale.git",
+    "url": "git+https://github.com/premsreelathasugeendran/vaduno.git",
     "directory": "packages/guard"
   },
-  "homepage": "https://github.com/premsreelathasugeendran/swale#readme",
-  "bugs": "https://github.com/premsreelathasugeendran/swale/issues",
+  "homepage": "https://github.com/premsreelathasugeendran/vaduno#readme",
+  "bugs": "https://github.com/premsreelathasugeendran/vaduno/issues",
   "license": "MIT",
   "keywords": [
     "ai-agents",

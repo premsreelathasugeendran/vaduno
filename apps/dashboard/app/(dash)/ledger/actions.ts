@@ -1,7 +1,7 @@
 "use server";
 
 import { cookies } from "next/headers";
-import type { LedgerEntry } from "@swale/guard";
+import type { LedgerEntry } from "@vaduno/guard";
 import { loadIntentTrail } from "../../../lib/data";
 import { SESSION_COOKIE, isValidSession } from "../../../lib/auth";
 

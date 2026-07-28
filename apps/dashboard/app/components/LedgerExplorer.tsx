@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState, useTransition } from "react";
-import type { LedgerEntry } from "@swale/guard";
+import type { LedgerEntry } from "@vaduno/guard";
 import { fetchTrail } from "../(dash)/ledger/actions";
 import { shortId, timeAgo } from "../../lib/format";
 
@@ -61,7 +61,7 @@ export function LedgerExplorer({ entries, nowMs }: { entries: LedgerEntry[]; now
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `swale-evidence-${selected.intentId?.slice(0, 8) ?? selected.seq}.json`;
+    a.download = `vaduno-evidence-${selected.intentId?.slice(0, 8) ?? selected.seq}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };

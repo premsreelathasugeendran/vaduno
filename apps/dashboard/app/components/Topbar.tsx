@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import type { VerifyResult } from "@swale/guard";
+import type { VerifyResult } from "@vaduno/guard";
 import { useCommandPalette } from "./CommandPalette";
 
 const TITLES: Record<string, string> = {

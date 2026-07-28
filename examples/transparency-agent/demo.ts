@@ -1,5 +1,5 @@
 /**
- * Swale transparency demo: the guard records every decision in its
+ * Vaduno transparency demo: the guard records every decision in its
  * hash-chained ledger, the transparency log mirrors those entries into an
  * RFC 9162 Merkle tree, and a signed tree head is published. Then we play
  * both sides:
@@ -13,9 +13,9 @@
 import {
   AuditLedger,
   MemoryLedgerStore,
-  SwaleGuard,
+  VadunoGuard,
   canonicalJson,
-} from "@swale/guard";
+} from "@vaduno/guard";
 import {
   LedgerMirror,
   MemoryTreeStore,
@@ -33,14 +33,14 @@ import {
   witnessCosign,
   witnessObserve,
   type WitnessState,
-} from "@swale/transparency";
+} from "@vaduno/transparency";
 import { randomUUID } from "node:crypto";
 
 const usd = (amountMinor: number) => ({ amountMinor, currency: "USD" });
 
-// ── Guard + ledger, as in every Swale setup ────────────────────────────
+// ── Guard + ledger, as in every Vaduno setup ────────────────────────────
 const ledger = new AuditLedger(new MemoryLedgerStore());
-const guard = new SwaleGuard({
+const guard = new VadunoGuard({
   policy: {
     id: "transparency-demo",
     version: 1,
@@ -53,13 +53,13 @@ const guard = new SwaleGuard({
 
 // ── The transparency layer ───────────────────────────────────────────────
 const keys = generateLogKeyPair();
-const signing = { logId: "swale-demo-log", privateKeyPem: keys.privateKeyPem };
+const signing = { logId: "vaduno-demo-log", privateKeyPem: keys.privateKeyPem };
 const tree = new TransparencyLog(new MemoryTreeStore());
 const mirror = new LedgerMirror(ledger, tree, { signing });
 
 // A witness only needs the log's PUBLIC key and the last head it accepted.
 let witness: WitnessState = {
-  logId: "swale-demo-log",
+  logId: "vaduno-demo-log",
   publicKeyPem: keys.publicKeyPem,
   lastHead: null,
 };
@@ -140,7 +140,7 @@ console.log(`  split-view detector: consistent=${split.consistent} (two signed h
 // what independent witness cosignatures fix.
 console.log(`\n― witness cosigning (C2SP tlog-cosignature v1) ―`);
 
-const ORIGIN = "swale.example/ledger";
+const ORIGIN = "vaduno.example/ledger";
 const finalHead = await tree.head();
 const checkpoint = signCheckpoint(
   { origin: ORIGIN, treeSize: finalHead.treeSize, rootHash: finalHead.rootHash },

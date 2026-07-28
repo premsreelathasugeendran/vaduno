@@ -1,11 +1,11 @@
-import { AuditLedger, MemoryLedgerStore, SwaleGuard } from "@swale/guard";
-import type { SpendPolicy } from "@swale/guard";
+import { AuditLedger, MemoryLedgerStore, VadunoGuard } from "@vaduno/guard";
+import type { SpendPolicy } from "@vaduno/guard";
 import type { FetchLike } from "../src/fetch.js";
 import { usdc } from "../src/intent.js";
 
 export function makeGuard(policyOver: Partial<SpendPolicy> = {}) {
   const ledger = new AuditLedger(new MemoryLedgerStore());
-  const guard = new SwaleGuard({
+  const guard = new VadunoGuard({
     policy: {
       id: "x402-policy",
       version: 1,

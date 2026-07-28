@@ -1,11 +1,11 @@
-import type { PaymentIntent } from "@swale/guard";
+import type { PaymentIntent } from "@vaduno/guard";
 import type { RevocationRegistry } from "./registry.js";
 import { checkStatus, type StatusListCredential, type StatusPurpose } from "./status-list.js";
 
 /**
  * Wiring that makes revocation ENFORCED, not advisory.
  *
- * Swale's guard consults a `RevocationCheck` at authorization time and fails
+ * Vaduno's guard consults a `RevocationCheck` at authorization time and fails
  * closed: a revoked mandate, a blocked agent, or an UNANSWERABLE registry all
  * deny the payment. "Unanswerable" is the important case — a registry outage
  * must never read as "not revoked", or an attacker could disable the kill

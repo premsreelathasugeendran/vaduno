@@ -10,7 +10,7 @@ import type {
   SpendPolicy,
 } from "./types.js";
 
-export interface SwaleGuardOptions {
+export interface VadunoGuardOptions {
   policy: SpendPolicy;
   ledger: AuditLedger;
   mandates?: MandateManager;
@@ -29,7 +29,7 @@ export interface SwaleGuardOptions {
   history?: SpendHistory;
   /**
    * Consulted immediately before money moves: has this mandate (or agent) been
-   * revoked? Supply `createRegistryCheck(registry)` from @swale/revocation.
+   * revoked? Supply `createRegistryCheck(registry)` from @vaduno/revocation.
    *
    * It runs INSIDE the critical section, after any human approval, so a
    * revocation racing a long-pending approval still wins. It MUST fail closed
@@ -48,7 +48,7 @@ export type RevocationVerdict =
 export type RevocationCheck = (intent: PaymentIntent) => Promise<RevocationVerdict>;
 
 /**
- * SwaleGuard wraps a payment executor with deterministic policy checks,
+ * VadunoGuard wraps a payment executor with deterministic policy checks,
  * mandate verification, human approval, and a tamper-evident audit trail.
  *
  * It NEVER holds funds, keys to funds, or the ability to move money — the
@@ -61,7 +61,7 @@ export type RevocationCheck = (intent: PaymentIntent) => Promise<RevocationVerdi
  * block indefinitely, runs OUTSIDE the mutex; the policy is then re-evaluated
  * under the mutex before anything executes.
  */
-export class SwaleGuard {
+export class VadunoGuard {
   private policy: SpendPolicy;
   private frozen: { reason: string } | null = null;
   private readonly ledger: AuditLedger;
@@ -89,7 +89,7 @@ export class SwaleGuard {
   private auditDegraded = false;
   private hydrated = false;
 
-  constructor(opts: SwaleGuardOptions) {
+  constructor(opts: VadunoGuardOptions) {
     this.policy = opts.policy;
     this.ledger = opts.ledger;
     this.mandates = opts.mandates;

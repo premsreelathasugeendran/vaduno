@@ -40,7 +40,7 @@ export function Sidebar({ entries }: { entries: number }) {
     <aside className="sidebar">
       <div className="side-brand">
         <span className="seal-dot" aria-hidden />
-        <span className="brand-word">Swale</span>
+        <span className="brand-word">Vaduno</span>
       </div>
       <nav className="side-nav">
         {NAV.map((n) => (

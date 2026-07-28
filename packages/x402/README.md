@@ -1,22 +1,22 @@
-# @swale/x402
+# @vaduno/x402
 
 **Policy + audit for [x402](https://www.x402.org/) stablecoin payments.**
 
-x402 revives HTTP `402 Payment Required`: a server answers with a price, your agent pays, and retries. This package wraps that flow so every payment passes a [`@swale/guard`](https://www.npmjs.com/package/@swale/guard) spend firewall first, and lands in a tamper-evident audit ledger.
+x402 revives HTTP `402 Payment Required`: a server answers with a price, your agent pays, and retries. This package wraps that flow so every payment passes a [`@vaduno/guard`](https://www.npmjs.com/package/@vaduno/guard) spend firewall first, and lands in a tamper-evident audit ledger.
 
-**Swale never sees your keys.** You supply the signer; the guard only decides whether it may run.
+**Vaduno never sees your keys.** You supply the signer; the guard only decides whether it may run.
 
 ```bash
-npm install @swale/x402 @swale/guard
+npm install @vaduno/x402 @vaduno/guard
 ```
 
 ## Use it like `fetch`
 
 ```ts
-import { createX402Fetch } from "@swale/x402";
+import { createX402Fetch } from "@vaduno/x402";
 
 const fetchWithPay = createX402Fetch({
-  guard,                                   // your SwaleGuard
+  guard,                                   // your VadunoGuard
   agentId: "researcher-agent-1",
   pay: (req) => myWallet.signX402(req),    // your signer — keys stay yours
   assets: [                                // bind spend to the REAL token, not a label
@@ -51,7 +51,7 @@ These are the sharp edges of x402 specifically — read them before going live:
 
 ## Security
 
-Read [SECURITY.md](https://github.com/premsreelathasugeendran/swale/blob/master/SECURITY.md) for the full threat model and known limitations.
+Read [SECURITY.md](https://github.com/premsreelathasugeendran/vaduno/blob/master/SECURITY.md) for the full threat model and known limitations.
 
 ## License
 

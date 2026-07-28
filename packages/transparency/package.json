@@ -1,7 +1,7 @@
 {
-  "name": "@swale/transparency",
+  "name": "@vaduno/transparency",
   "version": "0.1.0",
-  "description": "RFC 9162 (Certificate Transparency v2) Merkle transparency log for Swale's audit trail. Turns the hash-chained ledger into an append-only Merkle tree with signed tree heads, inclusion proofs (non-omission), and consistency proofs (append-only). Never holds funds or keys.",
+  "description": "RFC 9162 (Certificate Transparency v2) Merkle transparency log for Vaduno's audit trail. Turns the hash-chained ledger into an append-only Merkle tree with signed tree heads, inclusion proofs (non-omission), and consistency proofs (append-only). Never holds funds or keys.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -18,11 +18,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/premsreelathasugeendran/swale.git",
+    "url": "git+https://github.com/premsreelathasugeendran/vaduno.git",
     "directory": "packages/transparency"
   },
-  "homepage": "https://github.com/premsreelathasugeendran/swale#readme",
-  "bugs": "https://github.com/premsreelathasugeendran/swale/issues",
+  "homepage": "https://github.com/premsreelathasugeendran/vaduno#readme",
+  "bugs": "https://github.com/premsreelathasugeendran/vaduno/issues",
   "license": "MIT",
   "keywords": [
     "transparency-log",
@@ -41,7 +41,7 @@
     "prepublishOnly": "npm run build && npm run test"
   },
   "dependencies": {
-    "@swale/guard": "^0.1.0"
+    "@vaduno/guard": "^0.1.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",

@@ -1,16 +1,16 @@
 {
-  "name": "@swale/dashboard",
+  "name": "@vaduno/dashboard",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "seed": "tsx scripts/seed.ts",
-    "dev": "cross-env SWALE_ALLOW_DEFAULT_PASSCODE=1 next dev -p 3939",
+    "dev": "cross-env VADUNO_ALLOW_DEFAULT_PASSCODE=1 next dev -p 3939",
     "build": "next build",
     "start": "next start -p 3939",
-    "demo": "cross-env SWALE_ALLOW_DEFAULT_PASSCODE=1 next start -p 3939"
+    "demo": "cross-env VADUNO_ALLOW_DEFAULT_PASSCODE=1 next start -p 3939"
   },
   "dependencies": {
-    "@swale/guard": "*",
+    "@vaduno/guard": "*",
     "next": "^15.1.6",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

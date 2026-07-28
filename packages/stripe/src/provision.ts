@@ -1,4 +1,4 @@
-import type { SpendPolicy } from "@swale/guard";
+import type { SpendPolicy } from "@vaduno/guard";
 import type { StripeIssuingLike } from "./types.js";
 
 export interface SpendingControls {
@@ -19,7 +19,7 @@ export interface PolicyControlsResult {
 const MCC_ENUM = /^[a-z_]+$/;
 
 /**
- * Mirror a Swale SpendPolicy into Stripe-native card spending_controls, so
+ * Mirror a Vaduno SpendPolicy into Stripe-native card spending_controls, so
  * Stripe enforces the deterministic limits BEFORE the real-time webhook even
  * fires (defense in depth; most-restrictive-wins with the live guard). Native
  * aggregation lags ~30s, so the real-time guard remains the tight gate.

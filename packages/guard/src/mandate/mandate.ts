@@ -52,7 +52,7 @@ export interface MandateConstraints {
  * merchant or by a different agent even inside the mandate's allowlists).
  */
 export function mandateContextHash(context: Record<string, unknown>): string {
-  return sha256Hex("swale-mandate-ctx/v1\n" + canonicalJson(context));
+  return sha256Hex("vaduno-mandate-ctx/v1\n" + canonicalJson(context));
 }
 
 export interface Mandate {

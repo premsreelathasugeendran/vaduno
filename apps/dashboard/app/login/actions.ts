@@ -15,7 +15,7 @@ export async function login(formData: FormData): Promise<void> {
     httpOnly: true,
     sameSite: "lax",
     // Secure everywhere except an explicit localhost demo (plain http).
-    secure: !process.env.SWALE_ALLOW_DEFAULT_PASSCODE,
+    secure: !process.env.VADUNO_ALLOW_DEFAULT_PASSCODE,
     path: "/",
     maxAge: 60 * 60 * 12,
   });

@@ -10,7 +10,7 @@ export default function SettingsPage() {
     <>
       <div className="page-lead reveal s1">
         <h1 className="lead-title">Settings</h1>
-        <p className="lead-sub">Workspace &amp; access for this Swale console.</p>
+        <p className="lead-sub">Workspace &amp; access for this Vaduno console.</p>
       </div>
 
       <div className="panel reveal s2">
@@ -20,8 +20,8 @@ export default function SettingsPage() {
             <div className="setting-name">Operator passcode</div>
             <div className="setting-desc">
               {isDefault
-                ? "Using the demo default. Set SWALE_DASHBOARD_PASSCODE for production."
-                : "Configured via SWALE_DASHBOARD_PASSCODE."}
+                ? "Using the demo default. Set VADUNO_DASHBOARD_PASSCODE for production."
+                : "Configured via VADUNO_DASHBOARD_PASSCODE."}
             </div>
           </div>
           <span className={`tag ${isDefault ? "caution" : "ok"}`}>{isDefault ? "demo" : "configured"}</span>
@@ -40,8 +40,8 @@ export default function SettingsPage() {
       <div className="panel reveal s3">
         <div className="panel-head"><h2>About</h2></div>
         <div className="setting-desc" style={{ lineHeight: 1.7 }}>
-          Swale governs and records AI-agent payments — it never holds funds or keys.
-          This console reads the tamper-evident ledger produced by <code>@swale/guard</code> and
+          Vaduno governs and records AI-agent payments — it never holds funds or keys.
+          This console reads the tamper-evident ledger produced by <code>@vaduno/guard</code> and
           resolves the approvals your agents are blocking on. Rail adapters: x402 (live), Stripe issuing (planned).
         </div>
       </div>

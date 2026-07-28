@@ -24,7 +24,7 @@ import {
   type KnownWitness,
 } from "../src/index.js";
 
-const ORIGIN = "swale.example/ledger";
+const ORIGIN = "vaduno.example/ledger";
 const log = generateLogKeyPair();
 const witnessA = generateLogKeyPair();
 const witnessB = generateLogKeyPair();

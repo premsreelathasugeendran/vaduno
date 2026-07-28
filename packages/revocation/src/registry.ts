@@ -1,4 +1,4 @@
-import type { AuditLedger } from "@swale/guard";
+import type { AuditLedger } from "@vaduno/guard";
 import { Bitstring, BitstringError, MINIMUM_ENTRIES } from "./bitstring.js";
 import { publishStatusList, type StatusListCredential, type StatusPurpose } from "./status-list.js";
 import type { RevocationStore, RevocationRecord, RegistrySnapshot } from "./store.js";
@@ -8,11 +8,11 @@ import { MemoryRevocationStore } from "./store.js";
  * The revocation registry: one place to kill an agent's authority.
  *
  * HONEST SCOPE — this is deliberately NOT called a "universal kill switch":
- *  - For mandates Swale issues, revocation is INSTANT and GUARANTEED,
+ *  - For mandates Vaduno issues, revocation is INSTANT and GUARANTEED,
  *    because the guard consults the registry at authorization time and fails
  *    closed. Nothing spends under a revoked mandate again.
- *  - For authority Swale does NOT mediate (a raw wallet key the agent holds,
- *    a card issued outside Swale), revocation is BEST-EFFORT fan-out to each
+ *  - For authority Vaduno does NOT mediate (a raw wallet key the agent holds,
+ *    a card issued outside Vaduno), revocation is BEST-EFFORT fan-out to each
  *    rail's own revocation API. A neutral registry has no authority over rails
  *    it does not govern, and settled on-chain spend can never be clawed back.
  * Every revocation, every fan-out attempt, and every fan-out FAILURE is

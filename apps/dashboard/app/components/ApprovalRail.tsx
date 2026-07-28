@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import type { PendingApproval } from "@swale/guard";
+import type { PendingApproval } from "@vaduno/guard";
 import { resolveApproval } from "../actions";
 import { Money } from "./Money";
 import { Seal } from "./Seal";

@@ -7,7 +7,7 @@
  * header, and retries. The server verifies/settles and returns 200 plus an
  * `X-PAYMENT-RESPONSE` header.
  *
- * Swale sits at the "before you pay" moment: it turns the chosen requirement
+ * Vaduno sits at the "before you pay" moment: it turns the chosen requirement
  * into a PaymentIntent, runs it through the guard, and only lets your payer
  * sign if policy allows.
  */

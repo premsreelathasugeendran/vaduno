@@ -1,7 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // @swale/guard is a workspace ESM package; let Next transpile it.
-  transpilePackages: ["@swale/guard"],
+  // @vaduno/guard is a workspace ESM package; let Next transpile it.
+  transpilePackages: ["@vaduno/guard"],
   reactStrictMode: true,
   poweredByHeader: false,
   async headers() {

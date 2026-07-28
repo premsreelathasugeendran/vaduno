@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SwaleGuard } from "../src/guard.js";
+import { VadunoGuard } from "../src/guard.js";
 import { AuditLedger } from "../src/ledger/ledger.js";
 import { MemoryLedgerStore } from "../src/ledger/stores/memory.js";
 import {
@@ -10,7 +10,7 @@ import { makeIntent, makePolicy } from "./helpers.js";
 
 function setup(policyOver = {}, guardOver: Record<string, unknown> = {}) {
   const ledger = new AuditLedger(new MemoryLedgerStore());
-  const guard = new SwaleGuard({
+  const guard = new VadunoGuard({
     policy: makePolicy(policyOver),
     ledger,
     ...guardOver,
@@ -20,7 +20,7 @@ function setup(policyOver = {}, guardOver: Record<string, unknown> = {}) {
 
 const paidOk = async () => ({ receipt: "r-1" });
 
-describe("SwaleGuard.execute", () => {
+describe("VadunoGuard.execute", () => {
   it("executes an allowed intent and audits the full path", async () => {
     const { guard, ledger } = setup();
     const result = await guard.execute(makeIntent(), paidOk);
@@ -143,7 +143,7 @@ describe("SwaleGuard.execute", () => {
       { publicKeyPem: keys.publicKeyPem, privateKeyPem: keys.privateKeyPem },
       ledger,
     );
-    const guard = new SwaleGuard({
+    const guard = new VadunoGuard({
       policy: makePolicy(),
       ledger,
       mandates,
@@ -184,7 +184,7 @@ describe("SwaleGuard.execute", () => {
   });
 });
 
-describe("SwaleGuard concurrency & TOCTOU", () => {
+describe("VadunoGuard concurrency & TOCTOU", () => {
   it("parallel executes cannot jointly exceed the daily cap", async () => {
     const { guard } = setup({
       limits: { perTransactionMinor: 6_000, perDayMinor: 10_000 },
@@ -216,7 +216,7 @@ describe("SwaleGuard concurrency & TOCTOU", () => {
   });
 });
 
-describe("SwaleGuard approval races", () => {
+describe("VadunoGuard approval races", () => {
   // A controllable approval handler that blocks until we release it.
   function deferredApproval() {
     let release!: (r: { approved: boolean }) => void;
@@ -266,7 +266,7 @@ describe("SwaleGuard approval races", () => {
   });
 });
 
-describe("SwaleGuard hostile-intent hardening", () => {
+describe("VadunoGuard hostile-intent hardening", () => {
   it("pins field values at snapshot time (getter TOCTOU)", async () => {
     const { guard, ledger } = setup();
     let reads = 0;
@@ -287,7 +287,7 @@ describe("SwaleGuard hostile-intent hardening", () => {
     let t = Date.parse("2026-01-01T00:00:00.000Z");
     const now = () => new Date(t);
     const ledger = new AuditLedger(new MemoryLedgerStore(), now);
-    const guard = new SwaleGuard({
+    const guard = new VadunoGuard({
       policy: makePolicy({ limits: { perTransactionMinor: 10_000, perDayMinor: 10_000 } }),
       ledger,
       now,
@@ -311,7 +311,7 @@ describe("SwaleGuard hostile-intent hardening", () => {
       last: async () => null,
       all: async () => [],
     };
-    const guard = new SwaleGuard({
+    const guard = new VadunoGuard({
       policy: makePolicy(),
       ledger: new AuditLedger(failing),
     });
@@ -327,36 +327,36 @@ describe("SwaleGuard hostile-intent hardening", () => {
   it("restores freeze state from the ledger on hydrate (survives restart)", async () => {
     const store = new MemoryLedgerStore();
     const ledgerA = new AuditLedger(store);
-    const guardA = new SwaleGuard({ policy: makePolicy(), ledger: ledgerA });
+    const guardA = new VadunoGuard({ policy: makePolicy(), ledger: ledgerA });
     await guardA.freeze("incident");
 
     // A fresh guard on the same ledger (simulating a restart).
-    const guardB = new SwaleGuard({ policy: makePolicy(), ledger: new AuditLedger(store) });
+    const guardB = new VadunoGuard({ policy: makePolicy(), ledger: new AuditLedger(store) });
     expect(guardB.isFrozen()).toBe(false); // not yet hydrated
     await guardB.hydrateFromLedger();
     expect(guardB.isFrozen()).toBe(true);
     expect((await guardB.execute(makeIntent(), paidOk)).status).toBe("denied");
 
     await guardA.unfreeze();
-    const guardC = new SwaleGuard({ policy: makePolicy(), ledger: new AuditLedger(store) });
+    const guardC = new VadunoGuard({ policy: makePolicy(), ledger: new AuditLedger(store) });
     await guardC.hydrateFromLedger();
     expect(guardC.isFrozen()).toBe(false);
   });
 
   it("hydrate refuses (throws) on a tampered ledger", async () => {
     const store = new MemoryLedgerStore();
-    const guardA = new SwaleGuard({ policy: makePolicy(), ledger: new AuditLedger(store) });
+    const guardA = new VadunoGuard({ policy: makePolicy(), ledger: new AuditLedger(store) });
     await guardA.execute(makeIntent(), paidOk);
     // Tamper with a stored entry.
     (store as unknown as { entries: { data: unknown }[] }).entries[1]!.data = { tampered: true };
-    const guardB = new SwaleGuard({ policy: makePolicy(), ledger: new AuditLedger(store) });
+    const guardB = new VadunoGuard({ policy: makePolicy(), ledger: new AuditLedger(store) });
     await expect(guardB.hydrateFromLedger()).rejects.toThrow(/verification/);
   });
 
   it("hydrate skips a malformed execution_result instead of NaN-poisoning the counter", async () => {
     const store = new MemoryLedgerStore();
     const ledger = new AuditLedger(store);
-    const guardA = new SwaleGuard({
+    const guardA = new VadunoGuard({
       policy: makePolicy({ limits: { perTransactionMinor: 6_000, perDayMinor: 10_000 } }),
       ledger,
     });
@@ -371,7 +371,7 @@ describe("SwaleGuard hostile-intent hardening", () => {
       { intentId: "bad", agentId: "a" },
     );
 
-    const guardB = new SwaleGuard({
+    const guardB = new VadunoGuard({
       policy: makePolicy({ limits: { perTransactionMinor: 6_000, perDayMinor: 10_000 } }),
       ledger: new AuditLedger(store),
     });
@@ -387,14 +387,14 @@ describe("SwaleGuard hostile-intent hardening", () => {
 
   it("hydrate is one-shot per instance", async () => {
     const store = new MemoryLedgerStore();
-    const guard = new SwaleGuard({ policy: makePolicy(), ledger: new AuditLedger(store) });
+    const guard = new VadunoGuard({ policy: makePolicy(), ledger: new AuditLedger(store) });
     await guard.hydrateFromLedger();
     await expect(guard.hydrateFromLedger()).rejects.toThrow(/already/);
   });
 
   it("restores the spend counter from the ledger on hydrate", async () => {
     const store = new MemoryLedgerStore();
-    const guardA = new SwaleGuard({
+    const guardA = new VadunoGuard({
       policy: makePolicy({ limits: { perTransactionMinor: 6_000, perDayMinor: 10_000 } }),
       ledger: new AuditLedger(store),
     });
@@ -403,7 +403,7 @@ describe("SwaleGuard hostile-intent hardening", () => {
       paidOk,
     );
 
-    const guardB = new SwaleGuard({
+    const guardB = new VadunoGuard({
       policy: makePolicy({ limits: { perTransactionMinor: 6_000, perDayMinor: 10_000 } }),
       ledger: new AuditLedger(store),
     });
@@ -430,7 +430,7 @@ describe("SwaleGuard hostile-intent hardening", () => {
       last: () => inner.last(),
       all: () => inner.all(),
     };
-    const guard = new SwaleGuard({
+    const guard = new VadunoGuard({
       policy: makePolicy({ limits: { perTransactionMinor: 6_000, perDayMinor: 10_000 } }),
       ledger: new AuditLedger(flaky),
     });

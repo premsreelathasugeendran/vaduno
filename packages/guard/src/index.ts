@@ -1,7 +1,7 @@
 export * from "./types.js";
-export { SwaleGuard, ledgerSpendHistory } from "./guard.js";
+export { VadunoGuard, ledgerSpendHistory } from "./guard.js";
 export type {
-  SwaleGuardOptions,
+  VadunoGuardOptions,
   RevocationCheck,
   RevocationVerdict,
 } from "./guard.js";
