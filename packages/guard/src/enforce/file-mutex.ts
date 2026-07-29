@@ -32,6 +32,23 @@ export interface FileMutexOpts {
   staleMs?: number;
 }
 
+/**
+ * errno values that mean "someone else holds the lock, retry" rather than
+ * "this is broken, give up".
+ *
+ * EEXIST is the POSIX answer. Windows also produces EPERM (and sometimes
+ * EACCES) when the lockfile is in a delete-pending state: another process has
+ * unlinked it but an open handle remains, so an O_EXCL create is refused with
+ * a *permission* error rather than an existence one. Treating that as fatal
+ * turns ordinary lock contention into a thrown reserve — which, on this code
+ * path, is a denied payment.
+ *
+ * Found by the SpendLimiter conformance suite on Windows CI: 10 parallel
+ * reserves across two handles contend far harder than anything the consume
+ * store's tests did, so this survived from 0.1.0 until something hammered it.
+ */
+const CONTENDED = new Set(["EEXIST", "EPERM", "EACCES"]);
+
 export class FileMutex {
   private queue: Promise<unknown> = Promise.resolve();
   private token = "";
@@ -66,6 +83,7 @@ export class FileMutex {
     const delayMs = this.opts.delayMs ?? 20;
     const staleMs = this.opts.staleMs ?? 30_000;
     const token = randomUUID();
+    let lastCode = "";
     await mkdir(dirname(this.lockPath), { recursive: true });
     for (let i = 0; i <= retries; i++) {
       try {
@@ -78,7 +96,8 @@ export class FileMutex {
         this.token = token;
         return;
       } catch (err: unknown) {
-        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+        lastCode = (err as NodeJS.ErrnoException).code ?? "";
+        if (!CONTENDED.has(lastCode)) throw err;
         // Reclaim a lock left by a crashed process, but only once it is stale,
         // so a live holder mid-work is not stolen from. A racing reclaimer may
         // recreate it; the loser simply retries.
@@ -94,7 +113,13 @@ export class FileMutex {
         await new Promise((r) => setTimeout(r, delayMs));
       }
     }
-    throw new Error(`FileMutex: could not acquire lock ${this.lockPath}`);
+    // Naming the errno matters: EPERM/EACCES here may be genuine contention
+    // (delete-pending on Windows) OR a real permissions problem on the
+    // directory, and those need very different fixes.
+    throw new Error(
+      `FileMutex: could not acquire lock ${this.lockPath} after ${retries} retries` +
+        (lastCode ? ` (last errno ${lastCode})` : ""),
+    );
   }
 
   private async release(): Promise<void> {
