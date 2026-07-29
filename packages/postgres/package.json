@@ -1,7 +1,7 @@
 {
-  "name": "@vaduno/transparency",
+  "name": "@vaduno/postgres",
   "version": "0.2.0",
-  "description": "RFC 9162 (Certificate Transparency v2) Merkle transparency log for Vaduno's audit trail. Turns the hash-chained ledger into an append-only Merkle tree with signed tree heads, inclusion proofs (non-omission), and consistency proofs (append-only). Never holds funds or keys to funds.",
+  "description": "Postgres-backed SpendLimiter and ConsumeStore for Vaduno. Makes rolling spend caps and consume-once mandates hold across MULTIPLE INSTANCES, not just one process. Never holds funds or keys to funds.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -19,21 +19,18 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/premsreelathasugeendran/vaduno.git",
-    "directory": "packages/transparency"
+    "directory": "packages/postgres"
   },
   "homepage": "https://github.com/premsreelathasugeendran/vaduno#readme",
   "bugs": "https://github.com/premsreelathasugeendran/vaduno/issues",
   "license": "MIT",
   "keywords": [
-    "transparency-log",
-    "merkle-tree",
-    "rfc9162",
-    "rfc6962",
-    "certificate-transparency",
-    "tamper-evident",
-    "audit",
     "ai-agents",
-    "payments"
+    "payments",
+    "spend-control",
+    "postgres",
+    "guardrails",
+    "agentic-commerce"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -42,6 +39,14 @@
   },
   "dependencies": {
     "@vaduno/guard": "^0.2.0"
+  },
+  "peerDependencies": {
+    "pg": ">=8"
+  },
+  "peerDependenciesMeta": {
+    "pg": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/node": "^26.1.1",

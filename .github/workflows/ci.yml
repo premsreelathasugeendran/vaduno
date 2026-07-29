@@ -80,6 +80,39 @@ jobs:
       # including on Windows, where the lockfile semantics differ.
       - run: npm run demo:cross-process
 
+  postgres:
+    name: postgres conformance (real database)
+    runs-on: ubuntu-latest
+    # @vaduno/postgres exists to be atomic across instances, and that property
+    # lives in Postgres — in pg_advisory_xact_lock, in transaction boundaries,
+    # in what a pooled connection is. A mock would prove nothing, so the
+    # conformance suites run against a real server or they do not run at all.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: vaduno_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: SpendLimiter + ConsumeStore conformance against real Postgres
+        run: npm -w @vaduno/postgres run test
+        env:
+          VADUNO_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/vaduno_test
+
   publishable:
     name: release gate
     runs-on: ubuntu-latest

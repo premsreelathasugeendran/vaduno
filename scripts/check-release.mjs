@@ -20,7 +20,23 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const PACKAGES = ["guard", "transparency", "revocation", "x402", "stripe"];
+/**
+ * Discovered, never hardcoded. A literal list silently skips any package added
+ * after it was written — the gate reports "all packages look publishable"
+ * while never having looked at the new one. That is the same failure as
+ * checking a README exists without reading it, and it is how @vaduno/postgres
+ * would have shipped ungated.
+ */
+const PACKAGES = readdirSync(join(root, "packages"), { withFileTypes: true })
+  .filter((e) => e.isDirectory() && existsSync(join(root, "packages", e.name, "package.json")))
+  .map((e) => e.name)
+  .filter((name) => {
+    const pkg = JSON.parse(
+      readFileSync(join(root, "packages", name, "package.json"), "utf8"),
+    );
+    return pkg.private !== true;
+  })
+  .sort();
 /** Anything matching these must never appear in a published tarball. */
 const FORBIDDEN = [
   /(^|\/)src\//,
@@ -160,10 +176,20 @@ if (failures > 0) {
   process.exit(1);
 }
 console.log(`✓ all packages look publishable${warnings ? ` (${warnings} warning(s))` : ""}`);
+
+// Derived, so this can never go stale the way a hardcoded list does. Anything
+// depending on @vaduno/guard must land AFTER it or it is briefly uninstallable
+// (ETARGET) for whoever installs in that window.
+const dependents = PACKAGES.map((name) =>
+  JSON.parse(readFileSync(join(root, "packages", name, "package.json"), "utf8")),
+)
+  .filter((p) => p.name !== "@vaduno/guard" && p.dependencies?.["@vaduno/guard"])
+  .map((p) => p.name);
+
 console.log(`
-Publish order matters — the others depend on @vaduno/guard:
+Publish order matters — these depend on @vaduno/guard:
   1. @vaduno/guard
-  2. @vaduno/transparency, @vaduno/revocation, @vaduno/x402, @vaduno/stripe
+  2. ${dependents.join(", ")}
 
 Reminder: publishes are effectively permanent. Use --dry-run first, and
 consider --tag next for a pre-release you can retract from "latest".

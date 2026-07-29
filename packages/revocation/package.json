@@ -1,6 +1,6 @@
 {
   "name": "@vaduno/revocation",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Revocation registry for Vaduno mandates: W3C Bitstring Status List credentials, instant fail-closed revocation at authorization time, agent-wide kill, and best-effort fan-out to rail-native revocation. Never holds funds or keys to funds.",
   "type": "module",
   "main": "./dist/index.js",
@@ -40,7 +40,7 @@
     "prepublishOnly": "npm run build && npm run test"
   },
   "dependencies": {
-    "@vaduno/guard": "^0.1.1"
+    "@vaduno/guard": "^0.2.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
