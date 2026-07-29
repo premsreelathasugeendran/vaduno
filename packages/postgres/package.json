@@ -50,6 +50,8 @@
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
+    "@types/pg": "^8.11.10",
+    "pg": "^8.13.0",
     "typescript": "^5.5.4",
     "vitest": "^3.2.6"
   },
