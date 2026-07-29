@@ -1,7 +1,7 @@
 {
   "name": "@vaduno/revocation",
   "version": "0.1.0",
-  "description": "Revocation registry for Vaduno mandates: W3C Bitstring Status List credentials, instant fail-closed revocation at authorization time, agent-wide kill, and best-effort fan-out to rail-native revocation. Never holds funds or keys.",
+  "description": "Revocation registry for Vaduno mandates: W3C Bitstring Status List credentials, instant fail-closed revocation at authorization time, agent-wide kill, and best-effort fan-out to rail-native revocation. Never holds funds or keys to funds.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
