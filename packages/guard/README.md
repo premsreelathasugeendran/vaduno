@@ -2,7 +2,7 @@
 
 **A spend firewall and flight recorder for AI agents.**
 
-Your agent has an API key that can spend real money. Research says it *will* eventually be tricked — prompt-injection attacks against commerce agents succeed in [86% of attempts](https://arxiv.org/abs/2504.18575). The model cannot be the last line of defense.
+Your agent has an API key that can spend real money. Research says it *will* eventually be tricked — in the [WASP benchmark](https://arxiv.org/abs/2504.18575), prompt-injection attacks against autonomous web agents *partially* succeed in **up to 86%** of cases. The model cannot be the last line of defense.
 
 Vaduno puts deterministic code between your agent and the money:
 
@@ -46,7 +46,7 @@ const result = await guard.execute(
 await ledger.verify();  // { ok: true, entries: n } — or exactly where history was tampered
 ```
 
-**Vaduno never holds funds, keys, or the ability to move money.** It decides whether *your* executor function may run, and records everything.
+**Vaduno never holds funds, keys to funds, or the ability to move money.** It decides whether *your* executor function may run, and records everything. (Precisely: no custody, no card PANs, no wallet or bank credentials. It *does* use Ed25519 keys to sign and verify mandates — the private half belongs to whoever issues them, and a guard that only validates and consumes needs nothing but the public key.)
 
 ## What it enforces
 
@@ -54,7 +54,7 @@ await ledger.verify();  // { ok: true, entries: n } — or exactly where history
 |---|---|
 | **Policy engine** | Per-transaction / rolling day-week-month caps, merchant & category allowlists, rail restrictions, velocity limits, approval thresholds. Pure code, no model in the loop. |
 | **Signed mandates** | Ed25519 "permission slips" binding what a human authorized (amount, merchant, time window) to what executes. |
-| **Runtime enforcement** | Consume-once is *enforced*, not just claimed: a retry storm firing the same payment N times runs the rail **exactly once** and replays the original outcome. |
+| **Runtime enforcement** | Consume-once is *enforced*, not just claimed: a retry storm firing the same payment N times runs the rail **at most once** and replays the original outcome. |
 | **Context binding** | An optional context hash ties a mandate to one approved task run, so it can't be redirected by a different orchestration hop. |
 | **Flight recorder** | Every attempt, decision, approval, and execution lands in a hash-chained, append-only ledger. Any edit, deletion, or reorder is detectable by `verify()`. |
 | **Kill switch** | `guard.freeze()` denies everything instantly, and the freeze itself is audited. |
@@ -73,6 +73,7 @@ const results = await Promise.all(
 - `status: "replayed"` carries the original outcome (`executed` / `failed` / `unresolved`); the executor does **not** run again.
 - A used intent id presented with **different money fields** is denied `MANDATE_REPLAY_MISMATCH` — an id-reuse attack, not a retry.
 - Cross-process safety needs a shared `ConsumeStore` (`FileConsumeStore` on one box; a DB unique index for multi-instance).
+- **Rolling spend caps are *not* cross-process.** Consume-once is, with a shared store; the authoritative spend counter is in-memory per guard instance, so two guard processes each enforcing a $50/day cap will let $100 through. Run one guard per trust boundary, or write a store-backed limiter. This is the sharpest edge in the project — see [SECURITY.md](https://github.com/premsreelathasugeendran/vaduno/blob/master/SECURITY.md).
 
 ## Design principles
 
@@ -80,7 +81,7 @@ const results = await Promise.all(
 2. **Deterministic last line.** An attacker is assumed to control the agent and every field of the intent. Policy checks are pure code over integer minor units.
 3. **Amounts are integers.** Minor units (cents, paise) everywhere. Floats are denied, not rounded.
 4. **Everything is evidence.** Denials and failures are recorded as thoroughly as successes.
-5. **Not in the money path.** No custody, no keys, no transmission.
+5. **Not in the money path.** No custody, no keys to funds, no transmission.
 
 ## The rest of the stack
 

@@ -15,8 +15,8 @@ Both are verifiable by a third party from the roots alone — the same math that
 Certificate Transparency uses to watch the world's TLS certificate authorities
 (RFC 9162, RFC 6962), applied to AI-agent payment decisions.
 
-**Vaduno never holds keys or funds.** The only key here signs *evidence*
-(tree heads), not money.
+**Vaduno never holds funds or keys to funds.** The only key here signs
+*evidence* (tree heads), not money.
 
 ## Install
 

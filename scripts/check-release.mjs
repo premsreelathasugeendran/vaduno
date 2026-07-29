@@ -33,6 +33,34 @@ const FORBIDDEN = [
   /(^|\/)\.git/,
 ];
 
+/**
+ * Claims that must never ship unqualified in a package README.
+ *
+ * Each of these is a TRUE statement that becomes FALSE when its qualifier is
+ * dropped, which is this project's demonstrated failure mode — it has happened
+ * five times. The rule is not "avoid these words"; it is "if you make this
+ * claim, make it precisely, because someone will check it against the code."
+ */
+const README_CLAIM_TRAPS = [
+  {
+    // packages/guard/src/mandate/mandate.ts holds an Ed25519 private key when
+    // it ISSUES. The honest claim is "no keys TO FUNDS": no custody, no PANs,
+    // no wallet or bank credentials.
+    re: /never holds[^.\n]*\bkeys\b(?![^.\n]*\bto funds\b)[^.\n]*/i,
+    why: 'unqualified "never holds keys" — a mandate-issuing key IS held; say "keys to funds"',
+  },
+  {
+    re: /\bno keys\b(?![^.\n]*\bto funds\b)/i,
+    why: 'unqualified "no keys" — say "no keys to funds"',
+  },
+  {
+    // The Stripe adapter has never contacted api.stripe.com in ANY mode.
+    // Calling it "test-mode-only" implies it was tested against test mode.
+    re: /test[- ]mode[- ]only/i,
+    why: '"test-mode-only" implies it ran against Stripe test mode; it has never run against Stripe at all',
+  },
+];
+
 let failures = 0;
 let warnings = 0;
 const fail = (pkg, msg) => {
@@ -75,6 +103,20 @@ for (const name of PACKAGES) {
   for (const f of ["README.md", "LICENSE"]) {
     if (!existsSync(join(dir, f))) {
       fail(pkg.name, `${f} missing — npm only ships the copy in THIS directory`);
+    }
+  }
+  // Checking that a README EXISTS is not the same as checking what it SAYS, and
+  // the difference cost this project a release. 0.1.1 existed to correct the
+  // unqualified claim "never holds funds or keys" — which was fixed in the root
+  // README and in every package.json description, while three package READMEs
+  // kept shipping it verbatim to npm. Those files are the npm landing pages;
+  // nothing was diffing them. So the load-bearing claims are asserted here.
+  const readmePath = join(dir, "README.md");
+  if (existsSync(readmePath)) {
+    const readme = readFileSync(readmePath, "utf8");
+    for (const { re, why } of README_CLAIM_TRAPS) {
+      const m = readme.match(re);
+      if (m) fail(pkg.name, `README: ${why} — found ${JSON.stringify(m[0].trim().slice(0, 72))}`);
     }
   }
   if (!existsSync(join(dir, "dist"))) {

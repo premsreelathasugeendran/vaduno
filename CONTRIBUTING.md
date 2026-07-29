@@ -1,6 +1,6 @@
 # Contributing to Vaduno
 
-Thanks for looking. This is a young project (v0.1.0) and outside eyes are
+Thanks for looking. This is a young project (v0.1.1) and outside eyes are
 genuinely wanted — especially on the concurrency and the cryptography, which
 are where the real bugs have been.
 
@@ -68,6 +68,14 @@ surface that (`auditDegraded`), not swallow it.
   `Promise.all` of the same operation, asserting exactly one wins. The
   double-spend bug in the consume store was invisible to sequential tests.
 
+- **Honest comments.** Explain the constraint the code is under, not what the
+  next line does. If something is a deliberate trade-off, say so and say why.
+- **No new runtime dependencies in `@vaduno/guard`.** It has zero, and that is
+  a feature — it is the package that sits between an agent and real money.
+- **Documented limits stay documented.** If you strengthen a guarantee, update
+  `docs/SECURITY-MODEL.md`. If you find that a documented guarantee is weaker
+  than claimed, that is a valuable contribution on its own — open an issue.
+
 ## Writing a ConsumeStore (the most wanted contribution)
 
 `ConsumeStore` is what makes consume-once hold across processes. A
@@ -94,13 +102,6 @@ The one rule the whole contract reduces to: within a **single** `claim()` call,
 the duplicate check, the `maxUses` budget check, and the insert must happen
 atomically across every process sharing the store. In SQL that is one statement
 with a unique constraint and a conditional count — not `SELECT` then `INSERT`.
-- **Honest comments.** Explain the constraint the code is under, not what the
-  next line does. If something is a deliberate trade-off, say so and say why.
-- **No new runtime dependencies in `@vaduno/guard`.** It has zero, and that is
-  a feature — it is the package that sits between an agent and real money.
-- **Documented limits stay documented.** If you strengthen a guarantee, update
-  `docs/SECURITY-MODEL.md`. If you find that a documented guarantee is weaker
-  than claimed, that is a valuable contribution on its own — open an issue.
 
 ## Claims and language
 

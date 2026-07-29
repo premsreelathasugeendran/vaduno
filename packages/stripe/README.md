@@ -9,9 +9,16 @@ deterministic policy engine that governs your agents' spend now decides each
 physical/virtual card charge — and every decision is written to the
 hash-chained audit ledger.
 
-**Vaduno never holds keys or funds.** You pass in your own Stripe client; the
-adapter only calls `stripe.webhooks.constructEvent`. Stripe moves the money the
-instant the handler answers `approved: true`.
+**Vaduno never holds funds, keys to funds, or card PANs.** You pass in your own
+Stripe client; the adapter only calls `stripe.webhooks.constructEvent`. Stripe
+moves the money the instant the handler answers `approved: true`.
+
+> **This adapter has never run against Stripe — not even in test mode.** It is
+> verified against an in-process mock of the `issuing_authorization.request`
+> webhook: the decision path, the signature check and the fail-closed deadline
+> are exercised, the network path is not. Live Issuing needs a business entity
+> and Stripe approval the author doesn't have. Treat this as a reference
+> implementation, not a tested integration.
 
 ## Install
 
@@ -129,13 +136,17 @@ intentionally left out of this package to keep it clear of PCI scope.
 
 ## Honest limitations
 
-- **Production Issuing is gated.** Test mode is instant and fully demoable
-  (`stripe trigger issuing_authorization.request` / test-helpers). Going live
-  needs a real US business entity and Stripe's eligibility review — a solo dev
-  ships this **test-mode-only**.
-- **The 2-second deadline is hard.** Keep the handler warm and deterministic; do
-  all the heavy reasoning at provisioning time. A cold serverless start or slow
-  ledger store can blow it.
+- **This has never been run against Stripe, in either mode.** Test mode should
+  be demoable (`stripe trigger issuing_authorization.request` / test-helpers),
+  but that is an expectation, not a result — nothing here has touched
+  `api.stripe.com`. Going live additionally needs a real US business entity and
+  Stripe's eligibility review, which the author does not have.
+- **The deadline is hard, and the adapter's is 1300ms.** Stripe's own
+  authorization window is ~2 seconds; `decisionTimeoutMs` defaults to **1300ms**
+  ([`handler.ts`](src/handler.ts)) so the fail-closed DECLINE is emitted *inside*
+  that window rather than racing it. Size your handler against 1300ms, not 2s.
+  Keep it warm and deterministic and do the heavy reasoning at provisioning
+  time; a cold serverless start or a slow ledger store can blow it.
 - **Fail-closed-on-timeout is a Dashboard setting the adapter can't control.**
   Stripe has no safe default if your endpoint times out or returns a
   `webhook_error` (a wrong `Stripe-Version` triggers this). Set your account's

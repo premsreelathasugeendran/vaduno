@@ -1,0 +1,12 @@
+# Normalize line endings. The maintainer's daily driver is Windows, and without
+# this a README edited locally lands in the repo as CRLF while its neighbours
+# are LF — which turns a one-word documentation fix into a whole-file diff and
+# hides what actually changed during review.
+* text=auto eol=lf
+
+# Binary-ish artifacts that must never be normalized.
+*.png binary
+*.jpg binary
+*.ico binary
+*.tgz binary
+*.gz binary
