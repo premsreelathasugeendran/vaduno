@@ -19,15 +19,15 @@ Vaduno puts a deterministic guard between your agent and the money:
 
 **Vaduno never holds funds, keys to funds, or the ability to move money.** It decides whether *your* executor function may run, and records everything. (Precisely: it has no custody, no card PANs, and no wallet or bank credentials. It *does* use Ed25519 keys to sign and verify mandates — the private half belongs to whoever issues them, and a guard that only validates and consumes needs nothing but the public key.) Rail-agnostic by design: wrap an x402 client, a Stripe issuing call, a UPI collect — anything.
 
-## Status: v0.1.1, new, and honest about it
+## Status: v0.2.0, new, and honest about it
 
 Read this before you put it anywhere near real money.
 
-- **Published this week. Zero users. Never run in production.** The tests are thorough (309 across five packages, including concurrency and adversarial cases) but tests are not production.
+- **Published this week. Zero users. Never run in production.** The tests are thorough (357 across six packages, including concurrency and adversarial cases) but tests are not production.
 - **The Stripe adapter has never run against Stripe.** Not even in test mode. It is verified against an in-process mock of the `issuing_authorization.request` webhook — the decision logic and the 1.3-second fail-closed deadline are exercised, the network path is not. Live Issuing needs a business entity and Stripe approval the author doesn't have. Treat it as a reference implementation, not a tested integration.
 - **The API will break.** It's 0.x; breaking changes land in minor versions. Two API changes in the last week came from security review, and more review is planned.
 - **In-process, it can be routed around.** A library the agent's own process imports is a guardrail against a *confused* agent, not a *compromised runtime* — an injected agent holding a raw wallet key can simply not call it. The one configuration where it is genuinely non-bypassable today is **Stripe Issuing**, where the guard answers the card authorization itself and the network enforces the answer. Out-of-process and rail-side enforcement is what would make the rest of it as strong.
-- **Spend caps are per-guard-instance.** Consume-once is cross-process safe when you supply a shared store; **rolling spend limits are not**. The authoritative spend counter lives in the instance's memory, so two guard processes each enforcing a $50/day cap will let through $100. Run one guard process per trust boundary, or write a store-backed limiter. This is the sharpest edge in the project and [`SECURITY.md`](SECURITY.md) has always said so — it's repeated here because a reader shouldn't have to find it there.
+- **Spend caps hold across processes only if you supply a shared limiter.** The default is in-memory and per-instance, so two guard processes each enforcing a $50/day cap will let through $100. Pass a `FileSpendLimiter` (several processes, one box) or `PostgresSpendLimiter` (multiple instances) and the cap holds. `npm run demo:cross-process` spawns two real OS processes and shows both outcomes side by side. Fixed in 0.2.0 — before that there was no way to make it hold at all.
 - **Caps don't prevent prompt injection. They bound the loss.** No policy engine stops an agent being tricked; it stops the tricked agent from spending more than you allowed, at a merchant you didn't allow, twice.
 - **"Fully secure" is never claimed.** Bybit lost $1.5B and Ronin ~$600M with sound cryptography underneath; both broke at the human and supply-chain layer. [`docs/SECURITY-MODEL.md`](docs/SECURITY-MODEL.md) states the precise guarantees **and** the precise non-guarantees. If a claim anywhere contradicts that file, that file is right.
 
@@ -145,14 +145,56 @@ const results = await Promise.all(
 // rail ran AT MOST once → 1 "executed" + 5 "replayed" (original outcome), never a double charge.
 ```
 
-**Scope of that guarantee:** at-most-once holds within one process by default, and across processes when you supply a shared store with an atomic uniqueness constraint. `FileConsumeStore` provides that on a single box. A Postgres-backed store is an *interface you implement*, not an adapter that ships today — if you run multiple instances, that's the piece you need to write.
+**Scope of that guarantee:** at-most-once holds within one process by default, and across processes when you supply a shared store. `FileConsumeStore` covers several processes on one box; [`@vaduno/postgres`](packages/postgres) covers multiple instances. Both are held to the same conformance suite — the one that a check-then-act implementation passes sequentially and fails only under concurrency.
 
 - **`status: "replayed"`** carries the original attempt's outcome (`executed` / `failed` / `unresolved`); the executor does **not** run again.
 - A used intent id presented with **different money fields** is denied `MANDATE_REPLAY_MISMATCH` — an id-reuse attack, not a retry.
 - **Context binding** (`mandateContextHash`): set `constraints.contextHash` at issue time and the intent must present the exact context blob — with `agentId`/`merchantId` matching — or it's denied `CONTEXT_MISMATCH`. This binds a mandate to one approved task run so a valid mandate can't be redirected by a different orchestration hop.
-- **Cross-process:** the default `MemoryConsumeStore` covers one process; pass a `FileConsumeStore` (one box) or a DB store with a unique constraint (multi-instance) so a race between processes still yields exactly one execution. `hydrateFromLedger()` rebuilds the registry after a restart.
+- **Cross-process:** the default `MemoryConsumeStore` covers one process; pass a `FileConsumeStore` (one box) or `PostgresConsumeStore` (multi-instance) so a race between processes still yields exactly one execution. `hydrateFromLedger()` rebuilds the registry after a restart.
 
 Based on the runtime-verification results in [ZTRV](https://arxiv.org/abs/2602.06345) and APEX: signature-only checks intercept 0% of replays; an atomic consume registry intercepts 100%.
+
+## Does a $50/day cap hold when you run two workers?
+
+Only if you tell it to. The default limiter is per-process, and two processes with their own memory are two budgets:
+
+```bash
+npm run demo:cross-process
+```
+
+Two **real OS processes**, one cap, $100 of payments attempted:
+
+```
+1. Per-instance limiter (the default)
+   worker-A: 5 executed, 0 denied  →  spent $50.00
+   worker-B: 5 executed, 0 denied  →  spent $50.00
+   TOTAL SPENT: $100.00  against a $50.00 cap
+   ❌ OVER the cap by $50.00 — two processes are two budgets.
+
+2. Shared FileSpendLimiter (one budget, atomic reserve)
+   worker-A: 5 executed, 0 denied  →  spent $50.00
+   worker-B: 0 executed, 5 denied  →  spent $0.00
+   TOTAL SPENT: $50.00  ✅ The cap held.
+```
+
+The difference is one constructor argument:
+
+```ts
+import { FileSpendLimiter } from "@vaduno/guard";          // several processes, one box
+import { PostgresSpendLimiter } from "@vaduno/postgres";   // multiple instances
+
+const guard = new VadunoGuard({ policy, ledger, limiter: new PostgresSpendLimiter(pool) });
+```
+
+**Why a shared *store* isn't enough on its own.** Until 0.2.0 the spend interface was a read-only `totalsSince()`, which can only ever support check-then-act: read totals, execute, append. Two instances both read `$0`, both pass the `$50` check, both spend. Pointing *that* at Postgres would not have fixed anything — the race lives in the gap between the read and the append, not in where the rows are stored. So the budget check moved *inside* the mutating call:
+
+```
+reserve(windows, amount)  →  execute  →  commit
+```
+
+`SpendLimiter.reserve()` evaluates every rolling window and records the reservation as one atomic step. That is the same fix the consume store needed when `maxUses` had to move inside `claim()` — the same bug, one layer up.
+
+Writing your own limiter is expected, and there's an oracle for it: [`spend-limiter-conformance.ts`](packages/guard/test/spend-limiter-conformance.ts) runs 23 cases against **two independent handles on one backing store**. A deliberately naive check-then-act implementation passes all 19 sequential cases and fails exactly the 4 concurrent ones — which is precisely how this class of bug reaches production.
 
 ## Ledger stores
 

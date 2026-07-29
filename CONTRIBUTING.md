@@ -1,6 +1,6 @@
 # Contributing to Vaduno
 
-Thanks for looking. This is a young project (v0.1.1) and outside eyes are
+Thanks for looking. This is a young project (v0.2.0) and outside eyes are
 genuinely wanted — especially on the concurrency and the cryptography, which
 are where the real bugs have been.
 
@@ -19,7 +19,7 @@ you're unsure whether something qualifies, report it privately anyway.
 ```bash
 npm install
 npm run build
-npm run test        # 309 tests across five packages
+npm run test        # 357 tests across six packages
 ```
 
 Then run the scenarios — each is a story from the README, and they are the
@@ -31,6 +31,7 @@ npm run demo:x402            # HTTP 402 stablecoin rail
 npm run demo:stripe          # Stripe Issuing real-time authorization
 npm run demo:transparency    # inclusion proofs + witness cosigning
 npm run demo:revocation      # the kill switch, and what it does NOT cover
+npm run demo:cross-process   # two real OS processes racing one $50/day cap
 ```
 
 ## The rules that aren't negotiable
@@ -76,32 +77,46 @@ surface that (`auditDegraded`), not swallow it.
   `docs/SECURITY-MODEL.md`. If you find that a documented guarantee is weaker
   than claimed, that is a valuable contribution on its own — open an issue.
 
-## Writing a ConsumeStore (the most wanted contribution)
+## Writing a store (Redis, DynamoDB, MySQL, SQLite)
 
-`ConsumeStore` is what makes consume-once hold across processes. A
-`MemoryConsumeStore` (one process) and a `FileConsumeStore` (one box) ship
-today; **a Postgres/Redis/DynamoDB store does not, and that is the single most
-useful thing anyone could add.** Multi-instance deployments need it.
+Two interfaces make Vaduno's guarantees hold across processes:
 
-Do not just satisfy the interface. The types are satisfied by an
-implementation that double-spends — that is exactly the bug this project
-already shipped once. Run the conformance suite instead:
+- **`ConsumeStore`** — consume-once mandates
+- **`SpendLimiter`** — rolling spend caps
+
+Memory (one process), file (one box) and Postgres (multiple instances)
+implementations ship. **Redis, DynamoDB, MySQL and SQLite do not** — those are
+the most useful things anyone could add.
+
+Do not just satisfy the interface. Both are satisfied by implementations that
+double-spend, and this project has shipped that bug twice: once in the consume
+store's `maxUses` gate, once in the spend limiter. Run the conformance suites:
 
 ```bash
 npx vitest run packages/guard/test/consume-store.conformance.test.ts
+npx vitest run packages/guard/test/spend-limiter.conformance.test.ts
 ```
 
-[`packages/guard/test/consume-store-conformance.ts`](packages/guard/test/consume-store-conformance.ts)
-exports `runConsumeStoreConformance(harness)` — 17 cases per store covering
-duplicate claims, budget exhaustion, idempotent settle, and concurrent races
-of both the same and different intents. Your harness returns **two independent
-handles to the same backing store**; that is what exercises the cross-process
-contract, and a single handle is precisely how the original bug hid.
+Both export a `run*Conformance(harness)` you can call from your own repo. Your
+harness returns **two independent handles on the same backing store** — that is
+what exercises the cross-process contract, and a single handle is precisely how
+both original bugs hid.
 
-The one rule the whole contract reduces to: within a **single** `claim()` call,
-the duplicate check, the `maxUses` budget check, and the insert must happen
-atomically across every process sharing the store. In SQL that is one statement
-with a unique constraint and a conditional count — not `SELECT` then `INSERT`.
+How much that matters, measured: a deliberately naive check-then-act limiter
+**passes all 19 sequential cases and fails only the 4 concurrent ones.** If you
+write a store and only run it sequentially, you will believe it works.
+
+The whole contract reduces to one rule, in both interfaces: within a **single**
+call, the duplicate check, the budget check, and the insert happen atomically
+across every process sharing the store. `SELECT` then `INSERT` is the bug.
+[`@vaduno/postgres`](packages/postgres) does it with `pg_advisory_xact_lock` on
+the scope, taken as the first statement of a transaction on a dedicated pooled
+connection — read that if you want a worked example, including why the
+dedicated connection is not optional.
+
+Reuse `firstViolatedWindow` from `@vaduno/guard` rather than reimplementing
+window arithmetic. Four implementations already share it, which is why they
+cannot drift on what a cap means.
 
 ## Claims and language
 

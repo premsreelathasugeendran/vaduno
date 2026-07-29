@@ -73,7 +73,7 @@ const results = await Promise.all(
 - `status: "replayed"` carries the original outcome (`executed` / `failed` / `unresolved`); the executor does **not** run again.
 - A used intent id presented with **different money fields** is denied `MANDATE_REPLAY_MISMATCH` — an id-reuse attack, not a retry.
 - Cross-process safety needs a shared `ConsumeStore` (`FileConsumeStore` on one box; a DB unique index for multi-instance).
-- **Rolling spend caps are *not* cross-process.** Consume-once is, with a shared store; the authoritative spend counter is in-memory per guard instance, so two guard processes each enforcing a $50/day cap will let $100 through. Run one guard per trust boundary, or write a store-backed limiter. This is the sharpest edge in the project — see [SECURITY.md](https://github.com/premsreelathasugeendran/vaduno/blob/master/SECURITY.md).
+- **Rolling spend caps need a shared limiter too.** The default is in-memory and per-instance, so two guard processes each enforcing a $50/day cap let $100 through. Pass `FileSpendLimiter` (one box) or `PostgresSpendLimiter` (multiple instances) and the cap holds — `reserve()` evaluates every window and records the reservation as one atomic step, so there is no read-then-write gap to race. See [SECURITY.md](https://github.com/premsreelathasugeendran/vaduno/blob/master/SECURITY.md).
 
 ## Design principles
 
@@ -91,6 +91,7 @@ const results = await Promise.all(
 | [`@vaduno/stripe`](https://www.npmjs.com/package/@vaduno/stripe) | Makes the guard the real-time authorization brain for Stripe Issuing cards |
 | [`@vaduno/transparency`](https://www.npmjs.com/package/@vaduno/transparency) | RFC 9162 Merkle transparency log + C2SP witness cosigning |
 | [`@vaduno/revocation`](https://www.npmjs.com/package/@vaduno/revocation) | Enforced kill switch + W3C Bitstring Status Lists |
+| [`@vaduno/postgres`](https://www.npmjs.com/package/@vaduno/postgres) | Spend caps + consume-once that hold across **multiple instances** |
 
 ## Security
 

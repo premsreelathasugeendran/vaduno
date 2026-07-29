@@ -52,19 +52,38 @@ failures are first-class evidence, not dropped.
 
 These are documented, not hidden. Some are scope choices; some are on the roadmap.
 
-1. **Single live process for atomic guarantees.** The mutex (spend races) and
-   the in-memory spend counter are atomic *within one process*. Two live
-   processes sharing one ledger can still race on rolling **spend limits**
-   unless the shared `SpendHistory` is backed by a transactional store. Run one
-   guard process per trust boundary, or supply such a store. On restart,
-   in-memory state starts empty — call `guard.hydrateFromLedger()` (restores
-   spend counter + freeze state) and `MandateManager.hydrateFromLedger()`
-   (restores consume-once + revocation state) to rebuild from the ledger, which
-   trusts the ledger at startup as a documented boundary.
+1. **Atomic guarantees are only as wide as the store you supply.** Both
+   consume-once and rolling spend caps hold across processes — but only when
+   you pass a shared implementation. The defaults are in-memory and therefore
+   single-process, so two guard processes each enforcing a $50/day cap will let
+   $100 through. Run one guard per trust boundary, or supply a shared store:
+   `FileSpendLimiter` / `FileConsumeStore` for several processes on one box,
+   `PostgresSpendLimiter` / `PostgresConsumeStore` for multiple instances.
+   `npm run demo:cross-process` demonstrates both outcomes with two real OS
+   processes. On restart, in-memory state starts empty — call
+   `guard.hydrateFromLedger()` (spend counter + freeze state) and
+   `MandateManager.hydrateFromLedger()` (consume-once + revocation state) to
+   rebuild from the ledger, which trusts the ledger at startup as a documented
+   boundary.
+   - **Why a shared store alone is not sufficient** (fixed in 0.2.0): the spend
+     interface used to be a read-only `totalsSince()`, which can only support
+     check-then-act. Two instances both read `$0`, both pass the check, both
+     spend. Backing *that* with Postgres would not have helped — the race is in
+     the gap between the read and the append. `SpendLimiter.reserve()` now
+     evaluates every window and records the reservation as ONE atomic step. A
+     limiter that reads totals and then inserts has reintroduced the bug, which
+     is what the conformance suite exists to catch.
+   - **A failed execution keeps its spend counted.** A thrown executor may
+     still have moved money — a timeout after the charge landed is
+     indistinguishable from a clean failure — so the reservation stays held
+     rather than freeing the budget. Otherwise an executor that times out
+     post-charge could be retried past any cap. Call `guard.releaseSpend(intentId)`
+     only when you can prove the rail did not charge; it cannot un-count a
+     successful execution.
    - **Mandate consume-once IS cross-process safe** when you pass a shared
-     `ConsumeStore`: `FileConsumeStore` (one box) or a DB store with a UNIQUE
-     constraint enforce both per-intent idempotency and the `maxUses` budget
-     atomically. The default `MemoryConsumeStore` is single-process only.
+     `ConsumeStore`: `FileConsumeStore` (one box) or `PostgresConsumeStore`
+     (multi-instance) enforce both per-intent idempotency and the `maxUses`
+     budget atomically. The default `MemoryConsumeStore` is single-process only.
    - **`FileConsumeStore` residual:** its lock is advisory. A holder that
      STALLS past `staleMs` (default 30s) mid-write is treated as dead and can be
      reclaimed, briefly permitting two holders and a lost update. `staleMs` must

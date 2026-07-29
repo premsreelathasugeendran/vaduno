@@ -7,6 +7,65 @@ two have already done so — both times because review found a real security bug
 whose fix was breaking. See [`SECURITY.md`](SECURITY.md) for what is and isn't
 guaranteed.
 
+## 0.2.0 — 2026-07-29
+
+Spend caps now hold across processes. Until this release they did not, and
+there was no way to make them.
+
+### Added
+
+- **`SpendLimiter`** — an atomic `reserve` / `commit` / `release` contract where
+  every rolling window is evaluated *inside* the reserving call. Ships
+  `MemorySpendLimiter` (default, single process) and `FileSpendLimiter`
+  (several processes on one box).
+- **[`@vaduno/postgres`](packages/postgres)** — `PostgresSpendLimiter` and
+  `PostgresConsumeStore`, for caps and mandates that hold across **multiple
+  instances**. Verified by both conformance suites against a real Postgres 16
+  in CI — 40 tests, no mocks, because the property being tested lives in the
+  database. `pg` is an optional peer dependency; `@vaduno/guard` still has zero
+  runtime dependencies.
+- **A `SpendLimiter` conformance suite** (23 cases per limiter) run against two
+  independent handles on one backing store, plus `guard.releaseSpend(intentId)`.
+- **`npm run demo:cross-process`** — spawns two real OS processes racing one
+  $50/day cap. Shows $100 spent with the per-instance default and exactly $50
+  with a shared limiter. Runs in CI on Linux, Windows and macOS and fails the
+  build on any overspend.
+
+### Fixed
+
+- **Rolling spend caps did not hold across processes, and could not be made to.**
+  `SpendHistory.totalsSince()` is a read-only query, so the guard could only ever
+  check-then-act: read totals, execute, append. Two processes both read `$0`,
+  both passed a `$50` check, both spent. Pointing that interface at a shared
+  database would *not* have fixed it — the race lives in the gap between the read
+  and the append, not in where the rows are. The budget check moved inside the
+  mutating call, exactly as `maxUses` had to move inside `claim()` when the
+  consume store had this same bug one layer down.
+
+### Changed — read this one before upgrading
+
+- **A failed execution now KEEPS its spend counted.** Previously a thrown
+  executor freed the entire reserved amount. But a timeout *after* the charge
+  landed is indistinguishable from a clean failure, so an executor that failed
+  post-charge could be retried past any cap: N timeouts, N real charges, none of
+  them counted — and with no mandate configured, nothing else bounded it. The
+  amount now stays reserved (counted, but reclaimable). Call
+  `guard.releaseSpend(intentId)` when you can prove the rail did not charge; it
+  cannot un-count a successful execution, so a mistaken call is safe.
+- `policyWindows(policy)` derives rolling windows in one place, so the advisory
+  pre-check and the authoritative reserve can never disagree about a cap.
+- `FileConsumeStore` now uses the extracted `FileMutex` that `FileSpendLimiter`
+  also uses. Same lock, one implementation — two copies of a subtle lock is how
+  the two copies drift.
+- The release gate discovered packages from a **hardcoded list**, so
+  `@vaduno/postgres` would have shipped completely ungated while the gate
+  reported success. Now discovered from the filesystem.
+
+Additive otherwise: `history` still works as an advisory fast-fail, and code
+that does not pass `limiter` behaves as before — single-process, as documented.
+
+Tests 309 → 357, plus 40 more against real Postgres in CI.
+
 ## 0.1.1 — 2026-07-28
 
 No code changed. `dist/` is byte-identical to 0.1.0. This release exists
