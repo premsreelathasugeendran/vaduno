@@ -11,7 +11,11 @@
  *
  * To write a store (Postgres, Redis, DynamoDB, SQLite):
  *
- *   import { runConsumeStoreConformance } from "@vaduno/guard/test/consume-store-conformance";
+ * This file is NOT published to npm — @vaduno/guard ships only dist/. Copy it
+ * into your repo (it imports only vitest and the package types), or open a PR
+ * adding your store here:
+ *
+ *   import { runConsumeStoreConformance } from "./vendor/consume-store-conformance.js";
  *
  *   runConsumeStoreConformance({
  *     name: "PostgresConsumeStore",

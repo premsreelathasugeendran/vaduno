@@ -10,7 +10,11 @@
  *
  * To write a limiter (Postgres, Redis, DynamoDB):
  *
- *   import { runSpendLimiterConformance } from "@vaduno/guard/test/spend-limiter-conformance";
+ * This file is NOT published to npm — @vaduno/guard ships only dist/. Copy it
+ * into your repo (it imports only vitest and the package types), or open a PR
+ * adding your store here:
+ *
+ *   import { runSpendLimiterConformance } from "./vendor/spend-limiter-conformance.js";
  *
  *   runSpendLimiterConformance({
  *     name: "PostgresSpendLimiter",
@@ -36,7 +40,7 @@ export interface SpendLimiterHarness {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const AGENT = "agent-1";
+const SCOPE = "policy-1";
 const CUR = "USD";
 
 /** A $50/day cap, in minor units. */
@@ -53,7 +57,7 @@ function req(
   nowMs: number,
 ): ReserveRequest {
   return {
-    agentId: AGENT,
+    scope: SCOPE,
     currency: CUR,
     amountMinor,
     reservationId: id,
@@ -128,10 +132,10 @@ export function runSpendLimiterConformance(harness: SpendLimiterHarness): void {
       });
     });
 
-    it("different agents have independent budgets", async () => {
+    it("different SCOPES have independent budgets", async () => {
       await withLimiter(async ([l]) => {
         expect((await l.reserve(req("a", 5_000, [dayCap(5_000)], T0))).ok).toBe(true);
-        const other = { ...req("b", 5_000, [dayCap(5_000)], T0), agentId: "agent-2" };
+        const other = { ...req("b", 5_000, [dayCap(5_000)], T0), scope: "policy-2" };
         expect((await l.reserve(other)).ok).toBe(true);
       });
     });
@@ -236,7 +240,7 @@ export function runSpendLimiterConformance(harness: SpendLimiterHarness): void {
         await l.reserve(req("a", 1_500, [dayCap(50_000)], T0));
         await l.reserve(req("b", 2_500, [dayCap(50_000)], T0));
         await l.commit("b");
-        const t = await l.totalsSince(AGENT, new Date(T0 - DAY_MS).toISOString(), CUR);
+        const t = await l.totalsSince(SCOPE, new Date(T0 - DAY_MS).toISOString(), CUR);
         expect(t.totalMinor).toBe(4_000);
         expect(t.count).toBe(2);
       });
@@ -263,7 +267,7 @@ export function runSpendLimiterConformance(harness: SpendLimiterHarness): void {
         expect(won).toHaveLength(CAP / EACH);
 
         const totals = await limiters[0].totalsSince(
-          AGENT,
+          SCOPE,
           new Date(T0 - DAY_MS).toISOString(),
           CUR,
         );
@@ -283,7 +287,7 @@ export function runSpendLimiterConformance(harness: SpendLimiterHarness): void {
         );
         expect(results.every((r) => r.ok)).toBe(true);
         const totals = await limiters[0].totalsSince(
-          AGENT,
+          SCOPE,
           new Date(T0 - DAY_MS).toISOString(),
           CUR,
         );
@@ -332,7 +336,7 @@ export function runSpendLimiterConformance(harness: SpendLimiterHarness): void {
         expect([r1.ok, r2.ok].filter(Boolean)).toHaveLength(1);
 
         const totals = await a.totalsSince(
-          AGENT,
+          SCOPE,
           new Date(T0 - DAY_MS).toISOString(),
           CUR,
         );

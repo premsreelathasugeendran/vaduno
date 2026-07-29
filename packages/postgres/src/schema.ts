@@ -11,17 +11,20 @@ export const VADUNO_SCHEMA_SQL = `
 -- cap exactly like a committed one: over-hold, never overspend.
 CREATE TABLE IF NOT EXISTS vaduno_spend (
   reservation_id TEXT PRIMARY KEY,
-  agent_id       TEXT   NOT NULL,
+  -- Operator-controlled budget scope (the policy id). NEVER intent.agentId:
+  -- the agent controls that field, so scoping a cap by it lets a compromised
+  -- agent mint a fresh budget. That was a real bypass in 0.2.0.
+  scope          TEXT   NOT NULL,
   currency       TEXT   NOT NULL,
   amount_minor   BIGINT NOT NULL,
   occurred_ms    BIGINT NOT NULL,
   state          TEXT   NOT NULL CHECK (state IN ('reserved', 'committed'))
 );
 
--- The lookup every reserve() does: rows for one (agent, currency) inside a
+-- The lookup every reserve() does: rows for one (scope, currency) inside a
 -- time window.
 CREATE INDEX IF NOT EXISTS vaduno_spend_scope
-  ON vaduno_spend (agent_id, currency, occurred_ms);
+  ON vaduno_spend (scope, currency, occurred_ms);
 
 -- Consume-once registry. The PRIMARY KEY is the uniqueness half of the
 -- contract; the advisory lock in claim() is the budget half.

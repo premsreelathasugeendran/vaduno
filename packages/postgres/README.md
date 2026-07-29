@@ -45,26 +45,30 @@ spends $100. A `PRIMARY KEY` does not help: the two rows have different ids and
 both inserts are perfectly legal.
 
 So `reserve()` and `claim()` take `pg_advisory_xact_lock` on the scope — the
-`(agent, currency)` pair, or the mandate id — as the first statement of a
+`(scope, currency)` pair, or the mandate id — as the first statement of a
 transaction on a **dedicated pooled connection**. Everything after it is
 serialized for that scope until commit. The window arithmetic itself is not
 reimplemented in SQL; it calls the same `firstViolatedWindow` the in-memory and
 file limiters use, so the implementations cannot drift on what a cap means.
 
-The trade-off, stated plainly: reserves for one agent serialize. That is
+The trade-off, stated plainly: reserves for one scope serialize. That is
 deliberate — correctness over throughput on the path where being wrong means
-spending someone's money twice. Different agents never contend.
+spending someone's money twice. Different scopes never contend.
 
 ## Verification
 
-Both implementations are held to the conformance suites that ship with
-`@vaduno/guard`, run against a real Postgres in CI — never a mock, because the
-only property worth proving lives in the database.
+Both implementations are held to the conformance suites in the
+[vaduno repo](https://github.com/premsreelathasugeendran/vaduno/tree/master/packages/guard/test),
+run against a real Postgres in CI — never a mock, because the only property
+worth proving lives in the database. (The suites are test files in the repo;
+they are not published inside `@vaduno/guard`, which ships only `dist/`.)
 
 The suites are worth running against your own store too, if you write one. They
 are built around the observation that a check-then-act implementation passes
 every sequential test and fails only the concurrent ones — which is exactly how
 this class of bug reaches production.
+
+From a clone of the repo:
 
 ```bash
 VADUNO_TEST_POSTGRES_URL=postgres://... npm -w @vaduno/postgres run test

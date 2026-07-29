@@ -1,11 +1,76 @@
 # Changelog
 
-All five packages are versioned together and released as a matched set.
+All six packages are versioned together and released as a matched set.
 
-This project is pre-1.0. Under semver, 0.x minor bumps may break the API, and
-two have already done so — both times because review found a real security bug
-whose fix was breaking. See [`SECURITY.md`](SECURITY.md) for what is and isn't
+This project is pre-1.0. Under semver, 0.x minor bumps may break the API. One
+has, and it was breaking because the fix for a real security bug required it. See [`SECURITY.md`](SECURITY.md) for what is and isn't
 guaranteed.
+
+## 0.2.1 — 2026-07-29
+
+**Two cap bypasses shipped in 0.2.0. Upgrade.** Both were introduced by the
+0.2.0 limiter itself — the release whose entire purpose was to make caps hold —
+and both were found by a fact-check pass *after* publishing, not before.
+
+### Fixed
+
+- **Rotating `intent.agentId` reset the cap.** The reservation was scoped to
+  `agentId`, a field this project's own threat model
+  ([CONTRIBUTING](CONTRIBUTING.md) rule 4, [`types.ts`](packages/guard/src/types.ts))
+  states the attacker controls. Reproduced: two guards sharing one limiter,
+  `$100` through a `$50/day` cap, by changing one string. The same test with a
+  fixed `agentId` correctly denied — which is why the conformance suite missed
+  it entirely.
+
+  Reservations are now scoped to **`policy.id`**, which the operator sets. Note
+  this also means the pre-0.2.0 behaviour is restored: the old in-memory history
+  deliberately *ignored* `agentId` for exactly this reason, and 0.2.0 silently
+  regressed a mitigation `SECURITY.md` had claimed since 0.1.0. If you want
+  per-agent budgets, derive the scope from an id **you** assign to a trusted
+  principal, never from the intent.
+
+- **Reusing an `intent.id` ran the rail again while counting one charge.** A
+  replayed reservation returned `ok` and the guard fell through to the executor.
+  Reproduced: the same intent id twice ran the rail **twice**, counted once; a
+  throwing executor retried eight times ran the rail **eight times** and still
+  counted one `$50` charge. That directly contradicted the burn-on-failure
+  guarantee 0.2.0 added, which exists so an executor timing out *after* the
+  charge lands cannot be retried past the cap.
+
+  A replayed reservation now returns `status: "replayed"` — `executed` if the
+  first attempt committed, `unresolved` if it never settled (money may have
+  moved; the guard will not guess). When a mandate is present the mandate's
+  consume-once registry still decides, because it holds strictly better
+  information: the intent digest, so id reuse with *different* money is DENIED
+  rather than replayed, and the settled outcome, so a failed attempt replays
+  `failed` rather than `unresolved`.
+
+### Changed (breaking, and it is a one-day-old interface)
+
+- `ReserveRequest.agentId` → **`ReserveRequest.scope`**. Any `SpendLimiter` you
+  wrote against 0.2.0 needs this rename, and should key on `scope`. The
+  Postgres schema column `agent_id` → `scope` with it.
+- `ReserveResult` gains `state` on a replay, so the caller can tell "the rail
+  ran" from "the rail may have run".
+- `GuardResult`'s `replayed` variant has `mandateId` **optional** — an intent id
+  can now be replayed by the limiter with no mandate involved.
+
+### Documentation corrections
+
+The same pass found five claims a reader could have disproved:
+
+- **The conformance suites are not published.** `@vaduno/guard` ships only
+  `dist/`, yet both suites' own docblocks told you to
+  `import … from "@vaduno/guard/test/…"`, CONTRIBUTING repeated it, and
+  `@vaduno/postgres@0.2.0`'s README says they "ship with `@vaduno/guard`" —
+  that one is immutable on npm now. They are repo test files; copy them or send
+  a PR.
+- "This project has shipped that bug twice" — written twice, **shipped once**.
+  The `maxUses` gate was fixed six days before the first publish.
+- "All five packages are versioned together" — six.
+- The changelog claimed two breaking minor bumps; there had been one.
+
+Tests 357 → 364, including regression tests for both bypasses.
 
 ## 0.2.0 — 2026-07-29
 
@@ -122,7 +187,7 @@ reader could act on.
 
 ### Changed (repository only — not shipped in any package)
 
-- `vitest` `^2.1.9` → `^3.2.6` across all five packages (the lockfile resolves
+- `vitest` `^2.1.9` → `^3.2.6` across all five packages shipping then (the lockfile resolves
   3.2.7). This cleared **one** critical advisory, GHSA-5xrq-8626-4rwp —
   arbitrary file read/execute when the Vitest UI server is listening, never
   applicable here because the UI is never started. Dependabot counts it once

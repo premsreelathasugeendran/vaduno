@@ -76,12 +76,17 @@ export class FileSpendLimiter implements SpendLimiter {
       const existing = data.reservations[req.reservationId];
       if (existing) {
         // A retry of the same intent must not consume budget twice.
-        return { ok: true as const, reservationId: req.reservationId, replayed: true };
+        return {
+          ok: true as const,
+          reservationId: req.reservationId,
+          replayed: true,
+          state: existing.state,
+        };
       }
 
-      const key = scopeKey(req.agentId, req.currency);
+      const key = scopeKey(req.scope, req.currency);
       const inScope = Object.values(data.reservations).filter(
-        (r) => scopeKey(r.agentId, r.currency) === key,
+        (r) => scopeKey(r.scope, r.currency) === key,
       );
       const violated = firstViolatedWindow(
         req.windows,
@@ -93,7 +98,7 @@ export class FileSpendLimiter implements SpendLimiter {
 
       data.reservations[req.reservationId] = {
         reservationId: req.reservationId,
-        agentId: req.agentId,
+        scope: req.scope,
         currency: req.currency,
         amountMinor: req.amountMinor,
         ms: req.nowMs,
@@ -126,18 +131,19 @@ export class FileSpendLimiter implements SpendLimiter {
     });
   }
 
+  /** NOTE: the first argument is the SCOPE (policy id), not an agent id. */
   async totalsSince(
-    agentId: string,
+    scope: string,
     sinceIso: string,
     currency: string,
   ): Promise<{ totalMinor: number; count: number }> {
     const since = Date.parse(sinceIso);
     const data = await this.load();
-    const key = scopeKey(agentId, currency);
+    const key = scopeKey(scope, currency);
     let totalMinor = 0;
     let count = 0;
     for (const r of Object.values(data.reservations)) {
-      if (scopeKey(r.agentId, r.currency) !== key) continue;
+      if (scopeKey(r.scope, r.currency) !== key) continue;
       if (!Number.isFinite(since) || r.ms <= since) continue;
       totalMinor += r.amountMinor;
       count += 1;

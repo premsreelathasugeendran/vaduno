@@ -147,7 +147,21 @@ export interface SpendWindow {
 }
 
 export interface ReserveRequest {
-  agentId: string;
+  /**
+   * The budget this reservation counts against. MUST be operator-controlled.
+   *
+   * The guard passes the POLICY id, never `intent.agentId`. This is
+   * load-bearing: the threat model assumes the agent controls every field of
+   * the intent, `agentId` included, so scoping a cap by `agentId` lets a
+   * compromised agent mint a fresh budget by changing one string. That was a
+   * real bypass in 0.2.0 — two guards sharing one limiter passed $100 through
+   * a $50 cap by rotating `agentId`, while the same test with a fixed
+   * `agentId` correctly denied.
+   *
+   * If you genuinely want per-agent budgets, derive the scope from an id YOU
+   * assign to a trusted principal, not from the intent.
+   */
+  scope: string;
   currency: string;
   amountMinor: number;
   /**
@@ -162,7 +176,21 @@ export interface ReserveRequest {
 }
 
 export type ReserveResult =
-  | { ok: true; reservationId: string; replayed: boolean }
+  | {
+      ok: true;
+      reservationId: string;
+      replayed: boolean;
+      /**
+       * State of the reservation being replayed. Present only when
+       * `replayed` is true.
+       *
+       * The caller needs this to decide what a duplicate means: "committed"
+       * says the rail already ran to completion, while "reserved" says an
+       * earlier attempt claimed the budget and its outcome is unknown — in
+       * flight, or crashed mid-execution. Neither may run the rail again.
+       */
+      state?: "reserved" | "committed";
+    }
   /** `code` is the SpendWindow.code of the first window that refused. */
   | { ok: false; code: string; message: string };
 
@@ -227,7 +255,8 @@ export type GuardStatus =
  *    only for internal errors.
  *  - "approval_rejected": a human declined.
  *  - "failed": the executor itself threw; `error` holds the message.
- *  - "replayed": this (mandate, intent id) was ALREADY consumed — the
+ * - "replayed": this intent id was ALREADY consumed — by the mandate registry
+ *    or by the spend limiter — and the
  *    executor did NOT run again; `original` reports the first attempt's
  *    outcome ("unresolved" = the original claim never settled, e.g. a crash
  *    mid-execution — reconcile before retrying with a new intent).
@@ -266,7 +295,13 @@ export type GuardResult<T> =
   | {
       status: "replayed";
       intentId: string;
-      mandateId: string;
+      /**
+       * Set when the replay was detected by the MANDATE's consume-once
+       * registry. Absent when it was detected by the spend limiter — an intent
+       * id can be replayed without any mandate being involved, and that path
+       * must still refuse to re-run the rail.
+       */
+      mandateId?: string;
       original: {
         status: "executed" | "failed" | "unresolved";
         settledAt?: string;

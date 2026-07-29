@@ -442,7 +442,12 @@ export class VadunoGuard {
     // The reservation, not `evaluatePolicy`, is what actually enforces the
     // cap: evaluatePolicy reads totals and is check-then-act by construction.
     const reservation = await this.limiter.reserve({
-      agentId: intent.agentId,
+      // The POLICY id, never intent.agentId. The threat model assumes the agent
+      // controls every field of the intent, so scoping a cap by agentId lets a
+      // compromised agent mint a fresh budget by changing one string. That was
+      // a real bypass: two guards sharing one limiter passed $100 through a $50
+      // cap by rotating agentId, while a fixed agentId correctly denied.
+      scope: this.policy.id,
       currency: this.policy.currency,
       amountMinor: intent.amount.amountMinor,
       // The intent id, so a retry storm reserves ONCE rather than draining
@@ -456,9 +461,37 @@ export class VadunoGuard {
       await this.ledger.append("policy_decision", { policyResult: denied }, refs);
       return { status: "denied", intentId: intent.id, policyResult: denied };
     }
-    // Only a reservation WE took may be released on a later denial. If this
-    // call merely replayed an existing one, that reservation belongs to the
-    // original attempt — releasing it would un-count spend that may be real.
+
+    // A REPLAYED reservation means this intent id already claimed budget, so an
+    // earlier attempt already reached the rail. Returning here — rather than
+    // falling through — is what stops the executor running twice while the
+    // spend is counted once.
+    //
+    // Without this, `reserve()` being idempotent actively HID a double
+    // execution: same intent id twice ran the rail twice and counted one
+    // charge, and a throwing executor retried eight times ran the rail eight
+    // times and still counted one. Mandates would have caught it, but mandates
+    // are optional and the cap is not.
+    // A MANDATE, if present, is the better replay authority: its consume-once
+    // registry holds the intent digest (so id reuse with different money is
+    // DENIED, not replayed) and the settled outcome (so a failed attempt
+    // replays "failed", not "unresolved"). Let it decide, and don't release a
+    // reservation we didn't take.
+    //
+    // Without a mandate there is no other execution guard, and the limiter is
+    // the only thing between a duplicate id and a second charge. Before this,
+    // `reserve()` being idempotent actively HID a double execution: the same
+    // intent id twice ran the rail twice and counted one charge, and a throwing
+    // executor retried eight times ran the rail eight times and still counted
+    // one. Mandates are optional; the cap is not.
+    const mandated = this.requireMandate || Boolean(intent.mandateId);
+    if (reservation.replayed && !mandated) {
+      return this.replayedResult(intent, reservation.state);
+    }
+
+    // Only a reservation WE took may be released on a later denial. A replayed
+    // one belongs to the original attempt; releasing it would un-count spend
+    // that may be real.
     const ourReservation = reservation.replayed ? null : reservation.reservationId;
     const releaseIfOurs = async () => {
       if (ourReservation) await this.releaseBestEffort(ourReservation);
@@ -626,6 +659,30 @@ export class VadunoGuard {
       // Swallow: the money outcome is already decided and must be reported
       // truthfully. An unsettled claim replays as "unresolved" — fail closed.
     }
+  }
+
+  /**
+   * A duplicate intent id that already claimed budget. The rail must NOT run
+   * again; report what the first attempt did.
+   *
+   * "committed" means it settled — the rail ran and the spend is real.
+   * "reserved" means it claimed budget and never settled: in flight, or crashed
+   * mid-execution. Money MAY have moved, so this reports `unresolved` rather
+   * than guessing. Never tell a caller a charge didn't happen when it might.
+   */
+  private replayedResult<T>(
+    intent: PaymentIntent,
+    state: "reserved" | "committed" | undefined,
+  ): GuardResult<T> {
+    return {
+      status: "replayed",
+      intentId: intent.id,
+      ...(intent.mandateId ? { mandateId: intent.mandateId } : {}),
+      original:
+        state === "committed"
+          ? { status: "executed" as const, settledAt: this.now().toISOString() }
+          : { status: "unresolved" as const },
+    };
   }
 
   /**

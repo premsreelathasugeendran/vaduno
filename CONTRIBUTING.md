@@ -1,6 +1,6 @@
 # Contributing to Vaduno
 
-Thanks for looking. This is a young project (v0.2.0) and outside eyes are
+Thanks for looking. This is a young project (v0.2.1) and outside eyes are
 genuinely wanted — especially on the concurrency and the cryptography, which
 are where the real bugs have been.
 
@@ -19,7 +19,7 @@ you're unsure whether something qualifies, report it privately anyway.
 ```bash
 npm install
 npm run build
-npm run test        # 357 tests across six packages
+npm run test        # 364 tests across six packages
 ```
 
 Then run the scenarios — each is a story from the README, and they are the
@@ -89,18 +89,21 @@ implementations ship. **Redis, DynamoDB, MySQL and SQLite do not** — those are
 the most useful things anyone could add.
 
 Do not just satisfy the interface. Both are satisfied by implementations that
-double-spend, and this project has shipped that bug twice: once in the consume
-store's `maxUses` gate, once in the spend limiter. Run the conformance suites:
+double-spend — this project has written that bug twice and **shipped** it once:
+the consume store's `maxUses` gate was caught before the first publish, the
+spend limiter's was not and went out in 0.2.0. Run the conformance suites:
 
 ```bash
 npx vitest run packages/guard/test/consume-store.conformance.test.ts
 npx vitest run packages/guard/test/spend-limiter.conformance.test.ts
 ```
 
-Both export a `run*Conformance(harness)` you can call from your own repo. Your
-harness returns **two independent handles on the same backing store** — that is
-what exercises the cross-process contract, and a single handle is precisely how
-both original bugs hid.
+Both export a `run*Conformance(harness)`. They are **not** published to npm —
+`@vaduno/guard` ships only `dist/` — so either copy the file into your repo
+(each imports nothing but vitest and the package types) or add your store to
+this repo and send a PR. Your harness returns **two independent handles on the
+same backing store**: that is what exercises the cross-process contract, and a
+single handle is precisely how both original bugs hid.
 
 How much that matters, measured: a deliberately naive check-then-act limiter
 **passes all 19 sequential cases and fails only the 4 concurrent ones.** If you

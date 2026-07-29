@@ -19,11 +19,11 @@ Vaduno puts a deterministic guard between your agent and the money:
 
 **Vaduno never holds funds, keys to funds, or the ability to move money.** It decides whether *your* executor function may run, and records everything. (Precisely: it has no custody, no card PANs, and no wallet or bank credentials. It *does* use Ed25519 keys to sign and verify mandates — the private half belongs to whoever issues them, and a guard that only validates and consumes needs nothing but the public key.) Rail-agnostic by design: wrap an x402 client, a Stripe issuing call, a UPI collect — anything.
 
-## Status: v0.2.0, new, and honest about it
+## Status: v0.2.1, new, and honest about it
 
 Read this before you put it anywhere near real money.
 
-- **Published this week. Zero users. Never run in production.** The tests are thorough (357 across six packages, including concurrency and adversarial cases) but tests are not production.
+- **Published this week. Zero users. Never run in production.** The tests are thorough (364 across six packages, including concurrency and adversarial cases) but tests are not production.
 - **The Stripe adapter has never run against Stripe.** Not even in test mode. It is verified against an in-process mock of the `issuing_authorization.request` webhook — the decision logic and the 1.3-second fail-closed deadline are exercised, the network path is not. Live Issuing needs a business entity and Stripe approval the author doesn't have. Treat it as a reference implementation, not a tested integration.
 - **The API will break.** It's 0.x; breaking changes land in minor versions. Two API changes in the last week came from security review, and more review is planned.
 - **In-process, it can be routed around.** A library the agent's own process imports is a guardrail against a *confused* agent, not a *compromised runtime* — an injected agent holding a raw wallet key can simply not call it. The one configuration where it is genuinely non-bypassable today is **Stripe Issuing**, where the guard answers the card authorization itself and the network enforces the answer. Out-of-process and rail-side enforcement is what would make the rest of it as strong.
