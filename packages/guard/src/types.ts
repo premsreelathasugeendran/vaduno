@@ -128,6 +128,77 @@ export interface SpendHistory {
   ): Promise<{ totalMinor: number; count: number }>;
 }
 
+/**
+ * One rolling constraint, evaluated over a window ending "now".
+ *
+ * The POLICY decides what the caps are; the LIMITER enforces them atomically.
+ * Keeping the numbers here rather than inside the store means a store stays
+ * dumb, and every store enforces exactly the same rules.
+ */
+export interface SpendWindow {
+  /** Denial code reported when this window is the one that refuses. */
+  code: string;
+  /** Window length in ms, counted back from now. */
+  windowMs: number;
+  /** Max total minor units in the window. Omit for a count-only window. */
+  capMinor?: number;
+  /** Max transaction COUNT in the window. Omit for an amount-only window. */
+  maxCount?: number;
+}
+
+export interface ReserveRequest {
+  agentId: string;
+  currency: string;
+  amountMinor: number;
+  /**
+   * Idempotency key — the intent id. Reserving the same id twice returns the
+   * SAME reservation rather than consuming budget twice, so a retry storm
+   * cannot drain a cap.
+   */
+  reservationId: string;
+  /** Every window must pass. Empty means "no rolling limits configured". */
+  windows: SpendWindow[];
+  nowMs: number;
+}
+
+export type ReserveResult =
+  | { ok: true; reservationId: string; replayed: boolean }
+  /** `code` is the SpendWindow.code of the first window that refused. */
+  | { ok: false; code: string; message: string };
+
+/**
+ * Atomic spend limiter — the piece that makes "total spend ≤ cap" hold across
+ * PROCESSES, not just within one.
+ *
+ * WHY THIS EXISTS: a read-only `SpendHistory` can only support check-then-act.
+ * Two processes both read "spent $0", both pass a $50 check, and both spend —
+ * the cap silently fails to cap. That is the same TOCTOU shape as the
+ * consume-store double-spend, and the same fix applies: the budget check moves
+ * INSIDE the mutating call.
+ *
+ * THE CONTRACT every implementation must honor: within a SINGLE `reserve()`
+ * call, evaluating every window and recording the reservation happen
+ * atomically with respect to every other process sharing the store. A caller
+ * that reads totals and then reserves has reintroduced the bug.
+ *
+ * Lifecycle: `reserve` → (rail runs) → `commit`, or `reserve` → `release` when
+ * the rail provably did NOT run. A reservation that is never settled keeps
+ * counting against the cap: over-hold, never overspend.
+ */
+export interface SpendLimiter extends SpendHistory {
+  reserve(req: ReserveRequest): Promise<ReserveResult>;
+  /** Promote a reservation to settled spend. Idempotent. */
+  commit(reservationId: string): Promise<void>;
+  /**
+   * Drop a reservation that never became spend. Idempotent.
+   *
+   * NEVER call this once the executor has been invoked — if the rail may have
+   * moved money, the spend must stay counted. Releasing on failure is how you
+   * turn a crash loop into unbounded spend.
+   */
+  release(reservationId: string): Promise<void>;
+}
+
 export interface ApprovalRequest {
   intent: PaymentIntent;
   policyResult: PolicyResult;

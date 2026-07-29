@@ -23,6 +23,7 @@
     "dashboard:dev": "npm -w @vaduno/dashboard run dev",
     "dashboard": "npm -w @vaduno/dashboard run demo",
     "release:check": "npm run build && npm run test && node scripts/check-release.mjs",
-    "release:pack": "npm -w @vaduno/guard pack --dry-run && npm -w @vaduno/transparency pack --dry-run && npm -w @vaduno/revocation pack --dry-run && npm -w @vaduno/x402 pack --dry-run && npm -w @vaduno/stripe pack --dry-run"
+    "release:pack": "npm -w @vaduno/guard pack --dry-run && npm -w @vaduno/transparency pack --dry-run && npm -w @vaduno/revocation pack --dry-run && npm -w @vaduno/x402 pack --dry-run && npm -w @vaduno/stripe pack --dry-run",
+    "demo:cross-process": "npm -w cross-process-agent run start"
   }
 }

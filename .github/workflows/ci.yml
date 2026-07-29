@@ -74,6 +74,11 @@ jobs:
       - run: npm run demo:stripe
       - run: npm run demo:transparency
       - run: npm run demo:revocation
+      # Spawns two real OS processes racing one cap, and exits non-zero if the
+      # shared limiter ever lets total spend past it. This is the guarantee the
+      # project's headline claim rests on, so CI proves it on every push —
+      # including on Windows, where the lockfile semantics differ.
+      - run: npm run demo:cross-process
 
   publishable:
     name: release gate

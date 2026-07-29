@@ -1,7 +1,7 @@
-import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { ClaimResult, ConsumeStore, StoredOutcome, UseClaim } from "./consume-store.js";
+import { FileMutex, type FileMutexOpts } from "./file-mutex.js";
 
 interface FileShape {
   /** Keyed by `${mandateId.length}:${mandateId}:${useKey}` (injective). */
@@ -35,17 +35,14 @@ let tmpCounter = 0;
  * transactional store whose UNIQUE/CHECK constraint spans the budget (Postgres).
  */
 export class FileConsumeStore implements ConsumeStore {
-  private readonly lockPath: string;
-  private queue: Promise<unknown> = Promise.resolve();
-  /** Token written into the lockfile for the lock we currently hold. */
-  private lockToken = "";
+  private readonly mutex: FileMutex;
 
   constructor(
     private readonly filePath: string,
-    private readonly now: () => Date = () => new Date(),
-    private readonly lockOpts: { retries?: number; delayMs?: number; staleMs?: number } = {},
+    now: () => Date = () => new Date(),
+    lockOpts: FileMutexOpts = {},
   ) {
-    this.lockPath = `${filePath}.lock`;
+    this.mutex = new FileMutex(`${filePath}.lock`, now, lockOpts);
   }
 
   private key(mandateId: string, useKey: string): string {
@@ -82,73 +79,12 @@ export class FileConsumeStore implements ConsumeStore {
     return n;
   }
 
-  /** Run `fn` holding both the in-process mutex and the cross-process lock. */
+  /** Run `fn` holding both the in-process queue slot and the cross-process lock. */
   private mutate<T>(fn: (data: FileShape) => T | Promise<T>): Promise<T> {
-    const task = this.queue.then(async () => {
-      await this.acquireLock();
-      try {
-        const data = await this.load();
-        return await fn(data);
-      } finally {
-        await this.releaseLock();
-      }
+    return this.mutex.run(async () => {
+      const data = await this.load();
+      return fn(data);
     });
-    this.queue = task.then(
-      () => undefined,
-      () => undefined,
-    );
-    return task;
-  }
-
-  private async acquireLock(): Promise<void> {
-    const retries = this.lockOpts.retries ?? 50;
-    const delayMs = this.lockOpts.delayMs ?? 20;
-    const staleMs = this.lockOpts.staleMs ?? 30_000;
-    const token = randomUUID();
-    await mkdir(dirname(this.lockPath), { recursive: true });
-    for (let i = 0; i <= retries; i++) {
-      try {
-        const fd = await open(this.lockPath, "wx");
-        try {
-          await fd.writeFile(token, "utf8");
-        } finally {
-          await fd.close();
-        }
-        this.lockToken = token;
-        return;
-      } catch (err: unknown) {
-        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-        // Reclaim a lock left by a crashed process, but only once it is stale
-        // AND still stale after the delay (so a live holder mid-work is not
-        // stolen from). rm targets whatever lock is there; a racing reclaimer
-        // may recreate it, and the loser simply retries.
-        try {
-          const st = await stat(this.lockPath);
-          if (this.now().getTime() - st.mtimeMs > staleMs) {
-            await rm(this.lockPath, { force: true });
-            continue;
-          }
-        } catch {
-          /* lock vanished between checks; retry immediately */
-        }
-        await new Promise((r) => setTimeout(r, delayMs));
-      }
-    }
-    throw new Error(`FileConsumeStore: could not acquire lock ${this.lockPath}`);
-  }
-
-  private async releaseLock(): Promise<void> {
-    const mine = this.lockToken;
-    this.lockToken = "";
-    if (!mine) return;
-    // Only delete the lock if it still carries OUR token — never unlock a lock
-    // another process reclaimed after treating us as stale.
-    try {
-      const cur = await readFile(this.lockPath, "utf8");
-      if (cur === mine) await rm(this.lockPath, { force: true });
-    } catch {
-      /* already gone */
-    }
   }
 
   async claim(claim: UseClaim, maxUses: number): Promise<ClaimResult> {

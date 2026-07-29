@@ -1,4 +1,5 @@
-import { evaluatePolicy } from "./policy/engine.js";
+import { evaluatePolicy, policyWindows } from "./policy/engine.js";
+import { MemorySpendLimiter } from "./enforce/spend-limiter.js";
 import type { AuditLedger } from "./ledger/ledger.js";
 import type { MandateManager } from "./mandate/mandate.js";
 import type {
@@ -7,6 +8,7 @@ import type {
   PaymentIntent,
   PolicyResult,
   SpendHistory,
+  SpendLimiter,
   SpendPolicy,
 } from "./types.js";
 
@@ -27,6 +29,20 @@ export interface VadunoGuardOptions {
    * aggregate query (see SpendHistory docs on the agentId caveat).
    */
   history?: SpendHistory;
+  /**
+   * Authoritative, ATOMIC spend limiter — what makes "total spend ≤ cap" hold
+   * across PROCESSES rather than only within one.
+   *
+   * Defaults to a `MemorySpendLimiter`, which is correct for a single process
+   * and nothing more: two guard processes each holding their own memory are
+   * two separate budgets, so a $50/day cap lets $100 through. Supply a
+   * `FileSpendLimiter` (several processes on one box) or a database-backed
+   * limiter (multiple instances) to close that.
+   *
+   * `history` above is only an advisory fast-fail; THIS is the gate money
+   * actually passes through.
+   */
+  limiter?: SpendLimiter;
   /**
    * Consulted immediately before money moves: has this mandate (or agent) been
    * revoked? Supply `createRegistryCheck(registry)` from @vaduno/revocation.
@@ -71,6 +87,8 @@ export class VadunoGuard {
   private readonly revocationCheck: RevocationCheck | undefined;
   private readonly now: () => Date;
   private readonly history: SpendHistory;
+  /** Authoritative atomic budget gate. See VadunoGuardOptions.limiter. */
+  private readonly limiter: SpendLimiter;
   /** Serializes the spend-accounting critical section. */
   private critical: Promise<unknown> = Promise.resolve();
   /**
@@ -99,11 +117,31 @@ export class VadunoGuard {
     this.now = opts.now ?? (() => new Date());
     this.usingInMemoryHistory = opts.history === undefined;
     this.history = opts.history ?? this.inMemoryHistory();
+    this.limiter = opts.limiter ?? new MemorySpendLimiter();
   }
 
   /** True if any executed charge failed to persist its audit record. */
   isAuditDegraded(): boolean {
     return this.auditDegraded;
+  }
+
+  /**
+   * Reclaim the budget held by a FAILED execution, for the case where you can
+   * prove the rail did not move money.
+   *
+   * When an executor throws, Vaduno keeps the amount counted against your
+   * caps, because a timeout after the charge landed is indistinguishable from
+   * a clean failure — and treating every failure as free is how a retry loop
+   * spends past a cap. If your rail gives you certainty (an explicit
+   * `card_declined`, a 4xx before submission, an idempotent lookup showing no
+   * charge), call this to give the budget back.
+   *
+   * Safe by construction: a SUCCESSFUL execution's spend is committed and
+   * cannot be released by this call, so a mistaken invocation cannot un-count
+   * real money.
+   */
+  async releaseSpend(intentId: string): Promise<void> {
+    await this.releaseBestEffort(intentId);
   }
 
   private inMemoryHistory(): SpendHistory {
@@ -390,6 +428,42 @@ export class VadunoGuard {
       }
     }
 
+    // ATOMIC BUDGET RESERVATION — the authoritative rolling-limit gate.
+    //
+    // Placed HERE, before the mandate is consumed, for two reasons that are
+    // both load-bearing:
+    //  1. A refused reservation is a DENIAL, and denials must never burn a
+    //     mandate use. Reserving after consumption would spend a use on a
+    //     payment that never happened.
+    //  2. It is after the revocation gate and after approval, so nothing that
+    //     can deny remains between the reservation and the executor except the
+    //     mandate check — whose failure paths release below.
+    //
+    // The reservation, not `evaluatePolicy`, is what actually enforces the
+    // cap: evaluatePolicy reads totals and is check-then-act by construction.
+    const reservation = await this.limiter.reserve({
+      agentId: intent.agentId,
+      currency: this.policy.currency,
+      amountMinor: intent.amount.amountMinor,
+      // The intent id, so a retry storm reserves ONCE rather than draining
+      // the budget one refused attempt at a time.
+      reservationId: intent.id,
+      windows: policyWindows(this.policy),
+      nowMs: this.now().getTime(),
+    });
+    if (!reservation.ok) {
+      const denied = internalDeny(this.policy, reservation.code, reservation.message);
+      await this.ledger.append("policy_decision", { policyResult: denied }, refs);
+      return { status: "denied", intentId: intent.id, policyResult: denied };
+    }
+    // Only a reservation WE took may be released on a later denial. If this
+    // call merely replayed an existing one, that reservation belongs to the
+    // original attempt — releasing it would un-count spend that may be real.
+    const ourReservation = reservation.replayed ? null : reservation.reservationId;
+    const releaseIfOurs = async () => {
+      if (ourReservation) await this.releaseBestEffort(ourReservation);
+    };
+
     // Consume the mandate atomically, as the final gate before money moves.
     // consumeOnce also enforces idempotent replay: a RETRY of an already-
     // consumed (mandate, intent id) must never reach the executor again.
@@ -397,6 +471,8 @@ export class VadunoGuard {
     if (this.requireMandate || intent.mandateId) {
       const outcome = await this.mandates!.consumeOnce(intent.mandateId!, intent);
       if (outcome.kind === "rejected") {
+        // The rail definitely did not run, so the budget goes back.
+        await releaseIfOurs();
         const denied = internalDeny(
           this.policy,
           `MANDATE_${outcome.check.code}`,
@@ -409,6 +485,7 @@ export class VadunoGuard {
         if (!outcome.digestMatches) {
           // Same intent id, different payment — an id-reuse attack, not a
           // retry. Deny; never replay, never execute.
+          await releaseIfOurs();
           const denied = internalDeny(
             this.policy,
             "MANDATE_REPLAY_MISMATCH",
@@ -429,6 +506,9 @@ export class VadunoGuard {
               // or crashed mid-execution. Money MAY have moved — surface
               // "unresolved" for reconciliation; never re-execute.
               { status: "unresolved" as const };
+        // This attempt did not run the rail — the original did, and holds its
+        // own reservation. Give back only what we took.
+        await releaseIfOurs();
         return {
           status: "replayed",
           intentId: intent.id,
@@ -456,10 +536,20 @@ export class VadunoGuard {
       value = await executor(intent);
     } catch (err) {
       const message = errMsg(err);
-      // Mandate use is intentionally NOT refunded here: a thrown executor may
-      // still have moved money (e.g. a timeout after the charge landed), so
-      // re-arming the mandate could authorize a double charge. Burn-on-failure
-      // is the fail-safe choice; see SECURITY.md.
+      // The reservation is deliberately left RESERVED — neither committed nor
+      // released. A thrown executor may still have moved money: a timeout
+      // after the charge landed is indistinguishable from a clean failure
+      // here. A reserved amount keeps counting against every cap, so a crash
+      // loop cannot spend without bound — which is exactly the failure mode
+      // caps exist to prevent.
+      //
+      // It stays RESERVED rather than committed so it remains reclaimable: a
+      // caller who can prove the rail did not charge calls
+      // `guard.releaseSpend(intent.id)`. Otherwise it ages out with its window.
+      // Over-hold, never overspend.
+      //
+      // Mandate use is NOT refunded here for the same reason: re-arming the
+      // mandate could authorize a double charge. See SECURITY.md.
       await this.appendBestEffort(
         "execution_result",
         { success: false, error: message, ...recorded },
@@ -478,9 +568,11 @@ export class VadunoGuard {
       return { status: "failed", intentId: intent.id, policyResult: finalResult, error: message };
     }
 
-    // The charge happened. Count it in the authoritative in-memory ledger
-    // FIRST — before the (best-effort) audit write — so a store failure can
-    // never let this spend escape the next request's limit check.
+    // The charge happened. Settle the reservation into committed spend FIRST —
+    // before the (best-effort) audit write — so a store failure can never let
+    // this spend escape the next request's limit check.
+    await this.commitBestEffort(reservation.reservationId);
+
     if (this.usingInMemoryHistory) {
       this.executed.push({
         ms: this.now().getTime(),
@@ -533,6 +625,35 @@ export class VadunoGuard {
     } catch {
       // Swallow: the money outcome is already decided and must be reported
       // truthfully. An unsettled claim replays as "unresolved" — fail closed.
+    }
+  }
+
+  /**
+   * Settle a reservation into committed spend. Best-effort BECAUSE the failure
+   * mode is safe: a reservation that cannot be committed stays "reserved", and
+   * a reserved amount already counts against every cap. The count is never
+   * lost — at worst the budget is held slightly longer than the truth.
+   * Throwing here would be worse: the money has already moved.
+   */
+  private async commitBestEffort(reservationId: string): Promise<void> {
+    try {
+      await this.limiter.commit(reservationId);
+    } catch {
+      this.auditDegraded = true;
+    }
+  }
+
+  /**
+   * Give back a reservation for a payment that provably did not run. Also
+   * best-effort, and also safe to fail: an un-released reservation over-holds
+   * budget until its window rolls off. Denying a later payment is recoverable;
+   * an uncounted charge is not.
+   */
+  private async releaseBestEffort(reservationId: string): Promise<void> {
+    try {
+      await this.limiter.release(reservationId);
+    } catch {
+      // Over-hold. See above.
     }
   }
 

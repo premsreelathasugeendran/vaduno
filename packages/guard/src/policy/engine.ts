@@ -5,9 +5,41 @@ import type {
   PolicyResult,
   SpendHistory,
   SpendPolicy,
+  SpendWindow,
 } from "../types.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The rolling constraints a policy implies, in ONE place.
+ *
+ * Both the advisory pre-check (this file) and the authoritative atomic reserve
+ * (`SpendLimiter`) derive their windows from here. If these were written twice,
+ * the fast-fail and the real gate could disagree about a cap — and the one that
+ * disagreed silently would be the one holding the money.
+ */
+export function policyWindows(policy: SpendPolicy): SpendWindow[] {
+  const limits = policy.limits ?? {};
+  const windows: SpendWindow[] = [];
+  const amountWindows: Array<[number | undefined, number, string]> = [
+    [limits.perDayMinor, DAY_MS, "PER_DAY_LIMIT_EXCEEDED"],
+    [limits.perWeekMinor, 7 * DAY_MS, "PER_WEEK_LIMIT_EXCEEDED"],
+    [limits.perMonthMinor, 30 * DAY_MS, "PER_MONTH_LIMIT_EXCEEDED"],
+  ];
+  for (const [capMinor, windowMs, code] of amountWindows) {
+    if (capMinor === undefined) continue;
+    windows.push({ code, windowMs, capMinor });
+  }
+  const v = policy.velocity?.maxTransactions;
+  if (v) {
+    windows.push({
+      code: "VELOCITY_EXCEEDED",
+      windowMs: v.perSeconds * 1000,
+      maxCount: v.count,
+    });
+  }
+  return windows;
+}
 
 /**
  * Deterministic policy evaluation. No model in the loop: this function is
@@ -121,44 +153,38 @@ export async function evaluatePolicy(
   }
 
   // Rolling windows over executed spend. Only evaluated for a valid amount.
-  if (amountValid) {
-    const windows: Array<[keyof typeof limits, number, string]> = [
-      ["perDayMinor", DAY_MS, "PER_DAY_LIMIT_EXCEEDED"],
-      ["perWeekMinor", 7 * DAY_MS, "PER_WEEK_LIMIT_EXCEEDED"],
-      ["perMonthMinor", 30 * DAY_MS, "PER_MONTH_LIMIT_EXCEEDED"],
-    ];
-    for (const [key, ms, code] of windows) {
-      const limit = limits[key];
-      if (limit === undefined) continue;
-      const since = new Date(nowMs - ms).toISOString();
-      const { totalMinor } = await history.totalsSince(
-        intent.agentId,
-        since,
-        policy.currency,
-      );
-      // Fail closed if the history total isn't a usable safe integer, so a
-      // corrupt/NaN total can never satisfy `total + amount > limit` as false.
-      if (!Number.isSafeInteger(totalMinor) || totalMinor + intent.amount.amountMinor > limit) {
-        reasons.push({
-          code,
-          message: `spent ${totalMinor} in window; +${intent.amount.amountMinor} would exceed limit ${limit}`,
-        });
-      }
-    }
-  }
-
-  if (policy.velocity?.maxTransactions) {
-    const { count, perSeconds } = policy.velocity.maxTransactions;
-    const since = new Date(nowMs - perSeconds * 1000).toISOString();
-    const result = await history.totalsSince(
+  //
+  // NOTE: this is the ADVISORY check — it reads totals and is therefore
+  // check-then-act by construction. It exists to fail fast and to give a
+  // useful reason before a human approval is requested. The AUTHORITATIVE
+  // check is the guard's atomic `SpendLimiter.reserve()` immediately before
+  // execution. Both derive their windows from `policyWindows()` so the two can
+  // never disagree about what the caps are.
+  for (const w of policyWindows(policy)) {
+    if (w.capMinor !== undefined && !amountValid) continue;
+    const since = new Date(nowMs - w.windowMs).toISOString();
+    const { totalMinor, count } = await history.totalsSince(
       intent.agentId,
       since,
       policy.currency,
     );
-    if (result.count + 1 > count) {
+    if (w.capMinor !== undefined) {
+      // Fail closed if the history total isn't a usable safe integer, so a
+      // corrupt/NaN total can never satisfy `total + amount > limit` as false.
+      if (
+        !Number.isSafeInteger(totalMinor) ||
+        totalMinor + intent.amount.amountMinor > w.capMinor
+      ) {
+        reasons.push({
+          code: w.code,
+          message: `spent ${totalMinor} in window; +${intent.amount.amountMinor} would exceed limit ${w.capMinor}`,
+        });
+      }
+    }
+    if (w.maxCount !== undefined && count + 1 > w.maxCount) {
       reasons.push({
-        code: "VELOCITY_EXCEEDED",
-        message: `${result.count} transactions in last ${perSeconds}s; limit is ${count}`,
+        code: w.code,
+        message: `${count} transactions in window; limit is ${w.maxCount}`,
       });
     }
   }

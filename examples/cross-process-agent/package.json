@@ -1,0 +1,16 @@
+{
+  "name": "cross-process-agent",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "tsx demo.ts"
+  },
+  "dependencies": {
+    "@vaduno/guard": "*"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.4"
+  }
+}

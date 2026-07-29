@@ -5,7 +5,7 @@ export type {
   RevocationCheck,
   RevocationVerdict,
 } from "./guard.js";
-export { evaluatePolicy, merchantMatches } from "./policy/engine.js";
+export { evaluatePolicy, merchantMatches, policyWindows } from "./policy/engine.js";
 export {
   AuditLedger,
   GENESIS_HASH,
@@ -55,3 +55,12 @@ export type {
   UseClaim,
 } from "./enforce/consume-store.js";
 export { FileConsumeStore } from "./enforce/file-consume-store.js";
+export {
+  MemorySpendLimiter,
+  firstViolatedWindow,
+  scopeKey,
+} from "./enforce/spend-limiter.js";
+export type { SpendRecord } from "./enforce/spend-limiter.js";
+export { FileSpendLimiter } from "./enforce/file-spend-limiter.js";
+export { FileMutex } from "./enforce/file-mutex.js";
+export type { FileMutexOpts } from "./enforce/file-mutex.js";

@@ -119,21 +119,62 @@ describe("VadunoGuard.execute", () => {
     expect((await ledger.verify()).ok).toBe(true);
   });
 
-  it("failed executions do not count against spend limits", async () => {
+  it("a failed execution KEEPS counting against spend limits (over-hold, never overspend)", async () => {
+    // Changed in 0.2.0. Previously a throw freed the whole budget, which meant
+    // an executor that times out AFTER the charge lands could be retried past
+    // any cap: N timeouts = N real charges, none of them counted. A thrown
+    // executor may have moved money, so the amount stays held.
     const { guard } = setup({
       limits: { perTransactionMinor: 6_000, perDayMinor: 6_000 },
     });
-    await guard.execute(
+    const failed = await guard.execute(
       makeIntent({ amount: { amountMinor: 6_000, currency: "USD" } }),
       async () => {
         throw new Error("boom");
       },
     );
+    expect(failed.status).toBe("failed");
+
+    const after = await guard.execute(
+      makeIntent({ amount: { amountMinor: 6_000, currency: "USD" } }),
+      paidOk,
+    );
+    expect(after.status).toBe("denied");
+  });
+
+  it("releaseSpend reclaims a failed execution's budget when no money moved", async () => {
+    const { guard } = setup({
+      limits: { perTransactionMinor: 6_000, perDayMinor: 6_000 },
+    });
+    const intent = makeIntent({ amount: { amountMinor: 6_000, currency: "USD" } });
+    await guard.execute(intent, async () => {
+      throw new Error("card_declined — nothing was charged");
+    });
+
+    await guard.releaseSpend(intent.id);
+
     const after = await guard.execute(
       makeIntent({ amount: { amountMinor: 6_000, currency: "USD" } }),
       paidOk,
     );
     expect(after.status).toBe("executed");
+  });
+
+  it("releaseSpend CANNOT un-count a successful execution", async () => {
+    const { guard } = setup({
+      limits: { perTransactionMinor: 6_000, perDayMinor: 6_000 },
+    });
+    const intent = makeIntent({ amount: { amountMinor: 6_000, currency: "USD" } });
+    expect((await guard.execute(intent, paidOk)).status).toBe("executed");
+
+    // A mistaken call must not free real spend.
+    await guard.releaseSpend(intent.id);
+
+    const after = await guard.execute(
+      makeIntent({ amount: { amountMinor: 6_000, currency: "USD" } }),
+      paidOk,
+    );
+    expect(after.status).toBe("denied");
   });
 
   it("requireMandate: denies without mandate, executes with valid one, blocks reuse", async () => {
