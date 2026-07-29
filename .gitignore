@@ -14,3 +14,8 @@ apps/dashboard/data/
 # Internal launch notes and market research — not for publication
 docs/LAUNCH.md
 docs/research/
+
+# Stray npm pack output — never commit tarballs
+*.tgz
+packcheck/
+vad/
