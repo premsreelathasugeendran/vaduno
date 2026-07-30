@@ -1,0 +1,22 @@
+{
+  "description": "RFC 9162 / RFC 6962 hashing. Leaf = SHA-256(0x00 || data); interior = SHA-256(0x01 || left || right). The prefixes are what prevent a leaf from being presented as an interior node.",
+  "leafPrefix": "0x00",
+  "nodePrefix": "0x01",
+  "emptyTreeRoot": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "cases": [
+    {
+      "leaf": "a",
+      "leafHash": "022a6979e6dab7aa5ae4c3e5e45f7e977112a7e63593820dbec1ec738a24f93c"
+    },
+    {
+      "leaf": "b",
+      "leafHash": "57eb35615d47f34ec714cacdf5fd74608a5e8e102724e80b24b287c0c27b6a31"
+    },
+    {
+      "note": "two-leaf root",
+      "left": "022a6979e6dab7aa5ae4c3e5e45f7e977112a7e63593820dbec1ec738a24f93c",
+      "right": "57eb35615d47f34ec714cacdf5fd74608a5e8e102724e80b24b287c0c27b6a31",
+      "root": "b137985ff484fb600db93107c77b0365c80d78f5b429ded0fd97361d077999eb"
+    }
+  ]
+}

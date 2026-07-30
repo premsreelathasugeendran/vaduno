@@ -1,0 +1,10 @@
+{
+  "description": "mandateContextHash: SHA-256 over a domain tag and the canonical context blob.",
+  "domain": "vaduno-mandate-ctx/v1\n",
+  "context": {
+    "agentId": "agent-1",
+    "merchantId": "openai",
+    "taskRunId": "run-42"
+  },
+  "hash": "cae83e9fdcbac5f80345160cda8040a17a60fa0b98ca9fd59e999bafdc19a1e0"
+}

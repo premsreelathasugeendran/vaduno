@@ -1,0 +1,33 @@
+{
+  "description": "Mandate signing preimage: MANDATE_DOMAIN followed by canonicalJson of every field except `signature`. The kid is inside the preimage, so relabelling a mandate to name a different key breaks its signature.",
+  "domain": "vaduno-mandate/v1\n",
+  "formatVersion": 1,
+  "alg": "Ed25519",
+  "testKeys": {
+    "privateKeyPem": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIH1uW7T2rXGMnU8YQ0S1kAVLKKvbxmc8s0dnKQGVU3rM\n-----END PRIVATE KEY-----\n",
+    "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAsmOOlhhZHCeSTlzk3LZyK5K8ac7O/v+JkeLS1MtjT8Q=\n-----END PUBLIC KEY-----\n"
+  },
+  "keyIdDerivation": "first 8 bytes of SHA-256('vaduno-mandate-key/v1\\n' || SPKI DER), hex",
+  "expectedKeyId": "97fcde84d4cc2622",
+  "unsigned": {
+    "v": 1,
+    "alg": "Ed25519",
+    "kid": "97fcde84d4cc2622",
+    "id": "11111111-2222-3333-4444-555555555555",
+    "issuer": "human@example.com",
+    "agentId": "agent-1",
+    "constraints": {
+      "maxAmountMinor": 10000,
+      "currency": "USD",
+      "merchants": [
+        "openai.com"
+      ],
+      "validFrom": "2026-01-01T00:00:00.000Z",
+      "expiresAt": "2026-12-31T23:59:59.000Z",
+      "maxUses": 1
+    },
+    "createdAt": "2026-01-01T00:00:00.000Z"
+  },
+  "preimage": "vaduno-mandate/v1\n{\"agentId\":\"agent-1\",\"alg\":\"Ed25519\",\"constraints\":{\"currency\":\"USD\",\"expiresAt\":\"2026-12-31T23:59:59.000Z\",\"maxAmountMinor\":10000,\"maxUses\":1,\"merchants\":[\"openai.com\"],\"validFrom\":\"2026-01-01T00:00:00.000Z\"},\"createdAt\":\"2026-01-01T00:00:00.000Z\",\"id\":\"11111111-2222-3333-4444-555555555555\",\"issuer\":\"human@example.com\",\"kid\":\"97fcde84d4cc2622\",\"v\":1}",
+  "preimageSha256": "0058c88061719dd8dd0e886e8046f501387a0e91267bb8c5e013804c362c39b5"
+}

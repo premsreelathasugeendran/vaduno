@@ -1,0 +1,16 @@
+{
+  "description": "Ledger entry hash: sha256Hex(canonicalJson(entry-without-hash)). Each entry commits to prevHash, so any edit, deletion or reorder is detectable.",
+  "entry": {
+    "seq": 0,
+    "type": "policy_decision",
+    "at": "2026-01-01T00:00:00.000Z",
+    "data": {
+      "decision": "allow"
+    },
+    "prevHash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "intentId": "intent-1",
+    "agentId": "agent-1"
+  },
+  "hash": "e8ae259f15e233b0e9c65ff9ed734181c7f1622fd5d57b097adf7ff5ea36c6ae",
+  "genesisPrevHash": "0000000000000000000000000000000000000000000000000000000000000000"
+}

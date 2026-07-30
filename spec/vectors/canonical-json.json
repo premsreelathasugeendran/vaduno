@@ -1,0 +1,103 @@
+{
+  "description": "canonicalJson output for fixed inputs. Distinct inputs MUST produce distinct output; see rejected-inputs for the values that must throw instead of being coerced.",
+  "cases": [
+    {
+      "note": "key order is normalized",
+      "input": {
+        "b": 1,
+        "a": 2
+      },
+      "canonical": "{\"a\":2,\"b\":1}"
+    },
+    {
+      "note": "nested objects sorted, array order preserved",
+      "input": {
+        "x": [
+          {
+            "b": 1,
+            "a": 2
+          }
+        ],
+        "a": 1
+      },
+      "canonical": "{\"a\":1,\"x\":[{\"a\":2,\"b\":1}]}"
+    },
+    {
+      "note": "undefined own properties are omitted",
+      "input": {
+        "a": 1
+      },
+      "canonical": "{\"a\":1}"
+    },
+    {
+      "note": "__proto__ is an ordinary key and is committed to",
+      "input": {
+        "__proto__": {
+          "x": 1
+        },
+        "a": 2
+      },
+      "canonical": "{\"__proto__\":{\"x\":1},\"a\":2}"
+    },
+    {
+      "note": "empty object and empty array",
+      "input": {
+        "o": {},
+        "a": []
+      },
+      "canonical": "{\"a\":[],\"o\":{}}"
+    },
+    {
+      "note": "unicode is escaped by JSON.stringify rules",
+      "input": {
+        "k": "ünïcødé \u0001"
+      },
+      "canonical": "{\"k\":\"ünïcødé \\u0001\"}"
+    },
+    {
+      "note": "integers and negative zero",
+      "input": {
+        "a": 0,
+        "b": 0,
+        "c": -1,
+        "d": 1e+21
+      },
+      "canonical": "{\"a\":0,\"b\":0,\"c\":-1,\"d\":1e+21}"
+    },
+    {
+      "note": "nulls and booleans",
+      "input": {
+        "n": null,
+        "t": true,
+        "f": false
+      },
+      "canonical": "{\"f\":false,\"n\":null,\"t\":true}"
+    }
+  ],
+  "rejected": [
+    {
+      "note": "bigint would collide with the string spelling it",
+      "expr": "{ n: 1n }"
+    },
+    {
+      "note": "Date would collide with its own ISO string",
+      "expr": "{ d: new Date(0) }"
+    },
+    {
+      "note": "NaN would collide with null",
+      "expr": "{ x: NaN }"
+    },
+    {
+      "note": "Infinity would collide with null",
+      "expr": "{ x: Infinity }"
+    },
+    {
+      "note": "undefined in an ARRAY would collide with null",
+      "expr": "[undefined]"
+    },
+    {
+      "note": "non-plain objects all collapsed to {}",
+      "expr": "{ v: new Map([[1,2]]) }"
+    }
+  ]
+}
