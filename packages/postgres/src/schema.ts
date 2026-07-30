@@ -40,6 +40,40 @@ CREATE TABLE IF NOT EXISTS vaduno_consume (
 
 CREATE INDEX IF NOT EXISTS vaduno_consume_mandate
   ON vaduno_consume (mandate_id);
+
+-- Revocation: bit-index allocation, mandate records, agent-wide blocks.
+--
+-- The index is a bit position in a PUBLISHED W3C status list, so a duplicate
+-- allocation is not an internal inconsistency — it means one revocation
+-- silently revokes the wrong mandate, in a credential third parties read. The
+-- UNIQUE constraint makes that unrepresentable rather than merely unlikely.
+CREATE TABLE IF NOT EXISTS vaduno_revocation_index (
+  mandate_id TEXT   PRIMARY KEY,
+  idx        BIGINT NOT NULL,
+  agent_id   TEXT,
+  CONSTRAINT vaduno_revocation_index_unique UNIQUE (idx)
+);
+
+CREATE INDEX IF NOT EXISTS vaduno_revocation_index_agent
+  ON vaduno_revocation_index (agent_id);
+
+CREATE TABLE IF NOT EXISTS vaduno_revocation_record (
+  mandate_id TEXT PRIMARY KEY,
+  idx        BIGINT,
+  purpose    TEXT NOT NULL,
+  revoked_at TEXT NOT NULL,
+  reason     TEXT,
+  revoked_by TEXT,
+  agent_id   TEXT
+);
+
+CREATE TABLE IF NOT EXISTS vaduno_agent_block (
+  agent_id   TEXT PRIMARY KEY,
+  reason     TEXT,
+  blocked_by TEXT,
+  blocked_at TEXT NOT NULL,
+  purpose    TEXT NOT NULL
+);
 `;
 
 /** Create both tables if they do not exist. Idempotent. */

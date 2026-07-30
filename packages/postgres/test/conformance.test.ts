@@ -14,8 +14,10 @@
 import { describe, it } from "vitest";
 import { runSpendLimiterConformance } from "../../guard/test/spend-limiter-conformance.js";
 import { runConsumeStoreConformance } from "../../guard/test/consume-store-conformance.js";
+import { runRevocationStoreConformance } from "../../revocation/test/revocation-store-conformance.js";
 import { PostgresSpendLimiter } from "../src/spend-limiter.js";
 import { PostgresConsumeStore } from "../src/consume-store.js";
+import { PostgresRevocationStore } from "../src/revocation-store.js";
 import { migrate } from "../src/schema.js";
 import type { PgPool } from "../src/pg.js";
 
@@ -52,7 +54,10 @@ if (!URL) {
 
   /** Every harness starts from an empty table pair. */
   async function reset(): Promise<void> {
-    await poolA.query("TRUNCATE vaduno_spend, vaduno_consume");
+    await poolA.query(
+      "TRUNCATE vaduno_spend, vaduno_consume, vaduno_revocation_index, " +
+        "vaduno_revocation_record, vaduno_agent_block",
+    );
   }
 
   runSpendLimiterConformance({
@@ -76,6 +81,19 @@ if (!URL) {
         stores: [
           new PostgresConsumeStore(poolA),
           new PostgresConsumeStore(poolB),
+        ],
+      };
+    },
+  });
+
+  runRevocationStoreConformance({
+    name: "PostgresRevocationStore",
+    async create() {
+      await reset();
+      return {
+        stores: [
+          new PostgresRevocationStore(poolA),
+          new PostgresRevocationStore(poolB),
         ],
       };
     },
