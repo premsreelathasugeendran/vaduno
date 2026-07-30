@@ -39,6 +39,10 @@ export {
   MandateManager,
   generateMandateKeyPair,
   mandateContextHash,
+  mandateKeyId,
+  MANDATE_DOMAIN,
+  MANDATE_FORMAT_VERSION,
+  MANDATE_ALG,
 } from "./mandate/mandate.js";
 export type {
   Mandate,
