@@ -22,11 +22,11 @@ does **not** yet cover — so you can decide whether it fits your threat model.
 | Agent tries to overspend | Per-transaction / rolling day-week-month caps, evaluated deterministically |
 | Prompt-injected merchant swap | Merchant allowlist matched against the **URL host** when the pattern contains a dot (`openai.com`) — never the attacker-controlled `merchant.id`. A bare token without a dot matches `merchant.id` and is weak by construction; see limitation 3 |
 | Forged `merchant.id` to impersonate an allowed host | Host patterns ignore `merchant.id` entirely; lookalikes and trailing-dot FQDNs are normalized out |
-| Concurrent requests racing a limit | The decision→consume→execute→record section is serialized per guard (async mutex); limits are re-checked under the lock |
+| Concurrent requests racing a limit | The decision→**reserve**→consume→execute→commit section is serialized per guard (async mutex), and the cap itself is enforced INSIDE the atomic reserve rather than by a re-check under the lock — a re-check is still check-then-act across processes. The mutex orders one process; `SpendLimiter.reserve()` is what holds across them |
 | Cap reset by rotating `agentId` | Reservations are scoped to the **policy id**, set by the operator — never `intent.agentId`, which the agent controls. **This row was FALSE in 0.2.0:** the limiter keyed on `agentId`, so two guards sharing one limiter passed $100 through a $50 cap by rotating it. Fixed in 0.2.1; regression test in `test/cap-bypass.test.ts` |
 | Overspend via a dropped/doctored audit write | Spend limits are enforced from an **in-memory authoritative counter** incremented under the lock the instant the executor succeeds — never from a read-back of the store. A lost `execution_result` write flags `auditDegraded` but cannot un-count the charge |
 | Mandate replay (same signed mandate used twice) | Mandates are consume-once, claimed atomically in a `ConsumeStore` keyed on (mandateId, intentId), immediately before execution |
-| Retry storm / duplicate orchestration hop double-charging | Runtime enforcement: the same (mandate, intent id) claims **one** use; every duplicate returns `replayed` with the original outcome and the executor never re-runs (the rail fires exactly once under N-way parallelism) |
+| Retry storm / duplicate orchestration hop double-charging | Runtime enforcement: the same (mandate, intent id) claims **one** use; every duplicate returns `replayed` with the original outcome and the executor never re-runs (the rail fires **at most** once under N-way parallelism — zero times if the intent is denied or the executor never runs) |
 | A used intent id reused for a *different* payment | The claim commits an `intentDigest` of amount+currency+merchant+rail; a mismatch is denied `MANDATE_REPLAY_MISMATCH` — never replayed, never executed |
 | A mandate misapplied to a different task/merchant/agent | Optional context binding: `contextHash` must match the intent's context blob, and its `agentId`/`merchantId` fields must equal the intent (`CONTEXT_MISMATCH`) |
 | Mandate replay across restart / second instance | `hydrateFromLedger()` rebuilds use-counts **and** the consume registry from a shared persistent ledger; a `FileConsumeStore` (or DB unique index) makes claims atomic across live processes |
@@ -94,23 +94,49 @@ These are documented, not hidden. Some are scope choices; some are on the roadma
      `mandate_revoked` entries), not the `ConsumeStore`. If you skip hydration
      on restart, a revoked-but-unexpired mandate with uses left could be spent —
      always hydrate.
-   - **Registry growth:** the consume registry keeps one record per distinct
-     intent id forever (idempotent replay depends on it). An agent spraying
-     unique ids grows it unbounded — cap upstream, or prune records for
-     mandates already past `expiresAt` (a retry of an expired mandate is denied
-     `EXPIRED`, not replayed, so pruning them is safe).
-2. **Ledger tamper-evidence needs external head retention to be complete.** A
+   - **Registry growth, and there is no prune API.** The consume registry keeps
+     one record per distinct intent id forever (idempotent replay depends on
+     it), and the spend table keeps every reservation. An agent spraying unique
+     ids grows both unbounded. This file used to tell you to "prune records for
+     mandates past `expiresAt`" — **no store exposes a prune method** (`grep -rn
+     prune packages/*/src` returns nothing), so that instruction pointed at
+     nothing. Corrected in 0.3.0. Until a prune API ships: cap id generation
+     upstream, and for a file-backed store rotate the file. Pruning expired
+     mandates WOULD be safe — a retry of an expired mandate is denied `EXPIRED`,
+     not replayed — which is why it is the next thing worth adding here.
+2. **`freeze()` is PER-PROCESS.** The kill switch is an in-memory field on the
+   guard instance (`private frozen`). Freezing one process does **not** stop
+   another live process — they keep spending until each is frozen or restarted.
+   `hydrateFromLedger()` restores freeze state at STARTUP from the ledger, so a
+   restart honours it, but nothing propagates to a running peer. This was
+   undocumented before 0.3.0, which is the worst possible combination: an
+   operator pulls the switch, sees it take effect locally, and reasonably
+   concludes spending has stopped. For a targeted kill that a second process
+   observes, use [`@vaduno/revocation`](packages/revocation) with a shared
+   registry — it is checked on the execution path, after approval.
+
+3. **No ledger store is safe for concurrent writers.** `AuditLedger.append`
+   derives `seq = last.seq + 1` inside a promise queue scoped to one process.
+   `JsonlLedgerStore` has no file lock; `supabase/schema.sql` declares `seq
+   bigint primary key`, so two writers both compute N+1 and one insert is
+   rejected. On the final `execution_result` append that rejection is swallowed
+   into `auditDegraded` — money moved, the record was dropped, and `verify()`
+   still reports the chain intact because the winning row legitimately holds
+   that seq. Run ONE writer per ledger. (The jsonl docblock used to point at
+   Supabase as the shared-ledger answer; it is not, and that is corrected.)
+
+4. **Ledger tamper-evidence needs external head retention to be complete.** A
    store that controls *all* rows can present an internally-consistent forged
    chain. `verify()` catches recompute-inconsistent tampering; to catch a
    wholesale rewrite/truncation you must retain `head()` out-of-band and pass it
    to `verify(head)`. Signed heads / external anchoring are roadmap.
-3. **`merchant.id` matching is weak by construction.** `id:`/bare-token patterns
+5. **`merchant.id` matching is weak by construction.** `id:`/bare-token patterns
    match an attacker-controlled field; use **host patterns** for anything
    security-relevant. `id` patterns are for trusted, integrator-assigned ids.
-4. **Node runtime only.** Uses `node:crypto`. No edge/workerd build yet.
-5. **One policy per guard.** No per-agent multi-policy routing yet; run separate
+6. **Node runtime only.** Uses `node:crypto`. No edge/workerd build yet.
+7. **One policy per guard.** No per-agent multi-policy routing yet; run separate
    guards for separate policies.
-6. **Approval is blocking (but resolvable out-of-band).** The handler is awaited
+8. **Approval is blocking (but resolvable out-of-band).** The handler is awaited
    in-line (outside the mutex), so the agent process stays alive during a wait.
    `createQueuedApprovalHandler` + an `ApprovalStore` let a separate UI
    (e.g. the dashboard) list and resolve pending approvals; on timeout the

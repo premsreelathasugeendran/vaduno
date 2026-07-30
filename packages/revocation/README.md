@@ -139,7 +139,7 @@ Shows the full lifecycle: revoke → denied, the approval race, agent-wide kill,
 - **Call `hydrateFromLedger()` at startup** when using the in-memory store with a durable ledger. Without it a restart silently un-revokes everything *and* restarts index allocation from zero.
 - **A full status list still revokes locally.** If the bit space is exhausted the kill takes effect and the result is flagged `unpublishable` — enforced locally, invisible to third-party verifiers. Rotate to a new list.
 - **The agent kill is keyed on `intent.agentId`**, which the agent supplies. Bind agent identity by other means (`requireMandate: true`) where that matters.
-- **`MemoryRevocationStore` is single-process.** Supply a shared store for multi-instance deployments.
+- **`MemoryRevocationStore` is single-process, and it is the only implementation that exists.** Earlier versions of this line said "supply a shared store for multi-instance deployments" — there is nothing to supply. Worse, bit indices are allocated from an in-memory counter, so two replicas assign index **0** to *different* mandates and the collision lands in the published status list third parties read. Run one revocation writer until a database-backed store ships.
 
 See [docs/SECURITY-MODEL.md](../../docs/SECURITY-MODEL.md) for the full guarantee/non-guarantee list.
 

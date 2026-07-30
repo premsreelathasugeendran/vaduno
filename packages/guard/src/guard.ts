@@ -71,7 +71,7 @@ export type RevocationCheck = (intent: PaymentIntent) => Promise<RevocationVerdi
  * executor you pass in does the moving; the guard only decides whether that
  * function may run, and records everything.
  *
- * Concurrency: the decision→consume→execute→record critical section is
+ * Concurrency: the decision→reserve→consume→execute→commit critical section is
  * serialized per guard instance (an async mutex), so parallel execute() calls
  * cannot race a rolling-spend or velocity limit. Human approval, which may
  * block indefinitely, runs OUTSIDE the mutex; the policy is then re-evaluated
@@ -229,7 +229,22 @@ export class VadunoGuard {
     });
   }
 
-  /** Emergency stop: every subsequent intent is denied until unfreeze(). */
+  /**
+   * Emergency stop: every subsequent intent **on this guard instance** is
+   * denied until `unfreeze()`.
+   *
+   * PER-PROCESS, and that matters more than it sounds. `frozen` is an in-memory
+   * field, so freezing one process does not stop another live process — the
+   * peers keep spending until each is frozen or restarted. An operator who
+   * pulls the switch, sees spending stop locally, and concludes it has stopped
+   * everywhere is wrong. `hydrateFromLedger()` restores freeze state at STARTUP
+   * from the ledger, so a restart honours it, but nothing propagates to a
+   * running peer.
+   *
+   * For a kill a second process actually observes, use `@vaduno/revocation`
+   * with a shared registry: it is checked on the execution path, after
+   * approval, and an unreachable registry denies rather than allows.
+   */
   async freeze(reason: string): Promise<void> {
     this.frozen = { reason };
     await this.ledger.append("guard_frozen", { reason });
