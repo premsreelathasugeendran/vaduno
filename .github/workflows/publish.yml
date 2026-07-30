@@ -163,14 +163,17 @@ jobs:
       # your release, at the moment you least want to debug it.
       - name: Ensure npm supports trusted publishing
         run: |
-          npm install -g npm@^11.5.1
+          # npm 12: npm 11.19.0 reached ENEEDAUTH without ever attempting an
+          # OIDC exchange, so treat 12 as the floor. Node 24 above is what makes
+          # 12 installable at all. Pinned to a MAJOR, not @latest — an unpinned
+          # tool in a release pipeline lets someone else's release break yours.
+          npm install -g npm@^12
           npm --version
           node -e '
             const v = require("child_process").execSync("npm --version").toString().trim();
-            const [maj, min, pat] = v.split(".").map(Number);
-            const ok = maj > 11 || (maj === 11 && (min > 5 || (min === 5 && pat >= 1)));
-            if (!ok) { console.error(`::error::npm ${v} is too old for trusted publishing (need >= 11.5.1)`); process.exit(1); }
-            console.log(`npm ${v} supports trusted publishing`);
+            const maj = Number(v.split(".")[0]);
+            if (maj < 12) { console.error(`::error::npm ${v} predates reliable OIDC trusted publishing`); process.exit(1); }
+            console.log(`npm ${v}`);
           '
 
       # If a token is configured — even an empty one — npm uses it instead of
@@ -186,6 +189,10 @@ jobs:
           else
             echo "no userconfig .npmrc — good, npm should use OIDC"
           fi
+          # If these are absent, id-token: write is not in effect and OIDC
+          # cannot happen regardless of npm version or registry config.
+          echo "ACTIONS_ID_TOKEN_REQUEST_URL set: ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}${ACTIONS_ID_TOKEN_REQUEST_URL:-NO}"
+          echo "ACTIONS_ID_TOKEN_REQUEST_TOKEN set: ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+yes}${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-NO}"
 
       - run: npm ci
       - run: npm run build
