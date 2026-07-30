@@ -225,6 +225,18 @@ export interface SpendLimiter extends SpendHistory {
    * turn a crash loop into unbounded spend.
    */
   release(reservationId: string): Promise<void>;
+  /**
+   * Delete reservations older than `beforeMs` (epoch ms). Returns how many.
+   *
+   * Safe WITHOUT a caller-supplied condition, unlike ConsumeStore pruning: a
+   * reservation outside every rolling window already contributes nothing to
+   * any cap, so removing it cannot change a decision. Pass a cutoff older than
+   * your widest window — a month-long cap means nothing younger than ~30 days.
+   *
+   * Without this the spend table grows forever, which SECURITY.md warned about
+   * while no store could actually do anything.
+   */
+  pruneBefore(beforeMs: number): Promise<number>;
 }
 
 export interface ApprovalRequest {

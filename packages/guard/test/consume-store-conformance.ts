@@ -175,6 +175,43 @@ export function runConsumeStoreConformance(harness: ConsumeStoreHarness): void {
       });
     });
 
+    // ---- pruning -----------------------------------------------------------
+
+    it("pruneMandates removes only the named mandates' claims", async () => {
+      await withStore(async ([s]) => {
+        await s.claim(mkClaim("dead", "i-1"), 5);
+        await s.claim(mkClaim("dead", "i-2"), 5);
+        await s.claim(mkClaim("alive", "i-3"), 5);
+
+        expect(await s.pruneMandates(["dead"])).toBe(2);
+        expect(await s.countClaims("dead")).toBe(0);
+        expect(await s.countClaims("alive")).toBe(1);
+      });
+    });
+
+    it("pruning is a no-op for unknown ids and an empty list", async () => {
+      await withStore(async ([s]) => {
+        await s.claim(mkClaim("m", "i-1"), 5);
+        expect(await s.pruneMandates([])).toBe(0);
+        expect(await s.pruneMandates(["never-existed"])).toBe(0);
+        expect(await s.countClaims("m")).toBe(1);
+      });
+    });
+
+    it("DANGER, made explicit: a pruned use can be claimed again", async () => {
+      // This is why the CALLER names the mandates instead of the store pruning
+      // by age. Pruning re-arms the id, so it is only safe once the mandate is
+      // dead by another check — past expiresAt, where a retry is denied EXPIRED
+      // before consume-once is consulted. Pinned as a test so nobody "helpfully"
+      // adds pruneBefore(timestamp) to this interface.
+      await withStore(async ([s]) => {
+        expect((await s.claim(mkClaim("m", "i-1"), 1)).winner).toBe(true);
+        expect((await s.claim(mkClaim("m", "i-1"), 1)).winner).toBe(false);
+        await s.pruneMandates(["m"]);
+        expect((await s.claim(mkClaim("m", "i-1"), 1)).winner).toBe(true);
+      });
+    });
+
     // ---- concurrency: the part that actually matters -----------------------
 
     it("CONCURRENCY: N parallel claims of the SAME use yield exactly one winner", async () => {

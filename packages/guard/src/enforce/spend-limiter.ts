@@ -161,6 +161,21 @@ export class MemorySpendLimiter implements SpendLimiter {
     if (i >= 0) records.splice(i, 1);
   }
 
+  async pruneBefore(beforeMs: number): Promise<number> {
+    let removed = 0;
+    for (const [key, records] of this.byScope) {
+      const keep = records.filter((r) => {
+        if (r.ms >= beforeMs) return true;
+        this.byId.delete(r.reservationId);
+        removed += 1;
+        return false;
+      });
+      if (keep.length === 0) this.byScope.delete(key);
+      else this.byScope.set(key, keep);
+    }
+    return removed;
+  }
+
   /** NOTE: the first argument is the SCOPE (policy id), not an agent id. */
   async totalsSince(
     scope: string,

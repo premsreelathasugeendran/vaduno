@@ -246,6 +246,32 @@ export function runSpendLimiterConformance(harness: SpendLimiterHarness): void {
       });
     });
 
+    // ---- pruning -----------------------------------------------------------
+
+    it("pruneBefore removes only reservations older than the cutoff", async () => {
+      await withLimiter(async ([l]) => {
+        await l.reserve(req("old", 1_000, [dayCap(50_000)], T0));
+        await l.reserve(req("new", 1_000, [dayCap(50_000)], T0 + DAY_MS));
+        expect(await l.pruneBefore(T0 + 1)).toBe(1);
+        const t = await l.totalsSince(SCOPE, new Date(T0 - DAY_MS).toISOString(), CUR);
+        expect(t.count).toBe(1);
+      });
+    });
+
+    it("pruning outside every window cannot change a decision", async () => {
+      // Safe WITHOUT a caller-supplied condition, unlike consume-store pruning:
+      // a reservation already outside the window contributes nothing to any cap,
+      // so removing it is unobservable.
+      await withLimiter(async ([l]) => {
+        await l.reserve(req("aged", 5_000, [dayCap(5_000)], T0));
+        const later = T0 + DAY_MS + 60_000;
+        // Already aged out, so a fresh reservation fits either way.
+        expect((await l.reserve(req("a", 5_000, [dayCap(5_000)], later))).ok).toBe(true);
+        await l.pruneBefore(later - DAY_MS);
+        expect((await l.reserve(req("b", 1, [dayCap(5_000)], later))).ok).toBe(false);
+      });
+    });
+
     // ---- concurrency: the reason this interface exists ---------------------
 
     it("CONCURRENCY: N parallel reserves never exceed the cap", async () => {

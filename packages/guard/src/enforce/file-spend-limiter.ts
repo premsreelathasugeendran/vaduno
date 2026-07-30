@@ -131,6 +131,21 @@ export class FileSpendLimiter implements SpendLimiter {
     });
   }
 
+  async pruneBefore(beforeMs: number): Promise<number> {
+    return this.mutex.run(async () => {
+      const data = await this.load();
+      let removed = 0;
+      for (const [id, r] of Object.entries(data.reservations)) {
+        if (r.ms < beforeMs) {
+          delete data.reservations[id];
+          removed += 1;
+        }
+      }
+      if (removed > 0) await this.atomicSave(data);
+      return removed;
+    });
+  }
+
   /** NOTE: the first argument is the SCOPE (policy id), not an agent id. */
   async totalsSince(
     scope: string,

@@ -113,6 +113,15 @@ export class PostgresConsumeStore implements ConsumeStore {
     return row ? toClaim(row) : null;
   }
 
+  async pruneMandates(mandateIds: readonly string[]): Promise<number> {
+    if (mandateIds.length === 0) return 0;
+    const res = await this.pool.query(
+      "DELETE FROM vaduno_consume WHERE mandate_id = ANY($1::text[])",
+      [[...mandateIds]],
+    );
+    return res.rowCount ?? 0;
+  }
+
   async countClaims(mandateId: string): Promise<number> {
     const rows = await this.pool.query<{ n: string }>(
       "SELECT COUNT(*) AS n FROM vaduno_consume WHERE mandate_id = $1",

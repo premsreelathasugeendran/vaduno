@@ -94,16 +94,25 @@ These are documented, not hidden. Some are scope choices; some are on the roadma
      `mandate_revoked` entries), not the `ConsumeStore`. If you skip hydration
      on restart, a revoked-but-unexpired mandate with uses left could be spent —
      always hydrate.
-   - **Registry growth, and there is no prune API.** The consume registry keeps
-     one record per distinct intent id forever (idempotent replay depends on
-     it), and the spend table keeps every reservation. An agent spraying unique
-     ids grows both unbounded. This file used to tell you to "prune records for
-     mandates past `expiresAt`" — **no store exposes a prune method** (`grep -rn
-     prune packages/*/src` returns nothing), so that instruction pointed at
-     nothing. Corrected in 0.3.0. Until a prune API ships: cap id generation
-     upstream, and for a file-backed store rotate the file. Pruning expired
-     mandates WOULD be safe — a retry of an expired mandate is denied `EXPIRED`,
-     not replayed — which is why it is the next thing worth adding here.
+   - **Registry growth is now prunable, with one sharp edge.** The consume
+     registry keeps a record per distinct intent id (idempotent replay depends
+     on it) and the spend table keeps every reservation, so an agent spraying
+     unique ids grows both. Since 0.3.0 both interfaces expose a prune:
+     - `SpendLimiter.pruneBefore(beforeMs)` is safe with no extra condition — a
+       reservation outside every rolling window already contributes nothing to
+       any cap. Pass a cutoff older than your widest window.
+     - `ConsumeStore.pruneMandates(ids)` takes the ids from YOU, deliberately.
+       Pruning a claim re-arms that intent id: a retry stops replaying and
+       **can execute again**. It is only safe once the mandate is dead by
+       another check — past `expiresAt`, where a retry is denied `EXPIRED`
+       before consume-once is consulted. A `pruneBefore(timestamp)` here would
+       be easier to call and would silently re-arm live mandates, which is why
+       it does not exist. The conformance suite pins the re-arm behaviour as a
+       test so nobody adds one.
+
+     Before 0.3.0 this section told operators to prune through an API that did
+     not exist.
+
 2. **`freeze()` is PER-PROCESS.** The kill switch is an in-memory field on the
    guard instance (`private frozen`). Freezing one process does **not** stop
    another live process — they keep spending until each is frozen or restarted.
