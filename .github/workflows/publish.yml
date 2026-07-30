@@ -139,17 +139,31 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Node 24, not 20: npm 12 requires ^22.22.2 || ^24.15.0 || >=26, so a
+      # Node 20 runner cannot install a current npm at all.
       - uses: actions/setup-node@v5
         with:
-          node-version: "20"
+          node-version: "24"
           registry-url: https://registry.npmjs.org
           cache: npm
 
-      # Trusted publishing needs npm >= 11.5.1; setup-node may ship older.
+      # Trusted publishing needs npm >= 11.5.1, and setup-node may ship older.
+      #
+      # PINNED, not @latest. The first run of this workflow failed exactly here:
+      # `npm@latest` resolved to npm 12, which refuses to run on Node 20. An
+      # unpinned tool in a release pipeline means a stranger's release can break
+      # your release, at the moment you least want to debug it.
       - name: Ensure npm supports trusted publishing
         run: |
-          npm install -g npm@latest
+          npm install -g npm@^11.5.1
           npm --version
+          node -e '
+            const v = require("child_process").execSync("npm --version").toString().trim();
+            const [maj, min, pat] = v.split(".").map(Number);
+            const ok = maj > 11 || (maj === 11 && (min > 5 || (min === 5 && pat >= 1)));
+            if (!ok) { console.error(`::error::npm ${v} is too old for trusted publishing (need >= 11.5.1)`); process.exit(1); }
+            console.log(`npm ${v} supports trusted publishing`);
+          '
 
       - run: npm ci
       - run: npm run build
