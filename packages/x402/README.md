@@ -1,5 +1,23 @@
 # @vaduno/x402
 
+> ### ⚠️ Experimental — x402 **v1 only**, and never run against a real server
+>
+> This adapter implements x402 **v1**. A v2 body — which renamed
+> `maxAmountRequired` to `amount` and moved to CAIP-2 network ids — is refused
+> by name with `X402VersionUnsupportedError`, and **no payment is attempted**.
+>
+> It has also **never run against a real x402 server**. The demo and every test
+> mock both the server and the payer in-process, so what is verified is that the
+> code agrees with a reading of the specification — not that it interoperates
+> with anything. Treat it as a reference implementation.
+>
+> v2 support is not a parser patch: `validateRequirement` builds its result from
+> a fixed allowlist, so accepting `amount` without threading it through to the
+> requirement handed to `pay()` would let policy approve one amount while the
+> signer signs another. It needs the `pay()` shape decided first, which is a
+> one-way semver door.
+
+
 **Policy + audit for [x402](https://www.x402.org/) stablecoin payments.**
 
 x402 revives HTTP `402 Payment Required`: a server answers with a price, your agent pays, and retries. This package wraps that flow so every payment passes a [`@vaduno/guard`](https://www.npmjs.com/package/@vaduno/guard) spend firewall first, and lands in a tamper-evident audit ledger.

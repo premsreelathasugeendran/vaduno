@@ -206,12 +206,11 @@ Writing your own limiter is expected, and there's an oracle for it: [`spend-limi
 
 The chain is computed client-side; `verify()` re-derives every hash, so even a compromised database cannot silently rewrite history.
 
-## x402 rail adapter (`@vaduno/x402`)
+## x402 rail adapter (`@vaduno/x402`) — experimental, v1 only
 
-Turn the guard into a real payment path. `@vaduno/x402` wraps the HTTP 402
-"pay-per-request" flow: on a 402 it builds a `PaymentIntent` from the server's
-requirement, runs the guard, and only if allowed calls **your** signer. Vaduno
-never sees keys.
+`@vaduno/x402` wraps the HTTP 402 "pay-per-request" flow: on a 402 it builds a `PaymentIntent` from the server's requirement, runs the guard, and only if allowed calls **your** signer. Vaduno never sees keys.
+
+> **It implements x402 v1 and has never run against a real x402 server.** A v2 body — the rename of `maxAmountRequired` to `amount`, plus CAIP-2 network ids — is refused by name with `X402VersionUnsupportedError` and no payment is attempted. The demo and every test mock both the server and the payer in-process, so what is verified is agreement with a *reading of the spec*, not interoperability with anything. Same honest status as the Stripe adapter: **neither rail has ever touched a real endpoint.**
 
 ```ts
 import { createX402Fetch, usdc } from "@vaduno/x402";
