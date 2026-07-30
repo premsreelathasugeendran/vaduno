@@ -19,10 +19,11 @@
  *
  *  2. RE-RUNS MUST NOT BE FATAL. A workflow that half-published and then failed
  *     has to be re-runnable. `npm publish` over an existing version is E403,
- *     which would fail the job forever, so an already-published version at the
- *     SAME content is treated as success — and a version that exists with
- *     DIFFERENT content is a hard error, because that means someone published
- *     from a laptop and the tag no longer describes what is on npm.
+ *     which would fail the job forever, so an already-published version is
+ *     skipped rather than retried. A tarball whose BYTES differ from the
+ *     published copy is reported and skipped, not failed: npm cannot be made to
+ *     overwrite a version, and the usual cause is line endings when a release
+ *     went out from a different platform.
  *
  *  3. "PUBLISHED" MUST MEAN THE REGISTRY SAYS SO. npm exits 0 the moment the
  *     PUT is accepted; `npm view` reads a CDN that can lag by minutes. So
@@ -87,7 +88,8 @@ async function alreadyPublished(fullName, version, dir) {
   // against cannot happen. The useful behaviour is to say so loudly and let
   // the remaining packages proceed.
   const local = localShasum(dir);
-  if (remote.dist?.shasum && remote.dist.shasum !== local) {
+  const bytesMatch = !remote.dist?.shasum || remote.dist.shasum === local;
+  if (!bytesMatch) {
     console.log(
       `    note: tarball bytes differ from the published copy\n` +
         `          registry: ${remote.dist.shasum}\n` +
@@ -98,15 +100,20 @@ async function alreadyPublished(fullName, version, dir) {
         `          if you did not expect this.`,
     );
   }
-  return true;
+  return bytesMatch ? "identical" : "differs";
 }
 
 async function publishOne(name) {
   const dir = join(root, "packages", name);
   const pkg = pkgFor(name);
 
-  if (await alreadyPublished(pkg.name, pkg.version, dir)) {
-    console.log(`  = ${pkg.name}@${pkg.version} already published (identical) — skipping`);
+  const existing = await alreadyPublished(pkg.name, pkg.version, dir);
+  if (existing) {
+    // Say which it is. Printing "bytes differ" and then "identical" on the next
+    // line is the kind of small contradiction that erodes trust in every other
+    // line of output.
+    const how = existing === "identical" ? "identical tarball" : "see note above";
+    console.log(`  = ${pkg.name}@${pkg.version} already published (${how}) — skipping`);
     return;
   }
 
