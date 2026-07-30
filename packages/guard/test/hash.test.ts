@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canonicalJson, sha256Hex } from "../src/ledger/hash.js";
+import { CanonicalizeError, canonicalJson, sha256Hex } from "../src/ledger/hash.js";
 import { AuditLedger } from "../src/ledger/ledger.js";
 import { MemoryLedgerStore } from "../src/ledger/stores/memory.js";
 
@@ -28,9 +28,12 @@ describe("canonicalJson", () => {
     );
   });
 
-  it("serializes bigint deterministically instead of throwing", () => {
-    expect(canonicalJson({ n: 10n })).toBe(canonicalJson({ n: 10n }));
-    expect(() => canonicalJson({ n: 5n })).not.toThrow();
+  it("REFUSES a bigint rather than encoding it deterministically", () => {
+    // Reversed in 0.3.0. This test previously asserted the opposite, and the
+    // "deterministic" encoding it was protecting was `String(n) + "n"` — which
+    // collided with the ordinary string "10n". Determinism is not the property
+    // a signature needs; injectivity is. See canonical-injectivity.test.ts.
+    expect(() => canonicalJson({ n: 10n })).toThrow(CanonicalizeError);
   });
 });
 
