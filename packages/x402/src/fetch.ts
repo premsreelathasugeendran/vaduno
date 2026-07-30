@@ -281,6 +281,17 @@ export function createX402Fetch(opts: X402FetchOptions): FetchLike {
         false,
       );
     }
+    // "authorized" cannot occur here: that status only comes from the two-phase
+    // `guard.authorize()`, and this wrapper drives the single-call
+    // `guard.execute()`. Handled explicitly rather than left to a cast, so that
+    // if this adapter ever moves to the two-phase path the omission is a
+    // compile error instead of a silently unhandled outcome.
+    if (result.status === "authorized") {
+      throw new X402PaymentFailedError(
+        "guard returned a two-phase authorization to a single-call path; nothing was signed",
+        false,
+      );
+    }
     // "failed": pay() threw before an authorization was transmitted.
     throw new X402PaymentFailedError(result.error ?? "payment could not be signed", false);
   };

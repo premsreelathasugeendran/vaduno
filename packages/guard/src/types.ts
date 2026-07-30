@@ -258,7 +258,8 @@ export type GuardStatus =
   | "denied"
   | "approval_rejected"
   | "failed"
-  | "replayed";
+  | "replayed"
+  | "authorized";
 
 /**
  * Discriminated on `status` so `value` and `error` narrow correctly:
@@ -274,6 +275,21 @@ export type GuardStatus =
  *    mid-execution — reconcile before retrying with a new intent).
  */
 export type GuardResult<T> =
+  | {
+      /**
+       * Two-phase only: policy passed, budget is RESERVED and any mandate use
+       * is consumed, but nothing has run. The caller performs the payment and
+       * must then call `settle(intentId, outcome)`.
+       *
+       * An unsettled authorization keeps holding budget on purpose — that is
+       * what stops two concurrent authorizations both passing one cap. It ages
+       * out with its rolling window if the caller never reports back.
+       */
+      status: "authorized";
+      intentId: string;
+      policyResult: PolicyResult;
+      mandateId?: string;
+    }
   | {
       status: "executed";
       intentId: string;

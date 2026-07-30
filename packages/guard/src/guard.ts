@@ -126,6 +126,77 @@ export class VadunoGuard {
   }
 
   /**
+   * Decide, reserve, and hand the decision back — WITHOUT running anything.
+   *
+   * `execute(intent, executor)` requires the guard to own the payment call.
+   * Every agent framework's hook point is decide-only — Claude Agent SDK
+   * `PreToolUse`, Vercel AI SDK `toolApproval`, OpenAI Agents `needsApproval`,
+   * LangChain `wrapToolCall` — so none of them can use it. This is the shape
+   * they can: ask, get an answer, do the thing yourself, report back.
+   *
+   * On `status: "authorized"` the budget is RESERVED and any mandate use is
+   * consumed, so a second concurrent authorization cannot pass the same cap.
+   * Call `settle(intent.id, …)` when you know what happened.
+   *
+   * TWO THINGS TO BE CLEAR ABOUT:
+   *  - An authorization you never settle keeps holding budget until its window
+   *    rolls off. That is deliberate — over-hold, never overspend — but it does
+   *    mean a caller that forgets to settle slowly starves its own cap.
+   *  - On this path the ledger records a SELF-REPORTED outcome. With
+   *    `execute()` the guard watched the executor run; here it takes your word.
+   *    That is a real reduction in evidence quality and is recorded as such.
+   *
+   * Settlement keys on `intent.id`, not on a returned closure, precisely so a
+   * framework can serialize its state and settle from another process.
+   */
+  async authorize(intent: PaymentIntent): Promise<GuardResult<never>> {
+    return this.run<never>(intent, null);
+  }
+
+  /**
+   * Report what happened to an authorization from `authorize()`.
+   *
+   * "executed" commits the reserved spend. "failed" leaves it RESERVED — a
+   * thrown rail may still have moved money, so the amount keeps counting until
+   * you can prove otherwise via `releaseSpend(intentId)`. Same burn-on-failure
+   * rule `execute()` applies; the two paths must not disagree about money.
+   *
+   * Idempotent, and safe to call for an unknown id (a no-op), so a retrying
+   * caller cannot double-count.
+   */
+  async settle(
+    intentId: string,
+    outcome: { status: "executed" | "failed"; error?: string; mandateId?: string },
+  ): Promise<void> {
+    const settledAt = this.now().toISOString();
+    const refs = { intentId, agentId: "" };
+
+    if (outcome.status === "executed") {
+      await this.commitBestEffort(intentId);
+    }
+    // On "failed" the reservation is deliberately left alone: neither committed
+    // nor released. See releaseSpend().
+
+    if (outcome.mandateId) {
+      await this.settleBestEffort(outcome.mandateId, intentId, {
+        status: outcome.status,
+        settledAt,
+        ...(outcome.error !== undefined ? { error: outcome.error } : {}),
+      });
+    }
+
+    await this.appendBestEffort(
+      "execution_result",
+      {
+        success: outcome.status === "executed",
+        selfReported: true,
+        ...(outcome.error !== undefined ? { error: outcome.error } : {}),
+      },
+      refs,
+    );
+  }
+
+  /**
    * Reclaim the budget held by a FAILED execution, for the case where you can
    * prove the rail did not move money.
    *
@@ -294,6 +365,21 @@ export class VadunoGuard {
     intent: PaymentIntent,
     executor: (intent: PaymentIntent) => Promise<T>,
   ): Promise<GuardResult<T>> {
+    return this.run<T>(intent, executor);
+  }
+
+  /**
+   * The single decision pipeline behind BOTH `execute()` and `authorize()`.
+   *
+   * One path on purpose: two implementations of "may this spend happen" would
+   * eventually disagree, and the disagreement would be about money. A null
+   * executor stops the pipeline after the reservation instead of running
+   * anything.
+   */
+  private async run<T>(
+    intent: PaymentIntent,
+    executor: ((intent: PaymentIntent) => Promise<T>) | null,
+  ): Promise<GuardResult<T>> {
     // Pin every field to a plain snapshot up front: a hostile intent could use
     // getters that return a benign value during checks and a malicious one at
     // execution (TOCTOU). structuredClone flattens getters to values and
@@ -397,7 +483,8 @@ export class VadunoGuard {
     intent: PaymentIntent,
     refs: { intentId: string; agentId: string },
     approved: boolean,
-    executor: (intent: PaymentIntent) => Promise<T>,
+    /** null = two-phase: authorize only, the caller executes and settles. */
+    executor: ((intent: PaymentIntent) => Promise<T>) | null,
   ): Promise<GuardResult<T>> {
     if (this.frozen) {
       return await this.denyAudited(intent, refs, "GUARD_FROZEN", `guard is frozen: ${this.frozen.reason}`);
@@ -576,6 +663,27 @@ export class VadunoGuard {
       merchantId: intent.merchant.id,
       rail: intent.rail,
     };
+
+    // TWO-PHASE STOP. `authorize()` passes no executor: the decision is made,
+    // the budget is reserved and the mandate use is consumed, and the caller
+    // runs the payment itself and reports back via `settle()`.
+    //
+    // Stopping HERE rather than earlier is the whole point — an authorization
+    // that has not reserved is just an opinion, and two of them would both pass
+    // the same cap.
+    if (executor === null) {
+      await this.ledger.append(
+        "execution_started",
+        { rail: recorded.rail, twoPhase: true },
+        refs,
+      );
+      return {
+        status: "authorized",
+        intentId: intent.id,
+        policyResult: finalResult,
+        ...(consumedMandateId ? { mandateId: consumedMandateId } : {}),
+      } as GuardResult<T>;
+    }
 
     await this.ledger.append("execution_started", { rail: recorded.rail }, refs);
 
