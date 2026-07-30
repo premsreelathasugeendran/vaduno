@@ -67,13 +67,15 @@ Signing a mandate proves it was *issued*; it does nothing to stop that valid man
 const results = await Promise.all(
   Array.from({ length: 6 }, () => guard.execute(sameIntent, payOnce)),
 );
-// rail ran exactly once → 1 "executed" + 5 "replayed", never a double charge.
+// rail ran at most once → 1 "executed" + 5 "replayed", never a double charge.
 ```
 
 - `status: "replayed"` carries the original outcome (`executed` / `failed` / `unresolved`); the executor does **not** run again.
 - A used intent id presented with **different money fields** is denied `MANDATE_REPLAY_MISMATCH` — an id-reuse attack, not a retry.
-- Cross-process safety needs a shared `ConsumeStore` (`FileConsumeStore` on one box; a DB unique index for multi-instance).
+- Cross-process safety needs a shared `ConsumeStore` — [`FileConsumeStore`](https://www.npmjs.com/package/@vaduno/guard) on one box, [`PostgresConsumeStore`](https://www.npmjs.com/package/@vaduno/postgres) for multiple instances.
 - **Rolling spend caps need a shared limiter too.** The default is in-memory and per-instance, so two guard processes each enforcing a $50/day cap let $100 through. Pass `FileSpendLimiter` (one box) or `PostgresSpendLimiter` (multiple instances) and the cap holds — `reserve()` evaluates every window and records the reservation as one atomic step, so there is no read-then-write gap to race. See [SECURITY.md](https://github.com/premsreelathasugeendran/vaduno/blob/master/SECURITY.md).
+- **Caps are scoped to `policy.id`, never to `intent.agentId`.** The threat model assumes the agent controls every field of the intent, so a cap keyed on `agentId` would let a compromised agent mint a fresh budget by changing one string — which it did, in 0.2.0. If you want per-agent budgets, run one guard (and one policy id) per agent rather than trusting the intent.
+- **A failed execution keeps its spend counted.** A thrown executor may still have moved money — a timeout after the charge landed is indistinguishable from a clean failure — so the amount stays held. Call `guard.releaseSpend(intentId)` only when you can prove the rail did not charge; it cannot un-count a successful execution.
 
 ## Design principles
 

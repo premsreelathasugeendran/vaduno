@@ -1,6 +1,6 @@
 # Contributing to Vaduno
 
-Thanks for looking. This is a young project (v0.2.1) and outside eyes are
+Thanks for looking. This is a young project (v0.2.2) and outside eyes are
 genuinely wanted — especially on the concurrency and the cryptography, which
 are where the real bugs have been.
 

@@ -6,6 +6,50 @@ This project is pre-1.0. Under semver, 0.x minor bumps may break the API. One
 has, and it was breaking because the fix for a real security bug required it. See [`SECURITY.md`](SECURITY.md) for what is and isn't
 guaranteed.
 
+## 0.2.2 — 2026-07-30
+
+**The first release published from CI, and the first with provenance
+attestation.** No library code changed — `dist/` is functionally identical to
+0.2.1. What changed is who built it and what the shipped documentation says.
+
+### Added
+
+- **Provenance attestation.** Every package is now published by a GitHub Actions
+  workflow via npm Trusted Publishing (OIDC), so the registry can prove which
+  repo, commit and workflow produced each tarball. This cannot be added to an
+  existing version retroactively, which is most of the reason this release
+  exists. 0.1.0 through 0.2.1 were published from a laptop and carry no
+  attestation.
+
+### Fixed — in the READMEs npm actually renders
+
+- **`@vaduno/guard`'s README still said "rail ran exactly once"** in the retry
+  storm example, six lines below the table that had already been corrected to
+  "at most once" in 0.1.1. At most once is the claim that is always true: a
+  denied or failed intent runs the rail zero times.
+- **It pointed multi-instance users at "a DB unique index"** — a thing they were
+  expected to build. `PostgresConsumeStore` has shipped since 0.2.0; the README
+  now says so.
+- **It never documented that caps are scoped to `policy.id`.** This is
+  security-relevant, not a detail: a reader building per-agent budgets would
+  reasonably have keyed on `agentId`, which is exactly the bypass fixed in
+  0.2.1. Now stated, with the reason.
+- **It never documented burn-on-failure or `releaseSpend()`.** Someone whose
+  executor throws needs to know the spend stays counted, and how to reclaim it
+  when they can prove the rail did not charge.
+- The root README claimed "two API changes came from security review". Every API
+  change so far has, which is both more accurate and more useful to know.
+
+### Changed (repository only)
+
+- `.github/workflows/publish.yml` + `scripts/publish-ordered.mjs`. Three dry runs
+  were needed to get this right, and each found a real bug: `npm@latest` now
+  resolves to npm 12 which cannot run on Node 20; a shasum equality check
+  rejected a legitimate CRLF-vs-LF difference between a Windows-published tarball
+  and a Linux-built one; and the output contradicted itself by printing "bytes
+  differ" and "identical" on consecutive lines. Rehearsing the release beat
+  discovering those during one.
+
 ## 0.2.1 — 2026-07-29
 
 **Two cap bypasses shipped in 0.2.0. Upgrade.** Both were introduced by the

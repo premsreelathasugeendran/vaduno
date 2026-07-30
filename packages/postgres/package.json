@@ -1,6 +1,6 @@
 {
   "name": "@vaduno/postgres",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Postgres-backed SpendLimiter and ConsumeStore for Vaduno. Makes rolling spend caps and consume-once mandates hold across MULTIPLE INSTANCES, not just one process. Never holds funds or keys to funds.",
   "type": "module",
   "main": "./dist/index.js",
@@ -38,7 +38,7 @@
     "prepublishOnly": "npm run build && npm run test"
   },
   "dependencies": {
-    "@vaduno/guard": "^0.2.1"
+    "@vaduno/guard": "^0.2.2"
   },
   "peerDependencies": {
     "pg": ">=8"
