@@ -141,10 +141,18 @@ jobs:
 
       # Node 24, not 20: npm 12 requires ^22.22.2 || ^24.15.0 || >=26, so a
       # Node 20 runner cannot install a current npm at all.
+      #
+      # NOTE: deliberately NO `registry-url`. Setting it makes setup-node write
+      # an .npmrc containing `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`
+      # — and with NODE_AUTH_TOKEN unset that becomes an EMPTY token. npm then
+      # authenticates with nothing instead of falling through to OIDC, and the
+      # registry answers E404 ("could not be found or you do not have permission").
+      # Provenance still signs fine, because that uses a Sigstore-audience token,
+      # which is why the failure looks like a permissions problem rather than a
+      # configuration one. registry.npmjs.org is the default registry anyway.
       - uses: actions/setup-node@v5
         with:
           node-version: "24"
-          registry-url: https://registry.npmjs.org
           cache: npm
 
       # Trusted publishing needs npm >= 11.5.1, and setup-node may ship older.
@@ -164,6 +172,20 @@ jobs:
             if (!ok) { console.error(`::error::npm ${v} is too old for trusted publishing (need >= 11.5.1)`); process.exit(1); }
             console.log(`npm ${v} supports trusted publishing`);
           '
+
+      # If a token is configured — even an empty one — npm uses it instead of
+      # OIDC and the failure is an opaque E404. Print what npm actually sees so
+      # the next person does not have to infer it from a 404.
+      - name: Show npm auth configuration (no secrets to leak — there is no token)
+        run: |
+          echo "registry: $(npm config get registry)"
+          echo "userconfig: ${NPM_CONFIG_USERCONFIG:-<unset>}"
+          if [ -n "${NPM_CONFIG_USERCONFIG:-}" ] && [ -f "$NPM_CONFIG_USERCONFIG" ]; then
+            echo "--- userconfig .npmrc ---"
+            sed 's/\(_authToken=\).*/\1<redacted-or-empty>/' "$NPM_CONFIG_USERCONFIG"
+          else
+            echo "no userconfig .npmrc — good, npm should use OIDC"
+          fi
 
       - run: npm ci
       - run: npm run build
