@@ -118,6 +118,10 @@ async function publishOne(name) {
   }
 
   const args = ["publish", "--access", "public"];
+  // VADUNO_PUBLISH_TRACE=1 turns on npm's verbose logging so an auth failure can
+  // be located precisely: whether npm attempted the OIDC token exchange at all,
+  // or never tried and fell straight through to "you need to log in".
+  if (process.env.VADUNO_PUBLISH_TRACE === "1") args.push("--loglevel", "verbose");
   // Provenance is what makes the OIDC identity visible to consumers rather than
   // just to the registry. Requires id-token: write in the workflow.
   if (!dryRun) args.push("--provenance");

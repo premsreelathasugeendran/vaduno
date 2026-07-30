@@ -202,6 +202,8 @@ jobs:
       # (ETARGET) until guard exists.
       - name: Publish @vaduno/guard
         run: node scripts/publish-ordered.mjs guard
+        env:
+          VADUNO_PUBLISH_TRACE: "1"
 
       - name: Publish the five dependents
         run: node scripts/publish-ordered.mjs transparency revocation x402 stripe postgres
