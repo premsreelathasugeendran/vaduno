@@ -1,0 +1,168 @@
+name: Publish
+
+# Publishes all six packages to npm via npm Trusted Publishing (GitHub OIDC).
+#
+# WHY OIDC AND NOT A TOKEN: npm's web-login tokens are short-lived, so a manual
+# `npm publish` needs a fresh browser 2FA round every few hours — that bit this
+# project three times in one day, once leaving a release with two known cap
+# bypasses as `latest` while the fix sat unpublished. npm is also actively
+# restricting tokens that bypass 2FA for direct publishing, so an automation
+# token is a dead end. OIDC has no secret to expire, store, or leak: GitHub
+# mints a short-lived identity token per run and npm verifies it came from THIS
+# repo and THIS workflow file.
+#
+# It also produces provenance attestation, which cannot be added to a version
+# retroactively.
+#
+# ── ONE-TIME SETUP, per package, on npmjs.com ────────────────────────────────
+# For each of @vaduno/{guard,transparency,revocation,x402,stripe,postgres}:
+#   Package page → Settings → Publishing access → Trusted publisher → GitHub Actions
+#     Organization or user : premsreelathasugeendran
+#     Repository           : vaduno
+#     Workflow filename    : publish.yml      <-- must match THIS file's name
+#     Environment          : (leave empty)
+# Until that is configured for a package, its publish step fails with E404 —
+# npm returns 404 rather than 401 for an unauthorized PUT.
+#
+# ── RELEASING ────────────────────────────────────────────────────────────────
+#   1. bump versions, commit, `git tag -a v0.2.2 -m "..."`, push both
+#   2. this workflow verifies, then publishes @vaduno/guard FIRST and the rest after
+# Or run it manually from the Actions tab with dry_run to rehearse.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run every check and `npm publish --dry-run`, publishing nothing"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# Never let two publish runs interleave. A partial publish is recoverable only
+# by burning version numbers, since name@version can never be reused.
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: verify before publishing
+    runs-on: ubuntu-latest
+    # The publish gate is deliberately stricter than CI: it also proves the
+    # Postgres stores are atomic against a real database, because those are the
+    # packages whose whole value is a concurrency guarantee.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: vaduno_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Tag must match the version being published
+        if: github.event_name == 'push'
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          PKG=$(node -p "require('./packages/guard/package.json').version")
+          echo "tag=$TAG  package.json=$PKG"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::tag v$TAG does not match @vaduno/guard@$PKG — refusing to publish"
+            exit 1
+          fi
+
+      - name: All six packages must share one version
+        run: |
+          set -euo pipefail
+          VERSIONS=$(for d in packages/*/; do
+            node -p "require('./$d/package.json').private === true ? '' : require('./$d/package.json').version" 2>/dev/null
+          done | grep -v '^$' | sort -u)
+          echo "$VERSIONS"
+          if [ "$(echo "$VERSIONS" | wc -l)" -ne 1 ]; then
+            echo "::error::packages disagree on version — they release as a matched set"
+            exit 1
+          fi
+
+      - run: npm run build
+
+      - name: Tests (all six packages)
+        run: npm run test
+
+      - name: Postgres conformance against a real database
+        run: npm -w @vaduno/postgres run test
+        env:
+          VADUNO_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/vaduno_test
+
+      - name: Demos must actually run
+        run: |
+          npm run demo
+          npm run demo:x402
+          npm run demo:stripe
+          npm run demo:transparency
+          npm run demo:revocation
+          npm run demo:cross-process
+
+      - name: Release gate
+        run: node scripts/check-release.mjs
+
+  publish:
+    name: publish to npm
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The whole point. Lets GitHub mint the OIDC token npm exchanges for
+      # short-lived publish rights. Without it every publish is E404.
+      id-token: write
+    # Job-level so the `if:` on the verify step can actually see it. A
+    # step-level env is not in scope for that step's own condition.
+    env:
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      # Trusted publishing needs npm >= 11.5.1; setup-node may ship older.
+      - name: Ensure npm supports trusted publishing
+        run: |
+          npm install -g npm@latest
+          npm --version
+
+      - run: npm ci
+      - run: npm run build
+
+      # @vaduno/guard MUST land first: the other five declare a hard dependency
+      # on ^<this version>, so any of them published first is uninstallable
+      # (ETARGET) until guard exists.
+      - name: Publish @vaduno/guard
+        run: node scripts/publish-ordered.mjs guard
+
+      - name: Publish the five dependents
+        run: node scripts/publish-ordered.mjs transparency revocation x402 stripe postgres
+
+      - name: Confirm the registry agrees
+        if: env.DRY_RUN != 'true'
+        run: node scripts/publish-ordered.mjs --verify guard transparency revocation x402 stripe postgres
