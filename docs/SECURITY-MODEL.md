@@ -148,6 +148,24 @@ licensing); no such adapter will be accepted.
 - **One writer per ledger** (non-guarantee 11). Also alarm on
   `guard.isAuditDegraded()`: it is the only signal that a charge executed and
   its durable record did not land, and nothing surfaces it for you.
+- On restart over a persistent ledger, hydrate before serving — and pass
+  `requireHydration: true` so the guard denies (`HYDRATION_REQUIRED`) until
+  `hydrateFromLedger()` succeeds. A hydrate that is attempted and FAILS
+  already denies by default until a retry succeeds; the option closes the
+  remaining gap — a restart that never attempts hydrate and so serves with
+  fresh, empty state: no restored freeze, zero counted spend, the maximally
+  permissive configuration. Alarm on `guard.isFreezeDegraded()` as well: it
+  means a freeze/unfreeze is enforced live but has no durable record, so a
+  restart would not honour it.
+- `guard.freeze()` takes no lock: its deny flag flips before the first await,
+  and it is safe to call — and await — from anywhere, including inside an
+  executor or `revocationCheck` (a freeze issued from inside the rail call
+  cannot deadlock the guard). Its stopping power ends at the last freeze
+  re-check: a freeze landing after that final check — inside the
+  `execution_started` write that precedes the rail, or once `authorize()` has
+  handed an authorization back to the caller — cannot stop that payment.
+  Vaduno never recalls in-flight money; doing so would require the control
+  over funds it must never hold.
 - Fail-closed configuration is mandatory in production: the dashboard refuses
   to start without a real session secret; the guard denies on any policy
   evaluation error; approval and mandate checks reject on any parse/crypto

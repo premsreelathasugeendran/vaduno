@@ -34,7 +34,7 @@ does **not** yet cover — so you can decide whether it fits your threat model.
 | Timezone-offset expiry bypass | All timestamps compared as epoch ms via `Date.parse`; unparseable = fail closed |
 | Silent history tampering | Hash-chained ledger; `verify()` re-derives every hash; `verify(retainedHead)` also catches truncation/rewrite |
 | Human-in-the-loop for large spends | `approval` thresholds; **fails closed** if no approval handler is configured |
-| Emergency stop | `freeze()` denies everything **on that guard instance** and is re-checked inside the critical section. Per-process — see Known Limits item 2; a cross-process kill needs `@vaduno/revocation` with a shared registry |
+| Emergency stop | `freeze()` flips its deny flag synchronously and takes no lock, so it is safe to call — and await — from anywhere, including inside an executor or `revocationCheck`. The flag is re-checked inside the critical section: at entry and again at a last exit before the final `execution_started` audit write, on both the `execute()` and `authorize()` paths. A freeze landing before that last exit denies the payment (a mandate use already consumed by it stays burned: over-hold, never overspend); one landing after it — a blind window of that one audit write plus a scheduler tick — cannot stop that payment, and money already handed to the rail (or an authorization already handed back to the caller) is never recalled: recalling in-flight money would require the control over funds Vaduno must never hold. A freeze whose `guard_frozen` write fails stays enforced locally and flags `isFreezeDegraded()` — it would not survive a restart. Per-process — see Known Limits item 2; a cross-process kill needs `@vaduno/revocation` with a shared registry |
 | Compromised agent must be cut off mid-flight | `@vaduno/revocation`: revoking a mandate or an entire agent is checked inside the critical section **after** human approval, so a kill switch pulled while an approval is pending still wins. An unreachable registry denies (`REVOCATION_CHECK_FAILED`) — an outage never reads as "not revoked" |
 | Un-revoking by tampering with a published status list | Status lists are Ed25519-signed with `validUntil` freshness and a monotonic version floor; a forged bitstring, a stale list, or a replayed pre-revocation snapshot all fail closed |
 
@@ -64,7 +64,13 @@ These are documented, not hidden. Some are scope choices; some are on the roadma
    `guard.hydrateFromLedger()` (spend counter + freeze state) and
    `MandateManager.hydrateFromLedger()` (consume-once + revocation state) to
    rebuild from the ledger, which trusts the ledger at startup as a documented
-   boundary.
+   boundary. A hydrate that fails verification throws without restoring
+   anything, and the guard then denies every intent (`HYDRATION_REQUIRED`) by
+   default until a retry succeeds — serving after a failed hydrate with the
+   instance's fresh, EMPTY state (no freeze, zero counted spend) would be the
+   *permissive* direction. A restart that never attempts hydrate still starts
+   open; restart-over-a-ledger deployments should pass `requireHydration:
+   true` to the guard to close that gap too.
    - **Why a shared store alone is not sufficient** (fixed in 0.2.0): the spend
      interface used to be a read-only `totalsSince()`, which can only support
      check-then-act. Two instances both read `$0`, both pass the check, both
@@ -117,7 +123,14 @@ These are documented, not hidden. Some are scope choices; some are on the roadma
    guard instance (`private frozen`). Freezing one process does **not** stop
    another live process — they keep spending until each is frozen or restarted.
    `hydrateFromLedger()` restores freeze state at STARTUP from the ledger, so a
-   restart honours it, but nothing propagates to a running peer. This was
+   restart honours it, but nothing propagates to a running peer. Two caveats on
+   the restart path: a restart that never hydrates starts UNFROZEN (a hydrate
+   that is attempted and THROWS denies everything by default until a retry
+   succeeds; set `requireHydration: true` to also cover the restart that never
+   attempts one); and a freeze whose `guard_frozen` append failed was never
+   durable — the live process keeps enforcing it and reports
+   `isFreezeDegraded()`, but a restart would forget it. Re-issue the freeze or
+   repair the ledger before trusting one. This was
    undocumented before 0.3.0, which is the worst possible combination: an
    operator pulls the switch, sees it take effect locally, and reasonably
    concludes spending has stopped. For a targeted kill that a second process

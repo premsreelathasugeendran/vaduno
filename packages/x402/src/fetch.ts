@@ -90,6 +90,57 @@ function originOf(url: string): string | null {
   }
 }
 
+/**
+ * Read an untrusted response body, counting BYTES received and aborting the
+ * transfer the moment `maxBytes` is exceeded. Two attacks this closes:
+ *  - Content-Length is advisory and absent entirely on chunked/HTTP-2
+ *    responses, so a cap tested only against the header (or against a fully
+ *    buffered string) bounds nothing — a hostile 402 responder could stream
+ *    hundreds of MiB into memory before the "64 KB" check ever ran.
+ *  - Measuring the cap in UTF-16 code units (`text.length`) undercounts
+ *    multi-byte characters ~3x; counting `Uint8Array.byteLength` measures
+ *    what is actually held in memory.
+ * `reader.cancel()` tears down the body stream, so at most the cap plus one
+ * in-flight chunk is ever buffered.
+ *
+ * A non-cap read error resolves to "" (the old `.text().catch(() => "")`
+ * behavior): JSON.parse then fails and parsePaymentRequired rejects the body —
+ * fail closed either way, always via a documented X402* error.
+ */
+async function readBodyCapped(res: Response, maxBytes: number): Promise<string> {
+  const stream = res.body;
+  if (!stream) return "";
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      let result: ReadableStreamReadResult<Uint8Array>;
+      try {
+        result = await reader.read();
+      } catch {
+        return "";
+      }
+      if (result.done) break;
+      total += result.value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel("x402: 402 body exceeded byte cap").catch(() => {});
+        throw new X402ProtocolError(`402 body too large (> ${maxBytes} bytes)`);
+      }
+      chunks.push(result.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const buf = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    buf.set(c, offset);
+    offset += c.byteLength;
+  }
+  return new TextDecoder().decode(buf);
+}
+
 interface NormalizedRequest {
   url: string;
   init: RequestInit;
@@ -166,16 +217,19 @@ export function createX402Fetch(opts: X402FetchOptions): FetchLike {
     const first = await doFetch(url, baseInit);
     if (first.status !== 402) return first;
 
-    // Bound the untrusted 402 body: reject an over-large Content-Length, and
-    // cap the bytes actually read so a hostile server can't exhaust the agent.
+    // Bound the untrusted 402 body. An honest over-large Content-Length is
+    // rejected before reading anything, but the header is advisory (and absent
+    // on chunked/HTTP-2 responses), so the real bound is readBodyCapped, which
+    // counts the bytes actually received and aborts the transfer at the cap.
+    // No clone(): the 402 response is never handed back to the caller (only
+    // the paid retry's response is), and clone() would tee the body into a
+    // second unread buffer — growing the very allocation the cap exists to
+    // prevent.
     const declared = Number(first.headers.get("content-length"));
     if (Number.isFinite(declared) && declared > MAX_402_BYTES) {
       throw new X402ProtocolError(`402 body too large (${declared} bytes)`);
     }
-    const text = await first.clone().text().catch(() => "");
-    if (text.length > MAX_402_BYTES) {
-      throw new X402ProtocolError(`402 body too large (${text.length} bytes)`);
-    }
+    const text = await readBodyCapped(first, MAX_402_BYTES);
     let body: unknown = null;
     try {
       body = JSON.parse(text);

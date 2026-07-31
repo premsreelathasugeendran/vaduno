@@ -57,12 +57,14 @@ These are the sharp edges of x402 specifically — read them before going live:
 - **Pass the `assets` registry.** Without it, `currency` comes from the server's spoofable `extra.symbol`. With it, a token that isn't on your list is refused.
 - **Redirects are never followed** (`redirect: "manual"`). A 3xx could otherwise divert the probe — or the paid retry, leaking the `X-PAYMENT` bearer — to another origin.
 - **Spend is counted once `X-PAYMENT` is transmitted**, because it is a bearer authorization the server can still settle even while returning an error. Bind a consume-once mandate (`maxUses`) to bound retries.
-- **The untrusted 402 body is bounded** (64 KB) and `accepts` is capped, so a hostile server cannot exhaust the agent.
+- **The untrusted 402 body is bounded** (64 KB) and `accepts` is capped, so a hostile server cannot exhaust the agent. The cap counts the **bytes actually received** and aborts the transfer the moment it is exceeded — it holds even for chunked/HTTP-2 responses that carry no `Content-Length`.
 
 ## Errors
 
 | Thrown | Meaning |
 |---|---|
+| `X402ProtocolError` | The 402 response was malformed, over the byte cap, or wrong-typed — **no money moved** |
+| `X402VersionUnsupportedError` | The server speaks x402 v2+, which this adapter does not — **no money moved** |
 | `X402RequirementRefusedError` | Refused before paying — **no money moved** |
 | `X402PaymentBlockedError` | Policy / mandate / freeze blocked it — **no money moved** |
 | `X402PaymentFailedError` | Payer ran; check `.transmitted` — if true, spend is counted because the server may still settle |

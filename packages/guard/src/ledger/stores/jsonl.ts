@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
+import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { LedgerEntry, LedgerStore } from "../ledger.js";
 
@@ -6,12 +6,25 @@ import type { LedgerEntry, LedgerStore } from "../ledger.js";
  * One JSON entry per line, append-only. Suited to a single-process agent
  * writing a local flight-recorder file.
  *
- * Single-writer: if the file changes on disk behind this instance's back
- * (another process/instance appended), the cache is reloaded before the next
- * append so two instances on one file cannot silently fork the hash chain.
- * Concurrent writers are still unsafe (no file lock) and unsupported — and
- * "writers" means AuditLedger INSTANCES: two instances in one process race
- * exactly like two processes do.
+ * CACHING: none, deliberately. Every read path (all(), last()) re-reads the
+ * file from disk. An earlier version cached the parsed chain and invalidated
+ * it on stat().size changes, but a byte-length-preserving edit to the file
+ * leaves the size unchanged, so a long-lived instance kept serving the
+ * pre-tamper chain — verify() said ok:true about bytes it never looked at,
+ * and even verify(retainedHead) was defeated because the stale chain still
+ * ended at the retained head. No cheap freshness signal closes this: mtime
+ * has coarse granularity and is trivially forgeable (utimes), and a content
+ * hash costs the full read it was meant to avoid. A security-labelled API
+ * returning a false "ok" is worse than a slow one, so reads pay for the
+ * truth. The only retained in-memory state is `dirEnsured`, which is not
+ * chain data and self-heals via the ENOENT retry in append().
+ *
+ * append() itself never reads: it only appends bytes. Chain linkage is safe
+ * because AuditLedger.append derives prevHash from last(), which now always
+ * reflects the real file — a write from a second instance is observed and
+ * extended, not forked over. Concurrent writers are still unsafe (no file
+ * lock) and unsupported — and "writers" means AuditLedger INSTANCES: two
+ * instances in one process race exactly like two processes do.
  *
  * THIS DOCBLOCK USED TO SAY "use SupabaseLedgerStore for shared ledgers". That
  * was false, and corrected in 0.3.0. `AuditLedger.append` derives
@@ -27,9 +40,6 @@ import type { LedgerEntry, LedgerStore } from "../ledger.js";
  * writer per ledger. See docs/SECURITY-MODEL.md.
  */
 export class JsonlLedgerStore implements LedgerStore {
-  private cache: LedgerEntry[] | null = null;
-  /** Byte size of the file as last observed by this instance. */
-  private knownSize = 0;
   private dirEnsured = false;
 
   constructor(private readonly filePath: string) {}
@@ -40,42 +50,20 @@ export class JsonlLedgerStore implements LedgerStore {
     this.dirEnsured = true;
   }
 
-  private async currentSize(): Promise<number> {
-    try {
-      return (await stat(this.filePath)).size;
-    } catch (err: unknown) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return 0;
-      throw err;
-    }
-  }
-
   private async load(): Promise<LedgerEntry[]> {
-    if (this.cache) {
-      // Reload if the file grew/changed under us since we last read it.
-      const size = await this.currentSize();
-      if (size === this.knownSize) return this.cache;
-      this.cache = null;
-    }
     try {
       const raw = await readFile(this.filePath, "utf8");
-      this.knownSize = Buffer.byteLength(raw, "utf8");
-      this.cache = raw
+      return raw
         .split("\n")
         .filter((line) => line.trim().length > 0)
         .map((line) => JSON.parse(line) as LedgerEntry);
     } catch (err: unknown) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-        this.cache = [];
-        this.knownSize = 0;
-      } else {
-        throw err;
-      }
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw err;
     }
-    return this.cache!;
   }
 
   async append(entry: LedgerEntry): Promise<void> {
-    const entries = await this.load();
     await this.ensureDir();
     const line = JSON.stringify(entry) + "\n";
     try {
@@ -91,8 +79,6 @@ export class JsonlLedgerStore implements LedgerStore {
         throw err;
       }
     }
-    entries.push(entry);
-    this.knownSize += Buffer.byteLength(line, "utf8");
   }
 
   async last(): Promise<LedgerEntry | null> {
@@ -101,6 +87,6 @@ export class JsonlLedgerStore implements LedgerStore {
   }
 
   async all(): Promise<LedgerEntry[]> {
-    return [...(await this.load())];
+    return this.load();
   }
 }

@@ -19,6 +19,21 @@ export interface VadunoGuardOptions {
   /** When true, every intent must carry a valid mandateId. Default false. */
   requireMandate?: boolean;
   /**
+   * When true, execute()/authorize() deny every intent (HYDRATION_REQUIRED)
+   * until hydrateFromLedger() has succeeded on this instance. Set it whenever
+   * the guard restarts over a persistent ledger: without it, a restart that
+   * never attempts hydrate serves with fresh, empty state (no restored
+   * freeze, zero counted spend), which is silently the maximally permissive
+   * configuration. Opt-in rather than default only because most single-run
+   * guards never hydrate and would otherwise deny forever.
+   *
+   * Independent of this option, a hydrate that was ATTEMPTED and FAILED
+   * denies by default until a retry succeeds — a guard that has seen its
+   * ledger fail verification does not get to shrug and serve open. This
+   * option adds coverage for the restart that forgets to hydrate at all.
+   */
+  requireHydration?: boolean;
+  /**
    * Called when policy says "require_approval". If absent, such intents are
    * DENIED (fail closed) — never silently allowed.
    */
@@ -106,13 +121,40 @@ export class VadunoGuard {
   private readonly usingInMemoryHistory: boolean;
   private auditDegraded = false;
   private limiterDegraded = false;
+  private freezeDegraded = false;
   private hydrated = false;
+  /** True after a hydrate attempt threw. Denies by default until a retry succeeds. */
+  private hydrateFailed = false;
+  private readonly requireHydration: boolean;
+  /**
+   * Monotonic generation counter, bumped by every freeze()/unfreeze() at the
+   * same instant the flag flips. The LATEST synchronous flip is always the
+   * truth; the only deferred write to `this.frozen` — hydrateFromLedger()'s
+   * snapshot restore — applies only if this counter has not moved since the
+   * hydrate was called. Without the stamp, ANY deferred assignment (a queued
+   * mutex re-assertion, a hydrate snapshot) can land after a newer flip and
+   * resurrect state the operator already changed — in the fatal direction,
+   * that is a stale unfreeze overwriting a live freeze.
+   */
+  private freezeEpoch = 0;
+  /**
+   * Settlement of the most recently issued freeze/unfreeze ledger write,
+   * errors swallowed (a failed write is already reported via
+   * isFreezeDegraded()). hydrateFromLedger() awaits this before reading the
+   * ledger, so its snapshot can never miss a freeze-state record the
+   * operator issued before hydrating — without it, an unawaited unfreeze()
+   * racing hydrate could be re-asserted from a snapshot taken before its
+   * guard_unfrozen record landed. The ledger's internal append queue makes
+   * the latest write's settlement imply all earlier ones.
+   */
+  private freezeWrites: Promise<unknown> = Promise.resolve();
 
   constructor(opts: VadunoGuardOptions) {
     this.policy = opts.policy;
     this.ledger = opts.ledger;
     this.mandates = opts.mandates;
     this.requireMandate = opts.requireMandate ?? false;
+    this.requireHydration = opts.requireHydration ?? false;
     this.approvalHandler = opts.approvalHandler;
     this.revocationCheck = opts.revocationCheck;
     this.now = opts.now ?? (() => new Date());
@@ -151,6 +193,21 @@ export class VadunoGuard {
    */
   isLimiterDegraded(): boolean {
     return this.limiterDegraded;
+  }
+
+  /**
+   * True if a freeze()/unfreeze() could not persist its ledger record.
+   *
+   * Deliberately a separate signal from isAuditDegraded(): that flag means
+   * the EVIDENCE trail has a hole while enforcement stayed correct; this one
+   * means the current ENFORCEMENT state itself is not durable — a lost
+   * guard_frozen record hydrates a restarted guard back to UNFROZEN (and a
+   * lost guard_unfrozen resurrects a lifted freeze). The in-process flag
+   * keeps enforcing either way; on seeing this, re-issue the freeze/unfreeze
+   * or repair the ledger before trusting a restart.
+   */
+  isFreezeDegraded(): boolean {
+    return this.freezeDegraded;
   }
 
   /**
@@ -267,65 +324,119 @@ export class VadunoGuard {
    *  - the spend counter (from execution_result entries), and
    *  - the freeze state (from the last guard_frozen / guard_unfrozen entry).
    *
-   * Gated on chain integrity: the ledger is verified first (optionally against
-   * a retained head) and hydrate FAILS CLOSED — throwing without changing
-   * state — if verification fails, so a tampered/truncated ledger cannot reset
-   * spend or lift a freeze. Runs inside the critical section and only once per
-   * instance. Trusting a verified ledger at startup is a documented boundary
-   * (see SECURITY.md).
+   * Gated on chain integrity: the ledger is verified first (optionally
+   * against a retained head), and a failed verification makes hydrate THROW
+   * without changing spend or freeze state — a tampered/truncated ledger
+   * cannot inject a spend counter or lift a freeze THROUGH this call. A
+   * failed attempt also flips the guard into DENY (`HYDRATION_REQUIRED`)
+   * until a retry succeeds: the alternative — keeping the instance's FRESH
+   * state (no freeze, zero counted spend) in force — is the maximally
+   * PERMISSIVE configuration, and "the ledger failed verification, so I
+   * served with no history" is fail-open by any honest reading. A guard that
+   * never attempts hydrate is unaffected; `requireHydration: true` covers
+   * that case too. Runs inside the critical section and only once per
+   * instance (a failed attempt may be retried). Trusting a verified ledger
+   * at startup is a documented boundary (see SECURITY.md).
    */
   async hydrateFromLedger(expectedHead?: Parameters<AuditLedger["verify"]>[0]): Promise<void> {
+    // Captured at CALL time, not at task start: any freeze()/unfreeze() the
+    // operator issues after this line is newer than whatever snapshot this
+    // hydrate will read, and must win over it.
+    const epochAtCall = this.freezeEpoch;
     return this.runExclusive(async () => {
       if (this.hydrated) {
         throw new Error("hydrateFromLedger already called on this guard instance");
       }
-      const verdict = await this.ledger.verify(expectedHead);
-      if (!verdict.ok) {
-        throw new Error(
-          `hydrateFromLedger refused: ledger failed verification (${verdict.problem ?? "unknown"})`,
-        );
+      try {
+        await this.restoreFromLedger(expectedHead, epochAtCall);
+        this.hydrateFailed = false;
+      } catch (err) {
+        // Deny by default from here on (HYDRATION_REQUIRED): an attempted
+        // hydrate that failed must not leave a fresh, permissive guard
+        // serving as if there were no history to restore.
+        this.hydrateFailed = true;
+        throw err;
       }
-      const entries = await this.ledger.all();
-
-      const executed: Array<{ ms: number; amountMinor: number; currency: string }> = [];
-      if (this.usingInMemoryHistory) {
-        for (const entry of entries) {
-          if (entry.type !== "execution_result") continue;
-          const data = entry.data;
-          if (data === null || typeof data !== "object") continue;
-          const d = data as { success?: unknown; amountMinor?: unknown; currency?: unknown };
-          if (d.success !== true) continue;
-          // Skip malformed rows rather than poisoning the counter with NaN
-          // (which would silently disable rolling limits).
-          if (!Number.isSafeInteger(d.amountMinor)) continue;
-          if (typeof d.currency !== "string") continue;
-          const ms = Date.parse(entry.timestamp);
-          if (Number.isNaN(ms)) continue;
-          executed.push({ ms, amountMinor: d.amountMinor as number, currency: d.currency });
-        }
-      }
-
-      // Compute freeze state into a local, assign once (never transiently null
-      // a live frozen flag while a concurrent commit might read it).
-      let frozen: { reason: string } | null = null;
-      for (const entry of entries) {
-        if (entry.type === "guard_frozen") {
-          const data = entry.data;
-          const reason =
-            data && typeof data === "object" && typeof (data as { reason?: unknown }).reason === "string"
-              ? ((data as { reason: string }).reason)
-              : "frozen";
-          frozen = { reason };
-        } else if (entry.type === "guard_unfrozen") {
-          frozen = null;
-        }
-      }
-
-      this.executed.length = 0;
-      this.executed.push(...executed);
-      this.frozen = frozen;
-      this.hydrated = true;
     });
+  }
+
+  /** The body of hydrateFromLedger(). Runs under the mutex; throws = failed. */
+  private async restoreFromLedger(
+    expectedHead: Parameters<AuditLedger["verify"]>[0] | undefined,
+    epochAtCall: number,
+  ): Promise<void> {
+    // A freeze/unfreeze issued before this hydrate may still have its ledger
+    // record in flight; wait for it to land (or definitively fail) so the
+    // snapshot below cannot miss freeze state the operator already set.
+    // Lock-free waits on lock-free writes: no cycle with the mutex this
+    // method runs under.
+    await this.freezeWrites;
+    const verdict = await this.ledger.verify(expectedHead);
+    if (!verdict.ok) {
+      throw new Error(
+        `hydrateFromLedger refused: ledger failed verification (${verdict.problem ?? "unknown"})`,
+      );
+    }
+    const entries = await this.ledger.all();
+
+    const executed: Array<{ ms: number; amountMinor: number; currency: string }> = [];
+    if (this.usingInMemoryHistory) {
+      for (const entry of entries) {
+        if (entry.type !== "execution_result") continue;
+        const data = entry.data;
+        if (data === null || typeof data !== "object") continue;
+        const d = data as { success?: unknown; amountMinor?: unknown; currency?: unknown };
+        if (d.success !== true) continue;
+        // Skip malformed rows rather than poisoning the counter with NaN
+        // (which would silently disable rolling limits).
+        if (!Number.isSafeInteger(d.amountMinor)) continue;
+        if (typeof d.currency !== "string") continue;
+        const ms = Date.parse(entry.timestamp);
+        if (Number.isNaN(ms)) continue;
+        executed.push({ ms, amountMinor: d.amountMinor as number, currency: d.currency });
+      }
+    }
+
+    // Freeze state: the LAST guard_frozen/guard_unfrozen entry is
+    // authoritative, so walk from the tail and stop at the first one found.
+    // Computed into a local, assigned once (never transiently null a live
+    // frozen flag while a concurrent commit might read it).
+    let frozen: { reason: string } | null = null;
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i]!;
+      if (entry.type === "guard_unfrozen") break;
+      if (entry.type === "guard_frozen") {
+        const data = entry.data;
+        const reason =
+          data && typeof data === "object" && typeof (data as { reason?: unknown }).reason === "string"
+            ? ((data as { reason: string }).reason)
+            : "frozen";
+        frozen = { reason };
+        break;
+      }
+    }
+
+    this.executed.length = 0;
+    this.executed.push(...executed);
+    // The snapshot restore applies ONLY if no freeze()/unfreeze() has
+    // happened since hydrate was called (the epoch stamp). A live flip is
+    // strictly newer than anything this snapshot can say, and a deferred
+    // assignment that ignores that ordering is exactly how a startup
+    // freeze got clobbered back to null — freeze() resolved cleanly, the
+    // ledger said guard_frozen, and the guard kept authorizing.
+    //
+    // Even with the epoch unchanged the restore merges TOWARD frozen
+    // (`frozen ?? this.frozen`), never away: a freeze whose guard_frozen
+    // append FAILED (isFreezeDegraded()) is live and real, yet the
+    // verified ledger legitimately lacks its record — an unconditional
+    // assignment would lift it. A snapshot `frozen` can only mean the
+    // ledger's last freeze-state record is guard_frozen, so keeping the
+    // live flag can never overwrite a NEWER unfreeze (that unfreeze would
+    // have bumped the epoch and skipped this restore entirely).
+    if (this.freezeEpoch === epochAtCall) {
+      this.frozen = frozen ?? this.frozen;
+    }
+    this.hydrated = true;
   }
 
   /**
@@ -343,16 +454,71 @@ export class VadunoGuard {
    * For a kill a second process actually observes, use `@vaduno/revocation`
    * with a shared registry: it is checked on the execution path, after
    * approval, and an unreachable registry denies rather than allows.
+   *
+   * Within this process: the deny flag flips SYNCHRONOUSLY, before the first
+   * await — an emergency stop must not queue behind a slow in-flight payment.
+   * commit() re-reads the flag immediately before invoking the executor, so a
+   * freeze landing while a payment is mid-decision still denies it if the
+   * rail has not run.
+   *
+   * NO LOCK, ever. freeze() must be safe to call — and await — from inside
+   * an executor or revocationCheck ("this charge looks hostile, stop the
+   * guard"), which runs inside the critical section; routing the durable
+   * record through that same mutex is a deadlock cycle (0.2.x allowed the
+   * pattern and it must keep working). It must also leave nothing deferred:
+   * a queued "re-assert my flag later" task can run after a NEWER
+   * freeze/unfreeze and resurrect state the operator already changed — a
+   * stale unfreeze re-assertion overwriting a live freeze lets a queued
+   * payment through a frozen guard. So the flag flips here, once, stamped by
+   * `freezeEpoch`; the guard_frozen record goes straight to the ledger
+   * (whose own internal queue keeps the chain linear); and the epoch stamp
+   * is what stops a concurrent hydrateFromLedger() from overwriting the flag
+   * with an older snapshot.
+   *
+   * The append is best-effort: if it fails, the LOCAL freeze stands (the
+   * safe direction) and isFreezeDegraded() reports that the freeze would not
+   * survive a restart. Throwing away the local freeze on a failed write
+   * would fail OPEN.
    */
   async freeze(reason: string): Promise<void> {
     this.frozen = { reason };
-    await this.ledger.append("guard_frozen", { reason });
+    this.freezeEpoch += 1;
+    const write = this.ledger.append("guard_frozen", { reason });
+    this.freezeWrites = write.then(
+      () => undefined,
+      () => undefined,
+    );
+    try {
+      await write;
+    } catch {
+      this.freezeDegraded = true;
+    }
   }
 
+  /**
+   * Lift the freeze. Same rules as freeze(): the flag clears synchronously
+   * with an epoch stamp (so neither a concurrent hydrate nor any deferred
+   * task can resurrect the freeze — or outlive a freeze issued after this
+   * call; hydrate additionally waits for this call's ledger write to settle
+   * before snapshotting), the guard_unfrozen record is appended lock-free,
+   * and a failed append sets isFreezeDegraded() — a restart, or a later
+   * hydrate on this instance, would come back FROZEN: divergent, but in the
+   * safe direction.
+   */
   async unfreeze(): Promise<void> {
     const reason = this.frozen?.reason ?? null;
     this.frozen = null;
-    await this.ledger.append("guard_unfrozen", { previousReason: reason });
+    this.freezeEpoch += 1;
+    const write = this.ledger.append("guard_unfrozen", { previousReason: reason });
+    this.freezeWrites = write.then(
+      () => undefined,
+      () => undefined,
+    );
+    try {
+      await write;
+    } catch {
+      this.freezeDegraded = true;
+    }
   }
 
   isFrozen(): boolean {
@@ -450,6 +616,25 @@ export class VadunoGuard {
     }
 
     try {
+      // Hydration gate. An unhydrated guard holds this instance's fresh
+      // state — no restored freeze, zero counted spend: the maximally
+      // permissive configuration. Two ways in:
+      //  - a hydrate was ATTEMPTED and FAILED: deny BY DEFAULT until a retry
+      //    succeeds. "The ledger failed verification, so I served with no
+      //    history" is fail-open; a guard that never calls hydrate is
+      //    unaffected, so tightening this default breaks no one.
+      //  - requireHydration covers the restart that never attempts hydrate.
+      if (this.hydrateFailed || (this.requireHydration && !this.hydrated)) {
+        return await this.denyAudited(
+          safe,
+          refs,
+          "HYDRATION_REQUIRED",
+          this.hydrateFailed
+            ? "hydrateFromLedger() was attempted and failed; denying until a retry succeeds (fail closed)"
+            : "requireHydration is set and hydrateFromLedger() has not succeeded (fail closed)",
+        );
+      }
+
       if (this.frozen) {
         return await this.denyAudited(safe, refs, "GUARD_FROZEN", `guard is frozen: ${this.frozen.reason}`);
       }
@@ -498,8 +683,15 @@ export class VadunoGuard {
 
       // Critical section: re-check freeze, re-evaluate against the CURRENT
       // policy and CURRENT spend totals, consume the mandate, execute, record
-      // — all serialized so concurrent calls cannot jointly exceed a limit and
-      // a mid-flight setPolicy/freeze is honored.
+      // — all serialized so concurrent calls cannot jointly exceed a limit.
+      // setPolicy/freeze/unfreeze all mutate guard state synchronously (and
+      // WITHOUT this mutex — freeze must never wait behind a payment), so a
+      // call issued before this section begins is seen by the re-checks at
+      // its top; a freeze landing WHILE the section runs is re-checked once
+      // more immediately before execution starts (the unclosable residue is
+      // that last audit write plus one tick — see the docblock in commit()).
+      // What orders freeze/unfreeze against hydrateFromLedger is the
+      // freezeEpoch stamp, not this mutex.
       return await this.runExclusive(() => this.commit(safe, refs, approved, executor));
     } catch (err) {
       // Fail closed: any unexpected error denies the payment and is audited.
@@ -691,6 +883,54 @@ export class VadunoGuard {
       merchantId: intent.merchant.id,
       rail: intent.rail,
     };
+
+    // LAST-EXIT FREEZE RE-CHECK. The freeze check at the top of this section
+    // is separated from the executor by six awaits (policy re-eval, its audit
+    // write, the revocation fetch, the budget reservation, the mandate
+    // consume, the execution_started write), and freeze() flips its flag
+    // synchronously WITHOUT waiting for the mutex precisely so a freeze
+    // landing inside that gap can still be honored here. This re-read narrows
+    // the blind window to the execution_started write plus one synchronous
+    // tick. It cannot close it, and it must not try: once the executor is
+    // invoked, Vaduno has no power to recall the charge — a cancellable
+    // in-flight payment would require exactly the control over funds this
+    // project must never hold. On the two-phase path this is the last exit
+    // before the authorization is handed back for the CALLER to execute.
+    //
+    // PLACEMENT DECISION (after the mandate consume, not before): the
+    // ConsumeStore interface is claim/settle/get/countClaims — deliberately
+    // NO un-claim, because an un-claim primitive is the same lever that
+    // would let a crash-looping caller resurrect uses (the reason a thrown
+    // executor burns its use, see below). So a freeze that lands in the
+    // consume→here gap costs one mandate use on a payment that never ran.
+    // That is an over-hold — the direction every ambiguous path here fails
+    // toward — and it is the price of keeping the consume round-trip (an IO
+    // await on shared stores) OUT of the blind window this check exists to
+    // shrink. The burned use is settled "failed" so a retry after unfreeze
+    // replays a terminal outcome instead of "unresolved". The budget
+    // reservation, unlike the mandate use, has an explicit release() for
+    // payments that provably never ran — and this one provably never ran —
+    // so it goes back.
+    // The cast undoes TS narrowing from the top-of-section check: the flow
+    // analysis assumes no cross-await mutation, which is the very thing this
+    // re-read exists to observe.
+    const lateFrozen = this.frozen as { reason: string } | null;
+    if (lateFrozen) {
+      await releaseIfOurs();
+      if (consumedMandateId) {
+        await this.settleBestEffort(consumedMandateId, intent.id, {
+          status: "failed",
+          settledAt: this.now().toISOString(),
+          error: "denied by freeze before execution; the rail was never invoked",
+        });
+      }
+      return await this.denyAudited(
+        intent,
+        refs,
+        "GUARD_FROZEN",
+        `guard is frozen: ${lateFrozen.reason}`,
+      );
+    }
 
     // TWO-PHASE STOP. `authorize()` passes no executor: the decision is made,
     // the budget is reserved and the mandate use is consumed, and the caller

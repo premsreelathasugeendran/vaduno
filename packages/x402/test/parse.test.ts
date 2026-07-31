@@ -50,6 +50,61 @@ describe("parsePaymentRequired", () => {
     expect(() => parsePaymentRequired(null)).toThrow(X402ProtocolError);
     expect(() => parsePaymentRequired("nope")).toThrow(X402ProtocolError);
   });
+
+  describe("extra validation", () => {
+    const withExtra = (extra: unknown) => ({
+      ...good,
+      accepts: [{ ...good.accepts[0]!, extra }],
+    });
+
+    it("throws X402ProtocolError on a non-string extra.symbol (not a downstream TypeError)", () => {
+      expect(() => parsePaymentRequired(withExtra({ symbol: 12345 }))).toThrow(
+        X402ProtocolError,
+      );
+    });
+
+    it("throws on non-string extra.name / extra.version", () => {
+      expect(() => parsePaymentRequired(withExtra({ name: { evil: true } }))).toThrow(
+        X402ProtocolError,
+      );
+      expect(() => parsePaymentRequired(withExtra({ version: 2 }))).toThrow(
+        X402ProtocolError,
+      );
+    });
+
+    it("throws on a non-integer / out-of-range extra.decimals", () => {
+      for (const decimals of ["6", 1.5, -1, 256, Number.NaN]) {
+        expect(() => parsePaymentRequired(withExtra({ decimals }))).toThrow(
+          X402ProtocolError,
+        );
+      }
+    });
+
+    it("throws on a non-object extra (string, array)", () => {
+      expect(() => parsePaymentRequired(withExtra("USDC"))).toThrow(X402ProtocolError);
+      expect(() => parsePaymentRequired(withExtra(["USDC"]))).toThrow(X402ProtocolError);
+    });
+
+    it("treats a null extra as absent", () => {
+      expect(parsePaymentRequired(withExtra(null)).accepts[0]!.extra).toBeUndefined();
+    });
+
+    it("keeps unknown scheme-specific keys (e.g. Solana's feePayer)", () => {
+      const parsed = parsePaymentRequired(
+        withExtra({ symbol: "USDC", decimals: 6, feePayer: "FeePayerPubkey" }),
+      );
+      const extra = parsed.accepts[0]!.extra as Record<string, unknown>;
+      expect(extra.symbol).toBe("USDC");
+      expect(extra.feePayer).toBe("FeePayerPubkey");
+    });
+
+    it("defensively copies extra — later mutation of the body cannot reach the requirement", () => {
+      const extra = { symbol: "USDC", decimals: 6 };
+      const parsed = parsePaymentRequired(withExtra(extra));
+      extra.symbol = "EVIL";
+      expect(parsed.accepts[0]!.extra!.symbol).toBe("USDC");
+    });
+  });
 });
 
 describe("header codecs", () => {
