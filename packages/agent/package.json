@@ -1,0 +1,54 @@
+{
+  "name": "@vaduno/agent",
+  "version": "0.2.2",
+  "description": "Spend-firewall hooks for AI agent frameworks. Binds Vaduno policy to decide-only tool-approval hooks (Claude Agent SDK PreToolUse and friends) via authorize/settle. Never holds funds or keys to funds.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/premsreelathasugeendran/vaduno.git",
+    "directory": "packages/agent"
+  },
+  "homepage": "https://github.com/premsreelathasugeendran/vaduno#readme",
+  "bugs": "https://github.com/premsreelathasugeendran/vaduno/issues",
+  "license": "MIT",
+  "keywords": [
+    "ai-agents",
+    "payments",
+    "spend-control",
+    "guardrails",
+    "claude-agent-sdk",
+    "tool-approval"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build && npm run test"
+  },
+  "dependencies": {
+    "@vaduno/guard": "^0.2.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^5.5.4",
+    "vitest": "^3.2.6"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

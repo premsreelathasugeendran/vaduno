@@ -267,6 +267,28 @@ Upgrade the hash chain to an [RFC 9162](https://www.rfc-editor.org/rfc/rfc9162) 
 
 On top of that, **witness cosigning** ([C2SP](https://github.com/C2SP/C2SP) `tlog-checkpoint` / `tlog-cosignature`) closes the one hole the log's own math cannot: an operator who signs *two* histories and shows a different one to each party. Independent witnesses refuse to cosign a checkpoint that contradicts one they already cosigned, so a fork can never reach a k-of-n quorum. Honest limit: this proves everyone sees the *same* log, not that the log is *complete* — and witnesses you run yourself count for nothing. See [packages/transparency](packages/transparency/README.md) and [docs/SECURITY-MODEL.md](docs/SECURITY-MODEL.md).
 
+## Agent framework hooks (`@vaduno/agent`)
+
+`guard.execute(intent, executor)` requires the guard to own the payment call, and **no agent framework works that way** — Claude Agent SDK `PreToolUse`, Vercel AI SDK `toolApproval`, OpenAI Agents `needsApproval`, LangChain `wrapToolCall` are all decide-only: they hand you a pending tool call, take an allow/deny, and run the tool themselves. So this binds to the two-phase `authorize()` / `settle()` path instead.
+
+```ts
+import { createSpendHooks, bindClaudeAgentSdk } from "@vaduno/agent";
+
+const hooks = createSpendHooks({
+  guard,
+  resolve(call) {
+    if (call.toolName !== "buy_api_credits") return null;      // not a spending tool
+    return intentFrom(call.input);                             // you write this
+  },
+});
+
+const sdk = bindClaudeAgentSdk(hooks);   // PreToolUse / PostToolUse
+```
+
+An allow **reserves budget immediately** — if it merely returned an opinion, two concurrent tool calls would both be told yes and the cap would mean nothing. Every ambiguous case fails toward over-holding: a throwing resolver denies, an unreadable tool result counts as spent, and a framework that never settles starves its own cap rather than leaking spend.
+
+**Honest scope:** the decision core is framework-free and tested against real guard behavior; the Claude Agent SDK binding's hook payload shapes come from the documented contract and **have never been run against a live SDK session**. That file imports nothing from any SDK and is deliberately thin, so a drifted contract is a few lines to fix. See [packages/agent](packages/agent/README.md).
+
 ## Design principles
 
 1. **Fail closed.** No approval handler? Approval-needing intents are denied. Internal error? Denied and audited. Unknown mandate? Denied.
@@ -284,6 +306,7 @@ On top of that, **witness cosigning** ([C2SP](https://github.com/C2SP/C2SP) `tlo
 - ✅ **Transparency log** (`@vaduno/transparency`) — RFC 9162 inclusion / consistency proofs
 - ✅ **Revocation registry** (`@vaduno/revocation`) — targeted kill switch + W3C Bitstring Status Lists
 - ✅ **Witness cosigning** — C2SP checkpoints + cosignatures; independent witnesses attest the log never forked
+- ✅ **Agent framework hooks** (`@vaduno/agent`) — decide-only tool-approval binding; SDK adapter not yet run against a live session
 - **Consent-evidence dossiers** — exportable dispute/representment packets built on the audit trail
 - **UPI adapter** — ready for NPCI delegated-payment APIs the day they open
 
@@ -300,6 +323,8 @@ What Vaduno adds is one policy and one portable signed authority that survive *a
 What that testing did catch, before release: a cross-process double-spend (the `maxUses` check was check-then-act across separate locks), a hanging payment rail that could freeze the kill switch for every later revocation, a witness-quorum bypass that required *zero* witness misbehaviour, and a C2SP wire-format error that would have broken interoperability with real Go/Sigsum witnesses while every local test still passed.
 
 Those are listed because a security tool that hides its near-misses is asking you to trust the wrong thing — and because each one is concrete enough to check against the code and the commit history rather than taken on faith. The concurrency and the cryptography are where the real bugs have been, and they are where outside review is most wanted.
+
+**Two adapters have never touched the system they adapt.** `@vaduno/stripe` has not contacted `api.stripe.com` in any mode, and `@vaduno/agent`'s Claude Agent SDK binding has not run in a live SDK session — both were written against published contracts. Their surrounding logic is tested; the wire shapes at the boundary are unconfirmed, and are isolated in one thin file each so that being wrong about them is cheap to fix and hard to miss.
 
 ## Contributing
 

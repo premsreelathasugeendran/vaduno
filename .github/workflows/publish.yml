@@ -1,6 +1,6 @@
 name: Publish
 
-# Publishes all six packages to npm via npm Trusted Publishing (GitHub OIDC).
+# Publishes all seven packages to npm via npm Trusted Publishing (GitHub OIDC).
 #
 # WHY OIDC AND NOT A TOKEN: npm's web-login tokens are short-lived, so a manual
 # `npm publish` needs a fresh browser 2FA round every few hours — that bit this
@@ -15,7 +15,7 @@ name: Publish
 # retroactively.
 #
 # ── ONE-TIME SETUP, per package, on npmjs.com ────────────────────────────────
-# For each of @vaduno/{guard,transparency,revocation,x402,stripe,postgres}:
+# For each of @vaduno/{guard,transparency,revocation,x402,stripe,postgres,agent}:
 #   Package page → Settings → Publishing access → Trusted publisher → GitHub Actions
 #     Organization or user : premsreelathasugeendran
 #     Repository           : vaduno
@@ -23,6 +23,12 @@ name: Publish
 #     Environment          : (leave empty)
 # Until that is configured for a package, its publish step fails with E404 —
 # npm returns 404 rather than 401 for an unauthorized PUT.
+#
+# ⚠ A BRAND-NEW package has no npm page yet, so there is nothing to configure a
+# trusted publisher ON. @vaduno/agent is in that state: it must be published
+# once by hand (browser 2FA) to create the package, and only then can its
+# Trusted publisher be set for every release after. Do NOT expect this workflow
+# to publish @vaduno/agent successfully on its first run.
 #
 # ── RELEASING ────────────────────────────────────────────────────────────────
 #   1. bump versions, commit, `git tag -a v0.2.2 -m "..."`, push both
@@ -205,9 +211,9 @@ jobs:
         env:
           VADUNO_PUBLISH_TRACE: "1"
 
-      - name: Publish the five dependents
-        run: node scripts/publish-ordered.mjs transparency revocation x402 stripe postgres
+      - name: Publish the six dependents
+        run: node scripts/publish-ordered.mjs transparency revocation x402 stripe postgres agent
 
       - name: Confirm the registry agrees
         if: env.DRY_RUN != 'true'
-        run: node scripts/publish-ordered.mjs --verify guard transparency revocation x402 stripe postgres
+        run: node scripts/publish-ordered.mjs --verify guard transparency revocation x402 stripe postgres agent
