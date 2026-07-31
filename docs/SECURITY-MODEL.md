@@ -97,6 +97,32 @@ licensing); no such adapter will be accepted.
    surfaces data; it does not (cannot) alter rail-level outcomes.
 10. **Timestamps are informational.** Signed tree heads assert tree state, not
     trusted time.
+11. **The ledger takes ONE WRITER. No store here is safe for concurrent
+    writers.** `AuditLedger.append` derives `seq = last.seq + 1` inside a
+    promise queue scoped to a single *instance*, so two `AuditLedger` objects
+    over one store — two processes, or two instances in one process — both
+    read seq N and both write N+1. Measured, not theorized: 30 concurrent
+    appends across three instances on one store produced **10 distinct
+    sequence numbers**, each written three times.
+
+    The damage differs by store, and the quietest case is the worst:
+    - `MemoryLedgerStore` / `JsonlLedgerStore` accept the duplicates.
+      `verify()` catches it (`sequence gap`) — but an honest system now
+      self-reports as tampered, which destroys the signal you built the log
+      for: you can no longer tell an attack from your own second worker.
+    - `SupabaseLedgerStore` declares `seq bigint primary key`, so the losing
+      insert is **rejected**. On the final `execution_result` append that
+      rejection is caught and downgraded to `auditDegraded` (guard.ts) —
+      deliberately, because an audit-write failure must never reclassify a
+      charge that really executed. Under concurrent writers that safety valve
+      fires routinely, and the outcome is the bad one: **money moved, the
+      record was dropped, and `verify()` still reports the chain intact**,
+      because the winning row legitimately occupies that sequence number.
+
+    So: run exactly one writer per ledger, and treat `guard.isAuditDegraded()`
+    as an alarm rather than a flag. Scaling writers horizontally is not
+    supported today; a shared spend limiter (`@vaduno/postgres`) makes the
+    *caps* correct across instances but does **not** make the *ledger* safe.
 
 ## Threat model summary
 
@@ -119,6 +145,9 @@ licensing); no such adapter will be accepted.
   reach; prefer a cloud KMS. These keys sign *evidence*, not money — but a
   stolen log key lets an attacker sign a forged history.
 - Run `verify()` / `audit()` on a schedule and on every dispute export.
+- **One writer per ledger** (non-guarantee 11). Also alarm on
+  `guard.isAuditDegraded()`: it is the only signal that a charge executed and
+  its durable record did not land, and nothing surfaces it for you.
 - Fail-closed configuration is mandatory in production: the dashboard refuses
   to start without a real session secret; the guard denies on any policy
   evaluation error; approval and mandate checks reject on any parse/crypto

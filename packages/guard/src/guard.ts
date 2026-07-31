@@ -105,6 +105,7 @@ export class VadunoGuard {
   }> = [];
   private readonly usingInMemoryHistory: boolean;
   private auditDegraded = false;
+  private limiterDegraded = false;
   private hydrated = false;
 
   constructor(opts: VadunoGuardOptions) {
@@ -120,9 +121,36 @@ export class VadunoGuard {
     this.limiter = opts.limiter ?? new MemorySpendLimiter();
   }
 
-  /** True if any executed charge failed to persist its audit record. */
+  /**
+   * True if any audit record failed to persist — including, but not limited
+   * to, the record of an executed charge.
+   *
+   * This is the SEVERE one and it is worth alarming on: the durable trail is
+   * incomplete, and if the lost entry was an `execution_result` then money
+   * moved unrecorded. Reconcile against the rail.
+   *
+   * It used to also become true when a spend-limiter COMMIT failed — a
+   * condition this class documents as benign (the reservation stays held, so
+   * the amount still counts; at worst budget is over-held). Conflating the two
+   * meant a harmless over-hold raised the same alarm as a lost audit record,
+   * which is how a real alarm gets ignored. That case is now
+   * `isLimiterDegraded()`.
+   */
   isAuditDegraded(): boolean {
     return this.auditDegraded;
+  }
+
+  /**
+   * True if a spend-limiter commit or release failed.
+   *
+   * Benign by construction, and deliberately separate from
+   * `isAuditDegraded()`: an uncommitted reservation stays reserved and a
+   * reserved amount already counts against every cap, so the ONLY effect is
+   * that budget is held longer than the truth. Worth surfacing — it means the
+   * limiter store is unhealthy — but it never means money went unrecorded.
+   */
+  isLimiterDegraded(): boolean {
+    return this.limiterDegraded;
   }
 
   /**
@@ -819,7 +847,9 @@ export class VadunoGuard {
     try {
       await this.limiter.commit(reservationId);
     } catch {
-      this.auditDegraded = true;
+      // NOT auditDegraded: no audit record was lost here. See the two
+      // accessors' docblocks for why keeping these apart matters.
+      this.limiterDegraded = true;
     }
   }
 
@@ -833,7 +863,10 @@ export class VadunoGuard {
     try {
       await this.limiter.release(reservationId);
     } catch {
-      // Over-hold. See above.
+      // Over-hold. See above. Flagged like a failed commit — same cause (an
+      // unhealthy limiter store), same benign effect, and silently swallowing
+      // it left the store's ill health with no signal at all.
+      this.limiterDegraded = true;
     }
   }
 
@@ -845,8 +878,17 @@ export class VadunoGuard {
     try {
       await this.ledger.append(type, data, refs);
     } catch {
-      // Swallow: the money-affecting decision has already been made and must
-      // be reported truthfully even if this particular audit write failed.
+      // Do not THROW: the money-affecting decision has already been made and
+      // must be reported truthfully even if this particular audit write failed.
+      //
+      // But do not swallow it SILENTLY either, which is what used to happen.
+      // Two of this method's four call sites append `execution_result` — the
+      // two-phase settle() path and the failed-execution path — so a store
+      // dropping writes lost payment records with no signal whatsoever, while
+      // the single-call execute() path flagged the identical failure. That gap
+      // widened when @vaduno/agent made two-phase the route every framework
+      // integration takes.
+      this.auditDegraded = true;
     }
   }
 
