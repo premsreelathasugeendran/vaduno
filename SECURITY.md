@@ -34,7 +34,7 @@ does **not** yet cover — so you can decide whether it fits your threat model.
 | Timezone-offset expiry bypass | All timestamps compared as epoch ms via `Date.parse`; unparseable = fail closed |
 | Silent history tampering | Hash-chained ledger; `verify()` re-derives every hash; `verify(retainedHead)` also catches truncation/rewrite |
 | Human-in-the-loop for large spends | `approval` thresholds; **fails closed** if no approval handler is configured |
-| Emergency stop | `freeze()` denies everything and is re-checked inside the critical section |
+| Emergency stop | `freeze()` denies everything **on that guard instance** and is re-checked inside the critical section. Per-process — see Known Limits item 2; a cross-process kill needs `@vaduno/revocation` with a shared registry |
 | Compromised agent must be cut off mid-flight | `@vaduno/revocation`: revoking a mandate or an entire agent is checked inside the critical section **after** human approval, so a kill switch pulled while an approval is pending still wins. An unreachable registry denies (`REVOCATION_CHECK_FAILED`) — an outage never reads as "not revoked" |
 | Un-revoking by tampering with a published status list | Status lists are Ed25519-signed with `validUntil` freshness and a monotonic version floor; a forged bitstring, a stale list, or a replayed pre-revocation snapshot all fail closed |
 
@@ -125,7 +125,9 @@ These are documented, not hidden. Some are scope choices; some are on the roadma
    registry — it is checked on the execution path, after approval.
 
 3. **No ledger store is safe for concurrent writers.** `AuditLedger.append`
-   derives `seq = last.seq + 1` inside a promise queue scoped to one process.
+   derives `seq = last.seq + 1` inside a promise queue scoped to one
+   **AuditLedger instance** — two instances in one process collide exactly
+   like two processes do.
    `JsonlLedgerStore` has no file lock; `supabase/schema.sql` declares `seq
    bigint primary key`, so two writers both compute N+1 and one insert is
    rejected. On the final `execution_result` append that rejection is swallowed

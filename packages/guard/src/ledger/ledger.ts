@@ -75,8 +75,10 @@ function entryHash(entry: Omit<LedgerEntry, "hash">): string {
  * Each entry commits to the previous entry's hash, so any mutation,
  * deletion, or reordering of history is detectable by verify().
  *
- * Appends are serialized through an internal queue: callers may append
- * concurrently, the chain stays linear.
+ * Appends are serialized through an internal queue scoped to THIS INSTANCE:
+ * concurrent callers of one AuditLedger keep the chain linear, but two
+ * AuditLedger instances over one store — in one process or two — race the
+ * read-tip-then-append and fork the chain. One instance per store, ever.
  */
 export class AuditLedger {
   private queue: Promise<unknown> = Promise.resolve();

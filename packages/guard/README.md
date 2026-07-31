@@ -57,7 +57,7 @@ await ledger.verify();  // { ok: true, entries: n } — or exactly where history
 | **Runtime enforcement** | Consume-once is *enforced*, not just claimed: a retry storm firing the same payment N times runs the rail **at most once** and replays the original outcome. |
 | **Context binding** | An optional context hash ties a mandate to one approved task run, so it can't be redirected by a different orchestration hop. |
 | **Flight recorder** | Every attempt, decision, approval, and execution lands in a hash-chained, append-only ledger. Any edit, deletion, or reorder is detectable by `verify()`. |
-| **Kill switch** | `guard.freeze()` denies everything instantly, and the freeze itself is audited. |
+| **Kill switch** | `guard.freeze()` denies everything on **this guard instance** instantly, and the freeze itself is audited. Per-process: a peer process keeps spending until frozen too — for a cross-process kill use `@vaduno/revocation` with a shared registry. |
 
 ## Runtime enforcement in one snippet
 

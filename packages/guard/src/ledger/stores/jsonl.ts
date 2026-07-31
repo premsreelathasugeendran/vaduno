@@ -9,8 +9,9 @@ import type { LedgerEntry, LedgerStore } from "../ledger.js";
  * Single-writer: if the file changes on disk behind this instance's back
  * (another process/instance appended), the cache is reloaded before the next
  * append so two instances on one file cannot silently fork the hash chain.
- * Concurrent writers from separate processes are still unsafe (no file lock)
- * and unsupported.
+ * Concurrent writers are still unsafe (no file lock) and unsupported — and
+ * "writers" means AuditLedger INSTANCES: two instances in one process race
+ * exactly like two processes do.
  *
  * THIS DOCBLOCK USED TO SAY "use SupabaseLedgerStore for shared ledgers". That
  * was false, and corrected in 0.3.0. `AuditLedger.append` derives
