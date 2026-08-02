@@ -147,7 +147,19 @@ licensing); no such adapter will be accepted.
 - Run `verify()` / `audit()` on a schedule and on every dispute export.
 - **One writer per ledger** (non-guarantee 11). Also alarm on
   `guard.isAuditDegraded()`: it is the only signal that a charge executed and
-  its durable record did not land, and nothing surfaces it for you.
+  its durable record did not land, and nothing surfaces it for you. It is a
+  live-process signal — a restart resets it — which is exactly where the
+  second alarm takes over: `hydrateFromLedger()` returns a `HydrateReport`,
+  and a nonzero `skippedUnparseableSpendRows` means the ledger holds rows
+  that claim a successful charge (or cannot be read at all) which the
+  restored caps do NOT include — for example rows written by a pre-0.3.0
+  `settle()`, which recorded no amount. Reconcile against the rail before
+  trusting restored totals. The two alarms cover different failures, and
+  together they still do not close everything: a record that never landed at
+  all (the write failed) leaves both the chain and the report clean — only
+  the original process's `isAuditDegraded()` ever knew. If that flag fired
+  and the process is gone, reconciliation against the rail is the remaining
+  recourse.
 - On restart over a persistent ledger, hydrate before serving — and pass
   `requireHydration: true` so the guard denies (`HYDRATION_REQUIRED`) until
   `hydrateFromLedger()` succeeds. A hydrate that is attempted and FAILS

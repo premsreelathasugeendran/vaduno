@@ -6,6 +6,104 @@ This project is pre-1.0. Under semver, 0.x minor bumps may break the API. One
 has, and it was breaking because the fix for a real security bug required it. See [`SECURITY.md`](SECURITY.md) for what is and isn't
 guaranteed.
 
+## Unreleased — 0.3.0
+
+### Added
+
+- **Two-phase `authorize()` / `settle()` on the guard, and `@vaduno/agent`.**
+  Every agent framework's approval hook is decide-only (Claude Agent SDK
+  `PreToolUse`, Vercel AI SDK `toolApproval`, OpenAI Agents `needsApproval`,
+  LangChain `wrapToolCall`), so none of them could use
+  `execute(intent, executor)`. `authorize()` runs the same pipeline and stops
+  after the budget is reserved and any mandate use is consumed; the caller runs
+  the payment and reports back via `settle()`. `@vaduno/agent` packages this as
+  `createSpendHooks` plus a thin Claude Agent SDK binding.
+- **Prune APIs**: `SpendLimiter.pruneBefore(beforeMs)` and
+  `ConsumeStore.pruneMandates(ids)` — the retention advice in SECURITY.md now
+  points at something that exists. `pruneMandates` deliberately takes ids from
+  the caller because pruning a claim re-arms its intent id.
+- **`PostgresRevocationStore`**: status-list bit indices unique across
+  instances.
+- **Frozen wire format** (`docs/WIRE-FORMAT.md` + committed test vectors) and
+  mandate signing hardening: domain tag, format version, algorithm pin, key id.
+- **`requireHydration` guard option and `isFreezeDegraded()` /
+  `isLimiterDegraded()` accessors.** See the fixes below for why each exists.
+
+### Fixed — two-phase spends were invisible to restart recovery
+
+- **`settle()` recorded no money.** Its `execution_result` row held
+  `{success, selfReported}` with no `amountMinor`/`currency`, and both spend
+  consumers filter such rows out. Measured: 4000 of a 5000/day cap spent via
+  `authorize()`+`settle()`, restart, `hydrateFromLedger()` — another 4000
+  AUTHORIZED (the `execute()` control correctly denied). This is the path every
+  framework integration takes. The authorization now snapshots
+  amount/currency/merchant/rail onto its `execution_started` row, and
+  `settle()` recovers that snapshot so its row carries exactly the economic
+  fields an `execute()` row carries (plus `selfReported: true`), and names the
+  agent instead of an empty `agentId`.
+- **Settle dedupe is keyed by OUTCOME, not position** — an "executed" settle is
+  suppressed only by an existing success row for the current authorization; a
+  "failed" settle by any result row. A positional check (any result row after
+  the authorization) let a late-retried `settle(failed)` permanently suppress
+  the genuine executed outcome on the documented recovery interleave
+  (`settle(failed)` → `releaseSpend` → re-authorize same id → late retry →
+  `settle(executed)`) — the ledger then said `success: false` for a charge that
+  happened, and a restart re-authorized the full amount. A retried settle still
+  cannot double-count: at most one countable success row per authorization, and
+  the reservation commit is idempotent.
+- **`hydrateFromLedger()` now returns a `HydrateReport`**
+  (`{restoredSpendRows, skippedUnparseableSpendRows}`) instead of `void`. A
+  spend row the restore cannot parse is still skipped — a malformed historical
+  row must not NaN-poison the caps or crash startup — but the skip is now
+  REPORTED. Nonzero `skippedUnparseableSpendRows` (which is what a pre-0.3.0
+  `settle()` row hydrates as) means the restored caps under-count; reconcile
+  against the rail.
+- **`ledgerSpendHistory()` validates before counting** — requires a
+  safe-integer amount and string currency, and takes an optional
+  `onUnparseable` callback fired per malformed row. Previously
+  `totalMinor += data.amountMinor ?? 0` counted a malformed row as a $0 spend
+  and string-concatenated a string amount into the running total. A throwing
+  callback is swallowed: policy evaluation never becomes an outage over a bad
+  historical row.
+
+### Fixed — freeze and hydration semantics
+
+All three reproduced before fixing. `freeze()`/`unfreeze()` flip their flag
+synchronously, stamp a monotonic epoch, and append lock-free through the
+ledger's own queue — so a hydrate snapshot can no longer clobber a freeze taken
+during startup, no deferred re-assertion exists to go stale, and freezing from
+inside an executor cannot deadlock. A freeze whose `guard_frozen` append failed
+stays enforced locally and reports `isFreezeDegraded()` (it would not survive a
+restart). An attempted-and-FAILED hydrate now denies everything
+(`HYDRATION_REQUIRED`) until a retry succeeds — serving with fresh, empty state
+after the ledger failed verification is the permissive direction — and
+`requireHydration: true` covers the restart that never attempts hydrate at all.
+
+### Fixed — the rest
+
+- **Approval fingerprint collision**: `approvalFingerprint` joined raw
+  attacker-controlled strings with `|`, so a crafted `merchant.id`/`url` pair
+  could make one human approval cover a payment to a different destination.
+  Now domain-tagged canonical JSON (injective; throws rather than guesses).
+- **JSONL stores no longer trust a stale cache**: both `JsonlLedgerStore` and
+  the transparency store served a cached chain whenever the file SIZE was
+  unchanged, so a byte-length-preserving edit passed `verify()` — and defeated
+  `verify(retainedHead)` too. Every read now re-reads bytes; the deliberate
+  perf trade is re-parsing on every `all()`/`verify()` instead of serving a
+  cache that can lie.
+- **x402 402-body handling**: with no `Content-Length` the whole body was
+  buffered BEFORE the 64 KB cap applied (200 MiB measured); the cap also
+  counted UTF-16 code units, admitting ~3x the stated bytes. Now an abortable
+  byte-counting read that cancels at the cap; `extra` is validated by key and
+  type; x402 v2 is refused by name.
+- **`isAuditDegraded()` means exactly one thing**: an audit record failed to
+  persist. Limiter commit/release failures — benign over-holds — moved to
+  `isLimiterDegraded()`, and the two-phase/failed-execution audit appends that
+  used to fail silently now flag `auditDegraded`.
+- Doc-truth corrections: freeze is per-process (three places said otherwise),
+  the ledger append queue is per-INSTANCE not per-process, and six other
+  statements that were false.
+
 ## 0.2.2 — 2026-07-30
 
 **The first release published from CI, and the first with provenance

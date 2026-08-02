@@ -4,6 +4,7 @@ export type {
   VadunoGuardOptions,
   RevocationCheck,
   RevocationVerdict,
+  HydrateReport,
 } from "./guard.js";
 export { evaluatePolicy, merchantMatches, policyWindows } from "./policy/engine.js";
 export {

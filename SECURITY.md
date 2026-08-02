@@ -24,7 +24,7 @@ does **not** yet cover — so you can decide whether it fits your threat model.
 | Forged `merchant.id` to impersonate an allowed host | Host patterns ignore `merchant.id` entirely; lookalikes and trailing-dot FQDNs are normalized out |
 | Concurrent requests racing a limit | The decision→**reserve**→consume→execute→commit section is serialized per guard (async mutex), and the cap itself is enforced INSIDE the atomic reserve rather than by a re-check under the lock — a re-check is still check-then-act across processes. The mutex orders one process; `SpendLimiter.reserve()` is what holds across them |
 | Cap reset by rotating `agentId` | Reservations are scoped to the **policy id**, set by the operator — never `intent.agentId`, which the agent controls. **This row was FALSE in 0.2.0:** the limiter keyed on `agentId`, so two guards sharing one limiter passed $100 through a $50 cap by rotating it. Fixed in 0.2.1; regression test in `test/cap-bypass.test.ts` |
-| Overspend via a dropped/doctored audit write | Spend limits are enforced from an **in-memory authoritative counter** incremented under the lock the instant the executor succeeds — never from a read-back of the store. A lost `execution_result` write flags `auditDegraded` but cannot un-count the charge |
+| Overspend via a dropped/doctored audit write | Spend limits are enforced from **authoritative in-memory state**, never from a read-back of the store: `execute()` increments its counter under the lock the instant the executor succeeds, and a two-phase `authorize()` spend counts from the moment its budget is reserved in the limiter. A lost `execution_result` write — on either path — flags `auditDegraded` but cannot un-count the charge |
 | Mandate replay (same signed mandate used twice) | Mandates are consume-once, claimed atomically in a `ConsumeStore` keyed on (mandateId, intentId), immediately before execution |
 | Retry storm / duplicate orchestration hop double-charging | Runtime enforcement: the same (mandate, intent id) claims **one** use; every duplicate returns `replayed` with the original outcome and the executor never re-runs (the rail fires **at most** once under N-way parallelism — zero times if the intent is denied or the executor never runs) |
 | A used intent id reused for a *different* payment | The claim commits an `intentDigest` of amount+currency+merchant+rail; a mismatch is denied `MANDATE_REPLAY_MISMATCH` — never replayed, never executed |
@@ -64,7 +64,11 @@ These are documented, not hidden. Some are scope choices; some are on the roadma
    `guard.hydrateFromLedger()` (spend counter + freeze state) and
    `MandateManager.hydrateFromLedger()` (consume-once + revocation state) to
    rebuild from the ledger, which trusts the ledger at startup as a documented
-   boundary. A hydrate that fails verification throws without restoring
+   boundary. `guard.hydrateFromLedger()` returns a `HydrateReport`; a nonzero
+   `skippedUnparseableSpendRows` means rows claiming successful charges could
+   not be restored into the caps (e.g. rows written by a pre-0.3.0
+   `settle()`, which carried no amount) — reconcile before trusting the
+   restored totals. A hydrate that fails verification throws without restoring
    anything, and the guard then denies every intent (`HYDRATION_REQUIRED`) by
    default until a retry succeeds — serving after a failed hydrate with the
    instance's fresh, EMPTY state (no freeze, zero counted spend) would be the

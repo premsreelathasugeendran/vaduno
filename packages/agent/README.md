@@ -130,10 +130,12 @@ overspending**:
 | Tool ran and failed | counted as spent | The rail may have charged before failing |
 | Framework never calls `settled` | budget stays held | Starves its own cap; never leaks spend |
 | Duplicate `intent.id` | deny | Consume-once; the rail does not run twice |
+| Process restarts after a spend settled as **executed** | still counted, once the new process calls `guard.hydrateFromLedger()` on the same persistent ledger | The executed settle row carries the amount and currency, so hydration restores it into the caps. Qualifiers: a restart that never hydrates starts with empty state (pass `requireHydration: true` — see SECURITY.md); and rows hydration cannot restore — pre-0.3.0 `settle()` rows carried no amount, and a settle whose dedupe read failed lands without one (see the `settle()` docs) — are each reported in `skippedUnparseableSpendRows` instead of silently under-counting |
+| Process restarts after a spend settled as **failed** | the burned hold does NOT survive the restart | Hydration restores only executed rows. "Counted as spent" for a failed call is a live-process hold: after a restart the cap re-admits that amount even though the rail may have charged. Surviving this needs a persistent `SpendLimiter`, not the ledger |
 
-The last row deserves emphasis: an unsettled authorization keeps holding budget
-until its rolling window ages out. That is deliberate. Call `settled` for every
-allowed call, including failures.
+The never-settled row deserves emphasis: an unsettled authorization keeps
+holding budget until its rolling window ages out. That is deliberate. Call
+`settled` for every allowed call, including failures.
 
 ## What this does not do
 

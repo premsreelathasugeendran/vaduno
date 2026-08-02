@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { VadunoGuard } from "../src/guard.js";
+import { VadunoGuard, ledgerSpendHistory } from "../src/guard.js";
 import { AuditLedger } from "../src/ledger/ledger.js";
 import { MemoryLedgerStore } from "../src/ledger/stores/memory.js";
 import {
@@ -424,6 +424,35 @@ describe("VadunoGuard hostile-intent hardening", () => {
       paidOk,
     );
     expect(after.status).toBe("denied");
+  });
+
+  it("hydrate REPORTS what it skipped — an unparseable spend row is surfaced, never silently dropped", async () => {
+    const store = new MemoryLedgerStore();
+    const ledger = new AuditLedger(store);
+    const guardA = new VadunoGuard({ policy: makePolicy(), ledger });
+    await guardA.execute(
+      makeIntent({ amount: { amountMinor: 1_000, currency: "USD" } }),
+      paidOk,
+    );
+    // A claimed-successful charge whose amount cannot be parsed: the counter
+    // must skip it (no NaN poisoning) AND the operator must be told a spend is
+    // missing from the restored caps — silence here was the original defect's
+    // second half.
+    await ledger.append(
+      "execution_result",
+      { success: true, amountMinor: "not-a-number", currency: "USD" },
+      { intentId: "bad", agentId: "a" },
+    );
+    // A failed attempt is not spend: toward neither count.
+    await ledger.append(
+      "execution_result",
+      { success: false, error: "declined" },
+      { intentId: "f-1", agentId: "a" },
+    );
+
+    const guardB = new VadunoGuard({ policy: makePolicy(), ledger: new AuditLedger(store) });
+    const report = await guardB.hydrateFromLedger();
+    expect(report).toEqual({ restoredSpendRows: 1, skippedUnparseableSpendRows: 1 });
   });
 
   it("hydrate is one-shot per instance", async () => {
@@ -918,5 +947,79 @@ describe("VadunoGuard freeze semantics", () => {
       makeIntent({ amount: { amountMinor: 6_000, currency: "USD" } }),
     );
     expect(after.status).toBe("authorized");
+  });
+});
+
+describe("ledgerSpendHistory parses strictly and surfaces what it cannot", () => {
+  const seed = async () => {
+    const store = new MemoryLedgerStore();
+    const ledger = new AuditLedger(store);
+    const append = (data: unknown, intentId: string) =>
+      ledger.append("execution_result", data, { intentId, agentId: "a" });
+    await append({ success: true, amountMinor: 1_000, currency: "USD" }, "good");
+    // The attack this pins: a STRING amount used to string-concatenate the
+    // running total (1000 + "40" === "100040"), and a missing amount was
+    // counted as a $0 spend via `?? 0`. Both silently corrupt the cap.
+    await append({ success: true, amountMinor: "40", currency: "USD" }, "string-amount");
+    await append({ success: true, currency: "USD" }, "no-amount");
+    await append({ success: true, amountMinor: 500 }, "no-currency");
+    await ledger.append("execution_result", null, { intentId: "null-data", agentId: "a" });
+    // Not malformed, just not ours / not spend: must NOT fire the callback.
+    await append({ success: true, amountMinor: 700, currency: "EUR" }, "other-currency");
+    await append({ success: false, error: "declined" }, "failed-attempt");
+    return ledger;
+  };
+  const since = new Date(0).toISOString();
+
+  it("counts only rows with a safe-integer amount and string currency", async () => {
+    const history = ledgerSpendHistory(await seed());
+    const t = await history.totalsSince("ignored", since, "USD");
+    expect(t).toEqual({ totalMinor: 1_000, count: 1 });
+    expect(typeof t.totalMinor).toBe("number"); // no string concatenation
+  });
+
+  it("fires onUnparseable once per malformed row, and never for mismatch/failure rows", async () => {
+    const seen: string[] = [];
+    const history = ledgerSpendHistory(await seed(), (entry, problem) => {
+      seen.push(`${entry.intentId}: ${problem}`);
+    });
+    await history.totalsSince("ignored", since, "USD");
+    expect(seen.sort()).toEqual([
+      "no-amount: amountMinor is not a safe integer",
+      "no-currency: currency is not a string",
+      "null-data: data is not an object",
+      "string-amount: amountMinor is not a safe integer",
+    ]);
+  });
+
+  it("a THROWING onUnparseable must not break policy evaluation", async () => {
+    // The callback is an observer. If its failure propagated, a single
+    // malformed historical row would turn every policy evaluation into an
+    // outage — a startup-crash foot-gun on a security path.
+    const ledger = await seed();
+    const history = ledgerSpendHistory(ledger, () => {
+      throw new Error("observer crashed");
+    });
+    const t = await history.totalsSince("ignored", since, "USD");
+    expect(t).toEqual({ totalMinor: 1_000, count: 1 });
+
+    const guard = new VadunoGuard({
+      policy: makePolicy({ limits: { perTransactionMinor: 5_000, perDayMinor: 2_000 } }),
+      ledger,
+      history,
+    });
+    // Policy evaluation runs the callback (malformed rows are in-window) and
+    // still decides: 1000 counted + 1500 exceeds the 2000/day cap.
+    const denied = await guard.execute(
+      makeIntent({ amount: { amountMinor: 1_500, currency: "USD" } }),
+      paidOk,
+    );
+    expect(denied.status).toBe("denied");
+    // And the allow direction still works too — no fail-shut outage either.
+    const allowed = await guard.execute(
+      makeIntent({ amount: { amountMinor: 900, currency: "USD" } }),
+      paidOk,
+    );
+    expect(allowed.status).toBe("executed");
   });
 });
