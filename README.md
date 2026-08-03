@@ -19,7 +19,7 @@ Vaduno puts a deterministic guard between your agent and the money:
 
 **Vaduno never holds funds, keys to funds, or the ability to move money.** It decides whether *your* executor function may run, and records everything. (Precisely: it has no custody, no card PANs, and no wallet or bank credentials. It *does* use Ed25519 keys to sign and verify mandates — the private half belongs to whoever issues them, and a guard that only validates and consumes needs nothing but the public key.) Rail-agnostic by design: wrap an x402 client, a Stripe issuing call, a UPI collect — anything.
 
-## Status: v0.2.2, new, and honest about it
+## Status: v0.3.0, new, and honest about it
 
 Read this before you put it anywhere near real money.
 

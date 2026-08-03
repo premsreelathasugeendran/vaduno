@@ -2,11 +2,11 @@
 
 All seven packages are versioned together and released as a matched set.
 
-This project is pre-1.0. Under semver, 0.x minor bumps may break the API. One
-has, and it was breaking because the fix for a real security bug required it. See [`SECURITY.md`](SECURITY.md) for what is and isn't
-guaranteed.
+This project is pre-1.0. Under semver, 0.x minor bumps may break the API. Two
+have, and each was breaking because the fix for a real security bug required it.
+See [`SECURITY.md`](SECURITY.md) for what is and isn't guaranteed.
 
-## Unreleased — 0.3.0
+## 0.3.0 — 2026-08-03
 
 ### Added
 
