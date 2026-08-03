@@ -28,9 +28,10 @@ const LEAF_LINE = /^[0-9a-f]{64}$/;
  * state is `dirEnsured`, which is not tree data and self-heals via the
  * ENOENT retry in append().
  *
- * Single-writer, same contract as JsonlLedgerStore; concurrent writers (even
- * two TransparencyLog instances over one file) are unsupported and can
- * interleave.
+ * Single-writer, STILL. JsonlLedgerStore graduated to locked
+ * compare-and-append in 0.3.0; this store did not — it has no lock and no
+ * expected-tip contract, so concurrent writers (even two TransparencyLog
+ * instances over one file) are unsupported and can interleave.
  */
 export class JsonlTreeStore implements TreeStore {
   private dirEnsured = false;

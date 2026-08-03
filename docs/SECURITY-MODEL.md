@@ -97,32 +97,56 @@ licensing); no such adapter will be accepted.
    surfaces data; it does not (cannot) alter rail-level outcomes.
 10. **Timestamps are informational.** Signed tree heads assert tree state, not
     trusted time.
-11. **The ledger takes ONE WRITER. No store here is safe for concurrent
-    writers.** `AuditLedger.append` derives `seq = last.seq + 1` inside a
-    promise queue scoped to a single *instance*, so two `AuditLedger` objects
-    over one store — two processes, or two instances in one process — both
-    read seq N and both write N+1. Measured, not theorized: 30 concurrent
-    appends across three instances on one store produced **10 distinct
-    sequence numbers**, each written three times.
+11. **Concurrent ledger writers are safe since 0.3.0 — within each store's
+    stated residual.** Before 0.3.0 `AuditLedger.append` derived
+    `seq = last.seq + 1` inside a promise queue scoped to a single *instance*,
+    so two `AuditLedger` objects over one store both read seq N and both wrote
+    N+1 (measured: 30 concurrent appends across three instances produced 10
+    distinct sequence numbers, each written three times) — Memory/Jsonl forked
+    and an honest system self-reported as tampered; Supabase quietly
+    **dropped** the losing row while `verify()` stayed green. `LedgerStore` is
+    now compare-and-append: a store admits an entry only if it still extends
+    the current tip, a losing writer is handed the real tip and retries
+    (bounded, then fails CLOSED as `AUDIT_WRITE_FAILED` / `auditDegraded` —
+    a hot rival can starve a writer into denial, never into a forked or
+    silently gappy chain). Hashing stays client-side, so a hostile store still
+    cannot fabricate history (item 4).
 
-    The damage differs by store, and the quietest case is the worst:
-    - `MemoryLedgerStore` / `JsonlLedgerStore` accept the duplicates.
-      `verify()` catches it (`sequence gap`) — but an honest system now
-      self-reports as tampered, which destroys the signal you built the log
-      for: you can no longer tell an attack from your own second worker.
-    - `SupabaseLedgerStore` declares `seq bigint primary key`, so the losing
-      insert is **rejected**. On the final `execution_result` append that
-      rejection is caught and downgraded to `auditDegraded` (guard.ts) —
-      deliberately, because an audit-write failure must never reclassify a
-      charge that really executed. Under concurrent writers that safety valve
-      fires routinely, and the outcome is the bad one: **money moved, the
-      record was dropped, and `verify()` still reports the chain intact**,
-      because the winning row legitimately occupies that sequence number.
+    What "atomic" rests on, per store — trust the mechanism, not the label:
+    - `MemoryLedgerStore`: JS single-threading; the compare and the write are
+      one synchronous body.
+    - `JsonlLedgerStore`: a `FileMutex` lockfile (shared with
+      `FileSpendLimiter` / `FileConsumeStore`), tip re-read under the lock.
+      Residual, inherited and documented in file-mutex.ts: a holder stalled
+      past `staleMs` (default 30s) is reclaimed, briefly permitting two
+      holders. Verified by an in-repo test with two real OS processes
+      appending overlapping bursts to one file.
+    - `SupabaseLedgerStore`: the schema is the mechanism — `seq bigint
+      primary key` (one row per position) plus `unique (prev_hash)` (one
+      child per parent) make a fork unrepresentable at the database even to a
+      buggy or hostile client; the loser's SQLSTATE 23505 is classified as
+      contention and retried, not dropped. Requires the 0.3.0
+      `supabase/schema.sql` (the `prev_hash` unique index is new).
+    - `PostgresLedgerStore` (`@vaduno/postgres`, new): same two constraints,
+      plus `pg_advisory_xact_lock` to make retries rare rather than to be
+      correct.
 
-    So: run exactly one writer per ledger, and treat `guard.isAuditDegraded()`
-    as an alarm rather than a flag. Scaling writers horizontally is not
-    supported today; a shared spend limiter (`@vaduno/postgres`) makes the
-    *caps* correct across instances but does **not** make the *ledger* safe.
+    A third-party `LedgerStore` written against the pre-0.3.0 interface is
+    REFUSED at runtime (its bare append is exactly the fork bug), and
+    `guard.isAuditDegraded()` remains the alarm for a durable record that
+    never landed.
+
+    **What has actually been exercised, exactly.** Memory and Jsonl run
+    against the real stores, Jsonl by two real OS processes. The two
+    database-backed stores are weaker evidence: `SupabaseLedgerStore` is
+    exercised only against a schema-faithful in-repo fake, and
+    `PostgresLedgerStore`'s conformance suite — while wired into the same CI
+    job that runs the limiter and consume-store suites against a real
+    Postgres 16 — is env-gated and skips on any machine without
+    `VADUNO_TEST_POSTGRES_URL`, which was every machine it was written on.
+    For both, correctness is Postgres's constraint guarantee rather than a
+    property this project has watched hold. Believe it exactly as much as you
+    believe the schema in `supabase/schema.sql`, and no more.
 
 ## Threat model summary
 
@@ -145,7 +169,9 @@ licensing); no such adapter will be accepted.
   reach; prefer a cloud KMS. These keys sign *evidence*, not money — but a
   stolen log key lets an attacker sign a forged history.
 - Run `verify()` / `audit()` on a schedule and on every dispute export.
-- **One writer per ledger** (non-guarantee 11). Also alarm on
+- **Concurrent ledger writers need every writer on the 0.3.0
+  compare-and-append store** (item 11) — one pre-0.3.0 writer on the same
+  store reintroduces the fork. Also alarm on
   `guard.isAuditDegraded()`: it is the only signal that a charge executed and
   its durable record did not land, and nothing surfaces it for you. It is a
   live-process signal — a restart resets it — which is exactly where the

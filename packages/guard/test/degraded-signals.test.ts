@@ -20,17 +20,20 @@ import { makeIntent, makePolicy } from "./helpers.js";
 /** A store that appends fine until told to start failing. */
 class FlakyLedgerStore implements LedgerStore {
   failing = false;
-  private readonly entries: LedgerEntry[] = [];
+  private readonly inner = new MemoryLedgerStore();
 
-  async append(entry: LedgerEntry): Promise<void> {
+  async append(
+    entry: LedgerEntry,
+    expected: Parameters<LedgerStore["append"]>[1],
+  ): ReturnType<LedgerStore["append"]> {
     if (this.failing) throw new Error("ledger store unavailable");
-    this.entries.push(entry);
+    return this.inner.append(entry, expected);
   }
   async all(): Promise<LedgerEntry[]> {
-    return [...this.entries];
+    return this.inner.all();
   }
   async last(): Promise<LedgerEntry | null> {
-    return this.entries[this.entries.length - 1] ?? null;
+    return this.inner.last();
   }
 }
 

@@ -1,7 +1,7 @@
 import type { PgPool } from "./pg.js";
 
 /**
- * DDL for both stores. Idempotent — safe to run on every boot.
+ * DDL for every store in this package. Idempotent — safe to run on every boot.
  *
  * Exported as a string so it can also be pasted into a migration tool; nothing
  * here requires being run by this package.
@@ -74,9 +74,38 @@ CREATE TABLE IF NOT EXISTS vaduno_agent_block (
   blocked_at TEXT NOT NULL,
   purpose    TEXT NOT NULL
 );
+
+-- Audit ledger. The hash chain is computed CLIENT-SIDE (AuditLedger in
+-- @vaduno/guard) — this table persists it, and its two uniqueness rules ARE
+-- the compare-and-append: the primary key admits one row per position, the
+-- unique index admits one CHILD per PARENT. A fork is unrepresentable at the
+-- database even to a buggy or hostile client; a losing concurrent writer gets
+-- SQLSTATE 23505 and retries onto the real tip. Genesis (prev_hash = 64
+-- zeros) appears exactly once, which is correct.
+--
+-- "timestamp" is TEXT, not timestamptz, on purpose: the hash commits to the
+-- EXACT ISO string produced client-side, and a timestamptz column reformats
+-- on round-trip ('+00:00' vs 'Z', microsecond padding), making an honest
+-- ledger fail verify(). Store the bytes that were hashed.
+CREATE TABLE IF NOT EXISTS vaduno_ledger (
+  seq        BIGINT PRIMARY KEY,
+  timestamp  TEXT   NOT NULL,
+  type       TEXT   NOT NULL,
+  intent_id  TEXT,
+  agent_id   TEXT,
+  data       JSONB  NOT NULL,
+  prev_hash  TEXT   NOT NULL,
+  hash       TEXT   NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS vaduno_ledger_prev_hash_key
+  ON vaduno_ledger (prev_hash);
+
+CREATE INDEX IF NOT EXISTS vaduno_ledger_intent
+  ON vaduno_ledger (intent_id);
 `;
 
-/** Create both tables if they do not exist. Idempotent. */
+/** Create every table if it does not exist. Idempotent. */
 export async function migrate(pool: PgPool): Promise<void> {
   await pool.query(VADUNO_SCHEMA_SQL);
 }

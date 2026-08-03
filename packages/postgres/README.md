@@ -1,6 +1,6 @@
 # @vaduno/postgres
 
-**Spend caps and consume-once mandates that hold across multiple instances.**
+**Spend caps, consume-once mandates, and the audit ledger — all holding across multiple instances.**
 
 [`@vaduno/guard`](https://www.npmjs.com/package/@vaduno/guard)'s default stores
 are per-process. That is fine for one worker and wrong for a deployment: two
@@ -19,23 +19,40 @@ npm install @vaduno/postgres pg
 ```ts
 import { Pool } from "pg";
 import { VadunoGuard, AuditLedger, MemoryLedgerStore, MandateManager } from "@vaduno/guard";
-import { PostgresSpendLimiter, PostgresConsumeStore, migrate } from "@vaduno/postgres";
+import {
+  PostgresSpendLimiter, PostgresConsumeStore, PostgresLedgerStore, migrate,
+} from "@vaduno/postgres";
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 await migrate(pool);   // idempotent; or paste VADUNO_SCHEMA_SQL into your migrations
 
 const guard = new VadunoGuard({
   policy,
-  ledger: new AuditLedger(new MemoryLedgerStore()),
-  limiter: new PostgresSpendLimiter(pool),          // rolling caps, shared
+  ledger: new AuditLedger(new PostgresLedgerStore(pool)),   // audit ledger, shared
+  limiter: new PostgresSpendLimiter(pool),                  // rolling caps, shared
   mandates: new MandateManager(keys, ledger, undefined, {
-    consumeStore: new PostgresConsumeStore(pool),   // consume-once, shared
+    consumeStore: new PostgresConsumeStore(pool),           // consume-once, shared
   }),
 });
 ```
 
 That is the whole change. Every instance pointed at the same database shares one
-budget and one consume-once registry.
+budget, one consume-once registry, and one audit ledger.
+
+## The ledger store (new in 0.3.0)
+
+Until 0.3.0 this package shipped shared spend caps and shared consume-once but
+**no shared ledger** — the one backend with real transactions was the one backend
+the ledger could not use. `PostgresLedgerStore` closes that.
+
+Correctness does not come from the TypeScript. It comes from two schema
+constraints: `seq` PRIMARY KEY admits one row per position, and
+`unique (prev_hash)` admits one child per parent. Together they make a forked
+chain *unrepresentable* — even to a writer that bypasses this class entirely. A
+losing concurrent writer gets SQLSTATE 23505, which is classified as contention
+and answered with the real tip, so `AuditLedger` re-chains and retries rather
+than dropping the entry. The hash chain itself stays client-side, so a
+compromised database still cannot fabricate history.
 
 ## Why an advisory lock
 
@@ -79,6 +96,13 @@ VADUNO_TEST_POSTGRES_URL=postgres://... npm -w @vaduno/postgres run test
 - **Nothing here has run in production.** It is verified by conformance suites
   against a real Postgres in CI, on Postgres 16. That is evidence, not a track
   record.
+- **`PostgresLedgerStore` is new in 0.3.0 and its live evidence is one CI run
+  old at best.** Its conformance suite is wired into the same CI job as the
+  other two stores, but it is env-gated, so it skips on any machine without
+  `VADUNO_TEST_POSTGRES_URL` — including every local run during its
+  development. Its correctness argument rests on two Postgres constraints
+  rather than on observed behavior. Weigh it accordingly, and check that the
+  CI postgres job is green for the commit you are installing.
 - **`migrate()` is deliberately minimal** — two `CREATE TABLE IF NOT EXISTS`
   statements and two indexes. It is not a migration framework and does not
   version anything. Use `VADUNO_SCHEMA_SQL` with your own tool if you have one.

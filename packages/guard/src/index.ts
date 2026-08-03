@@ -13,10 +13,13 @@ export {
 } from "./ledger/ledger.js";
 export type {
   EvidenceBundle,
+  ExpectedTip,
+  LedgerAppendResult,
   LedgerEntry,
   LedgerEntryType,
   LedgerHead,
   LedgerStore,
+  LedgerTip,
   VerifyResult,
 } from "./ledger/ledger.js";
 export { canonicalJson, sha256Hex } from "./ledger/hash.js";

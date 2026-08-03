@@ -141,17 +141,41 @@ These are documented, not hidden. Some are scope choices; some are on the roadma
    observes, use [`@vaduno/revocation`](packages/revocation) with a shared
    registry — it is checked on the execution path, after approval.
 
-3. **No ledger store is safe for concurrent writers.** `AuditLedger.append`
-   derives `seq = last.seq + 1` inside a promise queue scoped to one
-   **AuditLedger instance** — two instances in one process collide exactly
-   like two processes do.
-   `JsonlLedgerStore` has no file lock; `supabase/schema.sql` declares `seq
-   bigint primary key`, so two writers both compute N+1 and one insert is
-   rejected. On the final `execution_result` append that rejection is swallowed
-   into `auditDegraded` — money moved, the record was dropped, and `verify()`
-   still reports the chain intact because the winning row legitimately holds
-   that seq. Run ONE writer per ledger. (The jsonl docblock used to point at
-   Supabase as the shared-ledger answer; it is not, and that is corrected.)
+3. **Concurrent ledger writers hold since 0.3.0 — within each store's stated
+   residual.** Before 0.3.0, `AuditLedger.append` derived `seq = last.seq + 1`
+   inside a promise queue scoped to one **AuditLedger instance**, so two
+   instances (one process or two) both read seq N and both wrote N+1 —
+   Memory/Jsonl forked the chain and an honest system self-reported as
+   tampered, while Supabase's `seq bigint primary key` rejected the loser and
+   the rejection was swallowed into `auditDegraded`: money moved, the record
+   was DROPPED, and `verify()` stayed green. `LedgerStore` is now
+   compare-and-append: a store admits an entry only if it still extends the
+   tip the writer chained onto; a loser is handed the real tip, re-chains, and
+   retries (bounded — exhaustion fails CLOSED as `AUDIT_WRITE_FAILED` /
+   `auditDegraded`, never as a fork or a silent drop). The mechanism is per
+   store: `MemoryLedgerStore` compares and pushes in one synchronous body;
+   `JsonlLedgerStore` re-reads the tip under the same `FileMutex` lockfile the
+   other file stores share (same residual as `FileConsumeStore` above: a
+   holder stalled past `staleMs`, default 30s, is reclaimed — briefly two
+   holders), proven in-repo by two real OS processes appending overlapping
+   bursts to one file; `SupabaseLedgerStore` and `PostgresLedgerStore`
+   (`@vaduno/postgres`, new) rest on `seq bigint primary key` +
+   `unique (prev_hash)` — one row per position, one child per parent — which
+   make a fork unrepresentable at the database even to a buggy or hostile
+   client, and the loser's SQLSTATE 23505 is classified as contention and
+   retried, not dropped. Supabase requires the 0.3.0 `supabase/schema.sql`
+   (the `prev_hash` unique index is new). A `LedgerStore` built against the
+   pre-0.3.0 interface is REFUSED at runtime — its unchecked bare append is
+   exactly the fork bug — but a pre-0.3.0 writer *process* on the same store
+   is outside this guard's reach: upgrade every writer together.
+   **Scope of the proof, exactly:** Memory and Jsonl are exercised against the
+   real stores, Jsonl by two real OS processes. The database-backed stores
+   rest on constraint atomicity that is Postgres's guarantee rather than this
+   code's. `SupabaseLedgerStore` is exercised only against a schema-faithful
+   in-repo fake. `PostgresLedgerStore`'s conformance suite runs against a real
+   Postgres 16 in the CI job, but it is env-gated and skips everywhere else —
+   so as of this release its live evidence is whatever that CI job last
+   reported, and nothing more. Check it is green for the commit you install.
 
 4. **Ledger tamper-evidence needs external head retention to be complete.** A
    store that controls *all* rows can present an internally-consistent forged

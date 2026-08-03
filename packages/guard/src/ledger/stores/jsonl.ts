@@ -1,10 +1,30 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { LedgerEntry, LedgerStore } from "../ledger.js";
+import { FileMutex, type FileMutexOpts } from "../../enforce/file-mutex.js";
+import { GENESIS_HASH } from "../ledger.js";
+import type {
+  ExpectedTip,
+  LedgerAppendResult,
+  LedgerEntry,
+  LedgerStore,
+} from "../ledger.js";
 
 /**
- * One JSON entry per line, append-only. Suited to a single-process agent
- * writing a local flight-recorder file.
+ * One JSON entry per line, append-only — a local flight-recorder file that
+ * several processes on one box may write.
+ *
+ * CONCURRENT WRITERS (0.3.0): append() is compare-and-append under a
+ * FileMutex — the same O_EXCL + owner-token lockfile primitive that
+ * FileConsumeStore and FileSpendLimiter share. The tip is RE-READ UNDER THE
+ * LOCK, compared to the caller's expected tip, and the line is written only on
+ * a match, so two instances — in one process or two — serialize instead of
+ * forking the chain, and a loser is told the real tip to re-chain onto.
+ * Residual, inherited from FileMutex and documented there: a holder that
+ * stalls past `staleMs` (default 30s) mid-append is treated as dead and
+ * reclaimed, briefly permitting two holders — a stall that long means the
+ * process is effectively dead, but it is a window, not a proof.
+ * (Before 0.3.0 this store had no lock at all and a second writer forked the
+ * file; the docblock's advice then was "run one writer per ledger".)
  *
  * CACHING: none, deliberately. Every read path (all(), last()) re-reads the
  * file from disk. An earlier version cached the parsed chain and invalidated
@@ -17,32 +37,23 @@ import type { LedgerEntry, LedgerStore } from "../ledger.js";
  * hash costs the full read it was meant to avoid. A security-labelled API
  * returning a false "ok" is worse than a slow one, so reads pay for the
  * truth. The only retained in-memory state is `dirEnsured`, which is not
- * chain data and self-heals via the ENOENT retry in append().
+ * chain data and self-heals via the ENOENT retry in writeLine().
  *
- * append() itself never reads: it only appends bytes. Chain linkage is safe
- * because AuditLedger.append derives prevHash from last(), which now always
- * reflects the real file — a write from a second instance is observed and
- * extended, not forked over. Concurrent writers are still unsafe (no file
- * lock) and unsupported — and "writers" means AuditLedger INSTANCES: two
- * instances in one process race exactly like two processes do.
- *
- * THIS DOCBLOCK USED TO SAY "use SupabaseLedgerStore for shared ledgers". That
- * was false, and corrected in 0.3.0. `AuditLedger.append` derives
- * `seq = last.seq + 1` inside a promise queue that is scoped to ONE PROCESS,
- * and `supabase/schema.sql` declares `seq bigint primary key` — so two writers
- * both read seq N, both compute N+1, and one insert collides. Worse, on the
- * final `execution_result` append that rejection is swallowed into
- * `auditDegraded`: money moved, the record was dropped, and `verify()` still
- * reports the chain intact because the winning row legitimately occupies that
- * seq.
- *
- * NO ledger store in this project is safe for concurrent writers today. Run one
- * writer per ledger. See docs/SECURITY-MODEL.md.
+ * THIS DOCBLOCK USED TO SAY "use SupabaseLedgerStore for shared ledgers", back
+ * when NO store here survived a second writer. Both halves of that are fixed
+ * in 0.3.0: every store is now compare-and-append (Supabase via its
+ * primary-key + unique prev_hash constraints, this one via the lock above).
  */
 export class JsonlLedgerStore implements LedgerStore {
   private dirEnsured = false;
+  private readonly mutex: FileMutex;
 
-  constructor(private readonly filePath: string) {}
+  constructor(
+    private readonly filePath: string,
+    lockOpts: FileMutexOpts = {},
+  ) {
+    this.mutex = new FileMutex(`${filePath}.lock`, () => new Date(), lockOpts);
+  }
 
   private async ensureDir(): Promise<void> {
     if (this.dirEnsured) return;
@@ -63,7 +74,7 @@ export class JsonlLedgerStore implements LedgerStore {
     }
   }
 
-  async append(entry: LedgerEntry): Promise<void> {
+  private async writeLine(entry: LedgerEntry): Promise<void> {
     await this.ensureDir();
     const line = JSON.stringify(entry) + "\n";
     try {
@@ -79,6 +90,26 @@ export class JsonlLedgerStore implements LedgerStore {
         throw err;
       }
     }
+  }
+
+  append(entry: LedgerEntry, expected: ExpectedTip): Promise<LedgerAppendResult> {
+    return this.mutex.run(async () => {
+      // RE-READ UNDER THE LOCK. The tip observed before acquisition may be a
+      // rival's victim: comparing against anything read outside the lock
+      // reintroduces the check-then-act gap the lock exists to close.
+      const entries = await this.load();
+      const tail = entries.length > 0 ? entries[entries.length - 1]! : null;
+      const tipSeq = tail ? tail.seq : -1;
+      const tipHash = tail ? tail.hash : GENESIS_HASH;
+      if (tipSeq !== expected.prevSeq || tipHash !== expected.prevHash) {
+        return {
+          ok: false as const,
+          tip: tail ? { seq: tail.seq, hash: tail.hash } : null,
+        };
+      }
+      await this.writeLine(entry);
+      return { ok: true as const };
+    });
   }
 
   async last(): Promise<LedgerEntry | null> {

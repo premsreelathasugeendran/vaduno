@@ -1,5 +1,5 @@
 /**
- * Runs BOTH shared conformance suites against a REAL Postgres.
+ * Runs the shared conformance suites against a REAL Postgres.
  *
  * There is no mock here on purpose. The entire value of this package is its
  * atomicity under concurrency, and that property lives in Postgres — in
@@ -12,12 +12,18 @@
  * and says so, loudly, because a silent skip reads as a pass.
  */
 import { describe, it } from "vitest";
+// The class the conformance suite's handles are typed as. Imported from guard
+// SOURCE (like the suites themselves), not "@vaduno/guard": AuditLedger has
+// private fields, so the dist declaration is not assignable to the src one.
+import { AuditLedger } from "../../guard/src/ledger/ledger.js";
 import { runSpendLimiterConformance } from "../../guard/test/spend-limiter-conformance.js";
 import { runConsumeStoreConformance } from "../../guard/test/consume-store-conformance.js";
+import { runLedgerConcurrencyConformance } from "../../guard/test/ledger-concurrency.conformance.js";
 import { runRevocationStoreConformance } from "../../revocation/test/revocation-store-conformance.js";
 import { PostgresSpendLimiter } from "../src/spend-limiter.js";
 import { PostgresConsumeStore } from "../src/consume-store.js";
 import { PostgresRevocationStore } from "../src/revocation-store.js";
+import { PostgresLedgerStore } from "../src/ledger-store.js";
 import { migrate } from "../src/schema.js";
 import type { PgPool } from "../src/pg.js";
 
@@ -97,5 +103,20 @@ if (!URL) {
         ],
       };
     },
+  });
+
+  // The ledger's backing RESOURCE is the shared table; each handle gets its
+  // own store on its own pool, alternating, so "two handles" really is two
+  // independent connection sets — the same two-instances discipline as above.
+  runLedgerConcurrencyConformance<{ nextPool: number }>("PostgresLedgerStore", {
+    freshResource: async () => {
+      await poolA.query("TRUNCATE vaduno_ledger");
+      return { nextPool: 0 };
+    },
+    handle: (r) =>
+      new AuditLedger(
+        new PostgresLedgerStore(r.nextPool++ % 2 === 0 ? poolA : poolB),
+      ),
+    reader: () => new PostgresLedgerStore(poolA),
   });
 }

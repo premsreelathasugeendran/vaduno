@@ -23,7 +23,7 @@ Vaduno puts a deterministic guard between your agent and the money:
 
 Read this before you put it anywhere near real money.
 
-- **Published this week. No known users. Never run in production.** The tests are thorough (364 across six packages, including concurrency and adversarial cases) but tests are not production. npm reports a few hundred weekly downloads; that is registry mirrors, security scanners and the author's own CI — the curve is a single spike on publish day and flat afterwards, which is what "nobody depends on this yet" looks like.
+- **Published this week. No known users. Never run in production.** The tests are thorough (587 across seven packages, including concurrency and adversarial cases) but tests are not production. npm reports a few hundred weekly downloads; that is registry mirrors, security scanners and the author's own CI — the curve is a single spike on publish day and flat afterwards, which is what "nobody depends on this yet" looks like.
 - **The Stripe adapter has never run against Stripe.** Not even in test mode. It is verified against an in-process mock of the `issuing_authorization.request` webhook — the decision logic and the 1.3-second fail-closed deadline are exercised, the network path is not. Live Issuing needs a business entity and Stripe approval the author doesn't have. Treat it as a reference implementation, not a tested integration.
 - **The API will break.** It's 0.x; breaking changes land in minor and patch versions. **Every API change so far has come from a security finding**, not from taste — the atomic limiter, the `agentId` → `policy.id` scope rename, the replay semantics, and the burn-on-failure rule each exist because something was found to be wrong. More review is planned, so expect more.
 - **In-process, it can be routed around.** A library the agent's own process imports is a guardrail against a *confused* agent, not a *compromised runtime* — an injected agent holding a raw wallet key can simply not call it. The one configuration where it is genuinely non-bypassable today is **Stripe Issuing**, where the guard answers the card authorization itself and the network enforces the answer. Out-of-process and rail-side enforcement is what would make the rest of it as strong.
@@ -202,9 +202,12 @@ Writing your own limiter is expected, and there's an oracle for it: [`spend-limi
 |---|---|
 | `MemoryLedgerStore` | tests, ephemeral agents |
 | `JsonlLedgerStore("ledger.jsonl")` | local flight-recorder file |
-| `SupabaseLedgerStore(client)` | shared/team ledger — schema in [supabase/schema.sql](supabase/schema.sql), RLS keeps it append-only server-side |
+| `SupabaseLedgerStore(client)` | shared/team ledger — schema in [supabase/schema.sql](supabase/schema.sql), RLS keeps it append-only server-side. **Requires the 0.3.0 schema**: the `unique (prev_hash)` index is new and is what makes a fork unrepresentable |
+| `PostgresLedgerStore(pool)` | multi-instance ledger — [`@vaduno/postgres`](packages/postgres), same two constraints plus an advisory lock to make retries rare |
 
 The chain is computed client-side; `verify()` re-derives every hash, so even a compromised database cannot silently rewrite history.
+
+Since 0.3.0 a store admits an entry only if it still extends the tip the writer chained onto, so concurrent writers can no longer fork the chain — see [SECURITY.md](SECURITY.md) Known Limits item 3 for each store's mechanism and residual, including which of them have and have not been exercised against a live database.
 
 ## x402 rail adapter (`@vaduno/x402`) — experimental, v1 only
 

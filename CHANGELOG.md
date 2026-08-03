@@ -1,6 +1,6 @@
 # Changelog
 
-All six packages are versioned together and released as a matched set.
+All seven packages are versioned together and released as a matched set.
 
 This project is pre-1.0. Under semver, 0.x minor bumps may break the API. One
 has, and it was breaking because the fix for a real security bug required it. See [`SECURITY.md`](SECURITY.md) for what is and isn't
@@ -28,6 +28,55 @@ guaranteed.
   mandate signing hardening: domain tag, format version, algorithm pin, key id.
 - **`requireHydration` guard option and `isFreezeDegraded()` /
   `isLimiterDegraded()` accessors.** See the fixes below for why each exists.
+- **`PostgresLedgerStore`**: the audit ledger for multi-instance deployments.
+  This package shipped shared spend caps and shared consume-once with NO
+  shared ledger; the one backend with real transactions was the one backend
+  the ledger could not use.
+
+### Fixed — concurrent ledger writers forked or silently dropped entries (breaking `LedgerStore` change)
+
+- Two `AuditLedger` instances over one store — two processes, or two instances
+  in one process — both read tip seq N and both wrote N+1: the per-instance
+  promise queue never protected the store. Measured, not theorized: 30
+  concurrent appends across three instances produced 10 distinct sequence
+  numbers, each written three times. Memory/Jsonl accepted the duplicates
+  (a FORK — the honest ledger then failed `verify()` forever, stamped
+  `chain:{ok:false}` on every evidence bundle, and made `hydrateFromLedger()`
+  throw on every restart); Supabase's `seq bigint primary key` rejected the
+  loser and the rejection was swallowed into `auditDegraded` — money moved,
+  the record was DROPPED, and `verify()` stayed green. The quiet one.
+- `LedgerStore.append` is now **compare-and-append** —
+  `append(entry, {prevSeq, prevHash})` persists only if the store's tip still
+  matches, else reports the real tip; `AuditLedger` re-chains and retries
+  (bounded, then fails CLOSED as `AUDIT_WRITE_FAILED` / `auditDegraded`).
+  Hashing stays client-side, so a hostile store still cannot fabricate
+  history. Atomicity is per-backend: Memory compares-and-pushes in one
+  synchronous body; Jsonl re-reads the tip under the same `FileMutex` the
+  other file stores share (inheriting its documented `staleMs` reclaim
+  window); Supabase/Postgres get it from the schema — `seq` primary key plus
+  a new `unique (prev_hash)` index (one child per parent) make a fork
+  unrepresentable at the database, and the loser's 23505 is classified as
+  contention and retried instead of rethrown. **Breaking for third-party
+  `LedgerStore` implementers** (this is pre-1.0; the fix required it):
+  a store built against the pre-0.3.0 `append(entry): Promise<void>` shape is
+  REFUSED at runtime rather than silently being the unsafe path.
+  `AuditLedger.append(type, data, refs)` and every guard call site are
+  unchanged. Supabase deployments must apply the 0.3.0 `supabase/schema.sql`.
+- `verify()` now distinguishes a fork (`duplicate or regressed seq … a second
+  writer, not a deletion`) from a gap (`entries missing`), so an honest ledger
+  that hit this race is no longer forensically misdiagnosed as
+  tampered-by-deletion; `head()` refuses to anchor a forked or truncated
+  chain instead of blessing whichever rows a later `verify()` would read.
+- Proven by a conformance suite that runs two-to-three independent writer
+  handles per backend (fresh store objects on one path for jsonl — a queue
+  hidden in the store object still fails it) plus a two-OS-process test on
+  one jsonl file with a file barrier so the bursts overlap by construction.
+  Scope of that proof, exactly: Memory and Jsonl run against the real stores.
+  Supabase runs against a schema-faithful in-repo fake, not a live instance.
+  `PostgresLedgerStore` rests on the same two constraints; its suite is wired
+  into the CI job that runs against a real Postgres 16, but it is env-gated
+  and skipped on every machine it was developed on. Its live evidence is
+  whatever that CI job reports, and nothing more.
 
 ### Fixed — two-phase spends were invisible to restart recovery
 

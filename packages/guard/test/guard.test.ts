@@ -565,11 +565,11 @@ describe("VadunoGuard hostile-intent hardening", () => {
     // transient or hostile store. The spend must still count against limits.
     const inner = new MemoryLedgerStore();
     const flaky = {
-      append: async (e: { type: string; data: unknown }) => {
+      append: async (e: { type: string; data: unknown }, x: never) => {
         if (e.type === "execution_result" && (e.data as { success?: boolean }).success === true) {
           throw new Error("write lost");
         }
-        return inner.append(e as never);
+        return inner.append(e as never, x);
       },
       last: () => inner.last(),
       all: () => inner.all(),
@@ -605,7 +605,7 @@ describe("VadunoGuard freeze semantics", () => {
     let reached!: () => void;
     const held = new Promise<void>((r) => (reached = r));
     const store = {
-      append: (e: never) => inner.append(e),
+      append: (e: never, x: never) => inner.append(e, x),
       last: () => inner.last(),
       all: async () => {
         calls += 1;
@@ -765,9 +765,9 @@ describe("VadunoGuard freeze semantics", () => {
   it("freeze holds locally and flags isFreezeDegraded when the guard_frozen append fails", async () => {
     const inner = new MemoryLedgerStore();
     const store = {
-      append: async (e: { type: string }) => {
+      append: async (e: { type: string }, x: never) => {
         if (e.type === "guard_frozen") throw new Error("disk full");
-        return inner.append(e as never);
+        return inner.append(e as never, x);
       },
       last: () => inner.last(),
       all: () => inner.all(),
@@ -797,9 +797,9 @@ describe("VadunoGuard freeze semantics", () => {
     // the ledger over the live flag would lift a real freeze — fail open.
     const inner = new MemoryLedgerStore();
     const store = {
-      append: async (e: { type: string }) => {
+      append: async (e: { type: string }, x: never) => {
         if (e.type === "guard_frozen") throw new Error("disk full");
-        return inner.append(e as never);
+        return inner.append(e as never, x);
       },
       last: () => inner.last(),
       all: () => inner.all(),
@@ -825,9 +825,9 @@ describe("VadunoGuard freeze semantics", () => {
     let releaseAppend!: () => void;
     const appendGate = new Promise<void>((r) => (releaseAppend = r));
     const store = {
-      append: async (e: { type: string }) => {
+      append: async (e: { type: string }, x: never) => {
         if (e.type === "guard_unfrozen") await appendGate;
-        return inner.append(e as never);
+        return inner.append(e as never, x);
       },
       last: () => inner.last(),
       all: () => inner.all(),

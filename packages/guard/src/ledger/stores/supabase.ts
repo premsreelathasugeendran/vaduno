@@ -1,14 +1,25 @@
-import type { LedgerEntry, LedgerStore } from "../ledger.js";
+import type {
+  ExpectedTip,
+  LedgerAppendResult,
+  LedgerEntry,
+  LedgerStore,
+} from "../ledger.js";
 
 /**
  * Minimal structural type for a Supabase client so this package keeps zero
  * runtime dependencies — pass your own `createClient(...)` instance.
  *
+ * `code` is PostgREST's pass-through of the Postgres SQLSTATE (supabase-js
+ * surfaces it as `PostgrestError.code`); optional so hand-rolled clients and
+ * older doubles still satisfy the type.
+ *
  * `range(from, to)` mirrors PostgREST's inclusive range pagination.
  */
 export interface SupabaseLikeClient {
   from(table: string): {
-    insert(values: unknown): PromiseLike<{ error: { message: string } | null }>;
+    insert(
+      values: unknown,
+    ): PromiseLike<{ error: { message: string; code?: string } | null }>;
     select(columns?: string): {
       order(
         column: string,
@@ -28,15 +39,46 @@ interface QueryResult {
 
 const PAGE_SIZE = 1000;
 
+/** SQLSTATE 23505 = unique_violation: some writer already holds that seq or
+ * that parent. */
+const UNIQUE_VIOLATION = "23505";
+
+/**
+ * Contention (another writer won the tip) vs genuine failure (store down,
+ * schema wrong, RLS denies). Getting this wrong in the strict direction turns
+ * every lost race into an AUDIT_WRITE_FAILED deny storm; in the loose
+ * direction it burns bounded retries on a dead store, then fails closed
+ * anyway — so the loose direction is the safe misread, and the message match
+ * exists for clients that drop `code`.
+ *
+ * Error shape, determined from PostgREST's documented behavior (a failed
+ * INSERT returns the Postgres error with its SQLSTATE in `code`; supabase-js
+ * surfaces that as `PostgrestError.code`) and NOT verified against a live
+ * Supabase instance from this environment — the injected-client contract
+ * below is what the tests pin.
+ */
+function isContention(error: { message: string; code?: string }): boolean {
+  if (error.code !== undefined) return error.code === UNIQUE_VIOLATION;
+  return /duplicate key value violates unique constraint/i.test(error.message);
+}
+
 /**
  * Supabase-backed store. See supabase/schema.sql for the table definition.
  * The hash chain makes server-side tampering detectable by any client that
  * re-runs verify().
  *
- * `all()` pages through the ENTIRE table (PostgREST caps a single response at
- * ~1000 rows). Silent truncation here would make spend limits and verify()
- * fail OPEN, so a short/duplicate page ends paging and the assembled result is
- * checked for a contiguous seq run.
+ * COMPARE-AND-APPEND lives in the schema, not in client code — PostgREST
+ * cannot run a client callback inside a transaction, so this store could
+ * never lock-check-insert the way JsonlLedgerStore does. It does not need
+ * to: `seq bigint primary key` admits one row per position, and
+ * `unique (prev_hash)` admits one child per parent. Together a fork is
+ * unrepresentable AT THE DATABASE, even to a buggy or hostile client that
+ * ignores `expected` entirely — which is why `expected` is not re-checked
+ * here. A losing insert comes back 23505; this store answers with the real
+ * tip so AuditLedger can re-chain and retry. Before 0.3.0 that same 23505
+ * was rethrown, and on the final `execution_result` append it was swallowed
+ * into `auditDegraded`: money moved, the record was DROPPED, and verify()
+ * stayed green. The quiet failure this contract exists to kill.
  */
 export class SupabaseLedgerStore implements LedgerStore {
   constructor(
@@ -44,7 +86,10 @@ export class SupabaseLedgerStore implements LedgerStore {
     private readonly table: string = "vaduno_ledger",
   ) {}
 
-  async append(entry: LedgerEntry): Promise<void> {
+  async append(
+    entry: LedgerEntry,
+    _expected: ExpectedTip,
+  ): Promise<LedgerAppendResult> {
     const { error } = await this.client.from(this.table).insert({
       seq: entry.seq,
       timestamp: entry.timestamp,
@@ -55,7 +100,15 @@ export class SupabaseLedgerStore implements LedgerStore {
       prev_hash: entry.prevHash,
       hash: entry.hash,
     });
-    if (error) throw new Error(`SupabaseLedgerStore.append: ${error.message}`);
+    if (!error) return { ok: true };
+    if (isContention(error)) {
+      const tail = await this.last();
+      return {
+        ok: false,
+        tip: tail ? { seq: tail.seq, hash: tail.hash } : null,
+      };
+    }
+    throw new Error(`SupabaseLedgerStore.append: ${error.message}`);
   }
 
   async last(): Promise<LedgerEntry | null> {
