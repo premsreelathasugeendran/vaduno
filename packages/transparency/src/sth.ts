@@ -5,7 +5,7 @@ import {
   sign as edSign,
   verify as edVerify,
 } from "node:crypto";
-import { canonicalJson } from "@vaduno/guard";
+import { canonicalJson, checkedSign, type Ed25519Signer } from "@vaduno/guard";
 import type { TreeHead } from "./tree.js";
 
 /**
@@ -45,9 +45,14 @@ export function generateLogKeyPair(): LogKeyPair {
 
 /**
  * Domain-separation tag: STH signatures can never be replayed as (or forged
- * from) any other Vaduno Ed25519 payload — mandates sign bare canonical
- * JSON, tree heads sign this tagged encoding. The \n makes the tag
- * unambiguous (canonical JSON never starts mid-line).
+ * from) any other Vaduno Ed25519 payload. The Vaduno-owned formats each carry
+ * their own versioned tag (mandates: `vaduno-mandate/v1`, status lists:
+ * `vaduno-status-list/v1`, tree heads this one); the C2SP interop formats are
+ * framed by their own structure instead — cosignatures by the fixed
+ * `cosignature/v1` header, checkpoint bodies by nothing but the
+ * operator-chosen origin line (see checkpoint.ts, and docs/signers.md for
+ * why that limit matters). The \n makes the tag unambiguous (canonical JSON
+ * never starts mid-line).
  */
 const STH_DOMAIN = "vaduno-tlog-sth/v1\n";
 
@@ -55,20 +60,49 @@ function sthPayload(sth: Omit<SignedTreeHead, "signature">): Buffer {
   return Buffer.from(STH_DOMAIN + canonicalJson(sth), "utf8");
 }
 
-export function signTreeHead(
+/** One builder for both signing paths, so their unsigned bytes cannot drift. */
+function unsignedTreeHead(
   head: TreeHead,
-  opts: { logId: string; privateKeyPem: string; now?: () => Date },
-): SignedTreeHead {
-  const unsigned: Omit<SignedTreeHead, "signature"> = {
+  opts: { logId: string; now?: () => Date },
+): Omit<SignedTreeHead, "signature"> {
+  return {
     logId: opts.logId,
     treeSize: head.treeSize,
     rootHash: head.rootHash,
     timestamp: (opts.now ? opts.now() : new Date()).toISOString(),
   };
+}
+
+export function signTreeHead(
+  head: TreeHead,
+  opts: { logId: string; privateKeyPem: string; now?: () => Date },
+): SignedTreeHead {
+  const unsigned = unsignedTreeHead(head, opts);
   const signature = edSign(
     null,
     sthPayload(unsigned),
     createPrivateKey(opts.privateKeyPem),
+  ).toString("base64");
+  return { ...unsigned, signature };
+}
+
+/**
+ * `signTreeHead` through a non-exportable Ed25519Signer (KMS/HSM). Same
+ * unsigned structure, same payload bytes, byte-identical signature for the
+ * same key (Ed25519 is deterministic). Every signer failure rejects via
+ * `checkedSign`; nothing unverifiable is ever returned.
+ */
+export async function signTreeHeadWith(
+  head: TreeHead,
+  opts: { logId: string; signer: Ed25519Signer; now?: () => Date; timeoutMs?: number },
+): Promise<SignedTreeHead> {
+  const unsigned = unsignedTreeHead(head, opts);
+  const signature = (
+    await checkedSign(
+      opts.signer,
+      sthPayload(unsigned),
+      opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {},
+    )
   ).toString("base64");
   return { ...unsigned, signature };
 }

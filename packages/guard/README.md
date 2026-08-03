@@ -54,6 +54,7 @@ await ledger.verify();  // { ok: true, entries: n } — or exactly where history
 |---|---|
 | **Policy engine** | Per-transaction / rolling day-week-month caps, merchant & category allowlists, rail restrictions, velocity limits (scope-wide **and per-merchant**, layerable burst + sustained windows), approval thresholds. Pure code, no model in the loop. |
 | **Signed mandates** | Ed25519 "permission slips" binding what a human authorized (amount, merchant, time window) to what executes. |
+| **Non-exportable signing** | Pass an `Ed25519Signer` instead of a `privateKeyPem` and the mandate key can live in a KMS/HSM: only signatures enter the process, every signer output is verified against the public key the signer declared at construction before anything is recorded, and every signer failure denies (never degrades to unsigned output). The key behind a signer must be minted for Vaduno and hold no other signing authority — never a blockchain wallet key. See `docs/signers.md` in the repo. |
 | **Runtime enforcement** | Consume-once is *enforced*, not just claimed: a retry storm firing the same payment N times runs the rail **at most once** and replays the original outcome. |
 | **Context binding** | An optional context hash ties a mandate to one approved task run, so it can't be redirected by a different orchestration hop. |
 | **Flight recorder** | Every attempt, decision, approval, and execution lands in a hash-chained, append-only ledger. Any edit, deletion, or reorder is detectable by `verify()`. |

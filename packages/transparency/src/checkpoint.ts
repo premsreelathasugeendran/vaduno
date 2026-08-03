@@ -6,6 +6,7 @@ import {
   verify as edVerify,
   type KeyObject,
 } from "node:crypto";
+import { checkedSign, type Ed25519Signer } from "@vaduno/guard";
 
 /**
  * C2SP signed-note + tlog-checkpoint encoding — the INTEROP format.
@@ -174,6 +175,45 @@ export function signCheckpoint(
   const body = checkpointBody(cp);
   const sig = edSign(null, Buffer.from(body, "utf8"), createPrivateKey(opts.privateKeyPem));
   const id = keyId(opts.name, SIG_TYPE_ED25519, rawEd25519PublicKey(opts.publicKeyPem));
+  return assembleNote(body, [signatureLine(opts.name, id, sig)]);
+}
+
+/**
+ * Newline-separated lines of printable ASCII (0x20–0x7E) only. Applied to the
+ * whole checkpoint body on the SIGNER path: the body's leading bytes are the
+ * operator-chosen `origin` — there is no fixed Vaduno tag in front of them —
+ * so a control or non-ASCII byte there could dress the payload as a binary
+ * transaction framing (a reviewer probe produced a Solana message-header
+ * shape from origin "\x01\x00\x01\x02\x03"). A signer must never be handed
+ * such bytes; the misdeployment this narrows is a SHARED key, which is
+ * prohibited outright in docs/signers.md.
+ */
+const PRINTABLE_BODY = /^[\x20-\x7e\n]*$/;
+
+/**
+ * `signCheckpoint` through a non-exportable Ed25519Signer (KMS/HSM). The
+ * signed bytes are the exact C2SP checkpoint body — third-party witnesses
+ * verify it with no Vaduno-specific code — and the signature is byte-identical
+ * to the sync path for the same key and (printable-ASCII) checkpoint. Signer
+ * failures reject via `checkedSign`; a body containing control or non-ASCII
+ * bytes is refused BEFORE the signer ever sees it.
+ */
+export async function signCheckpointWith(
+  cp: Checkpoint,
+  opts: { name: string; signer: Ed25519Signer; timeoutMs?: number },
+): Promise<string> {
+  const body = checkpointBody(cp);
+  if (!PRINTABLE_BODY.test(body)) {
+    throw new CheckpointError(
+      "signer-path checkpoint bodies must be printable ASCII: a control or non-ASCII byte in the origin or extension lines could shape the signing payload like a binary transaction framing",
+    );
+  }
+  const sig = await checkedSign(
+    opts.signer,
+    Buffer.from(body, "utf8"),
+    opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {},
+  );
+  const id = keyId(opts.name, SIG_TYPE_ED25519, rawEd25519PublicKey(opts.signer.publicKeyPem));
   return assembleNote(body, [signatureLine(opts.name, id, sig)]);
 }
 

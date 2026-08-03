@@ -44,6 +44,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
+    "@vaduno/transparency": "^0.3.0",
     "typescript": "^5.5.4",
     "vitest": "^3.2.6"
   },

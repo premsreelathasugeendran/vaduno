@@ -1,5 +1,5 @@
 import { createPrivateKey, createPublicKey, sign as edSign, verify as edVerify } from "node:crypto";
-import { canonicalJson } from "@vaduno/guard";
+import { canonicalJson, checkedSign, type Ed25519Signer } from "@vaduno/guard";
 import { Bitstring, BitstringError, MINIMUM_ENTRIES } from "./bitstring.js";
 
 /**
@@ -60,18 +60,18 @@ export interface PublishOptions {
   now?: () => Date;
 }
 
-/** Sign a bitstring into a publishable status list credential. */
-export function publishStatusList(
+/** One builder for both signing paths, so their unsigned bytes cannot drift. */
+function buildUnsigned(
   bitstring: Bitstring,
-  opts: PublishOptions,
-): StatusListCredential {
+  opts: Omit<PublishOptions, "privateKeyPem">,
+): Omit<StatusListCredential, "signature"> {
   const now = opts.now ?? (() => new Date());
   const at = now();
   const ttl = opts.ttlMs ?? 3_600_000;
   if (!Number.isSafeInteger(opts.version) || opts.version < 0) {
     throw new BitstringError(`invalid status list version: ${opts.version}`);
   }
-  const unsigned: Omit<StatusListCredential, "signature"> = {
+  return {
     id: opts.id,
     issuer: opts.issuer,
     statusPurpose: opts.statusPurpose,
@@ -81,10 +81,45 @@ export function publishStatusList(
     validFrom: at.toISOString(),
     validUntil: new Date(at.getTime() + ttl).toISOString(),
   };
+}
+
+/** Sign a bitstring into a publishable status list credential. */
+export function publishStatusList(
+  bitstring: Bitstring,
+  opts: PublishOptions,
+): StatusListCredential {
+  const unsigned = buildUnsigned(bitstring, opts);
   const signature = edSign(
     null,
     payload(unsigned),
     createPrivateKey(opts.privateKeyPem),
+  ).toString("base64");
+  return { ...unsigned, signature };
+}
+
+export interface PublishWithOptions extends Omit<PublishOptions, "privateKeyPem"> {
+  /** Non-exportable signing capability (KMS/HSM). See docs/signers.md. */
+  signer: Ed25519Signer;
+  timeoutMs?: number;
+}
+
+/**
+ * `publishStatusList` through a non-exportable Ed25519Signer (KMS/HSM). Same
+ * unsigned credential, same domain-tagged payload, byte-identical signature
+ * for the same key and `now()` (Ed25519 is deterministic). Signer failures
+ * reject via `checkedSign` — an unsigned or unverifiable list is never built.
+ */
+export async function publishStatusListWith(
+  bitstring: Bitstring,
+  opts: PublishWithOptions,
+): Promise<StatusListCredential> {
+  const unsigned = buildUnsigned(bitstring, opts);
+  const signature = (
+    await checkedSign(
+      opts.signer,
+      payload(unsigned),
+      opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {},
+    )
   ).toString("base64");
   return { ...unsigned, signature };
 }

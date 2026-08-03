@@ -1,6 +1,7 @@
-import type { AuditLedger } from "@vaduno/guard";
+import { createPublicKey } from "node:crypto";
+import { LocalKeySigner, SignerError, type AuditLedger, type Ed25519Signer } from "@vaduno/guard";
 import { Bitstring, BitstringError, MINIMUM_ENTRIES } from "./bitstring.js";
-import { publishStatusList, type StatusListCredential, type StatusPurpose } from "./status-list.js";
+import { publishStatusListWith, type StatusListCredential, type StatusPurpose } from "./status-list.js";
 import type { RevocationStore, RevocationRecord, RegistrySnapshot } from "./store.js";
 import { MemoryRevocationStore } from "./store.js";
 
@@ -73,6 +74,14 @@ export interface RevocationRegistryOptions {
   listId: string;
   /** Ed25519 private key used to sign published status lists. */
   privateKeyPem?: string;
+  /**
+   * Non-exportable signing capability (KMS/HSM) for published status lists.
+   * Mutually exclusive with `privateKeyPem`. The key behind it MUST be
+   * dedicated to Vaduno — see docs/signers.md.
+   */
+  signer?: Ed25519Signer;
+  /** Deadline for one signer call when publishing. Default 10s. */
+  signTimeoutMs?: number;
   store?: RevocationStore;
   ledger?: AuditLedger;
   /** Entry capacity; W3C minimum (131,072) by default. */
@@ -90,8 +99,26 @@ export class RevocationRegistry {
   private readonly store: RevocationStore;
   private readonly entries: number;
   private readonly now: () => Date;
+  /** Normalized signing capability; null when this registry cannot publish. */
+  private readonly signer: Ed25519Signer | null;
   private queue: Promise<unknown> = Promise.resolve();
   private lastPublishedVersion = -1;
+  /**
+   * Versions RESERVED by in-flight publishes. A publish claims its version
+   * here synchronously — before the first await — and the floor check reads
+   * both this set and `lastPublishedVersion`, so two concurrent publishes can
+   * never sign the same version even while one is deep in a KMS round-trip.
+   * Publishing deliberately does NOT ride the `run()` queue: a slow signer
+   * must never delay the authoritative kill path (see the class doc).
+   */
+  private readonly signingVersions = new Set<number>();
+
+  /** Highest version already published or currently being signed. */
+  private versionFloor(): number {
+    let floor = this.lastPublishedVersion;
+    for (const v of this.signingVersions) floor = Math.max(floor, v);
+    return floor;
+  }
 
   constructor(private readonly opts: RevocationRegistryOptions) {
     this.store = opts.store ?? new MemoryRevocationStore();
@@ -99,6 +126,37 @@ export class RevocationRegistry {
     this.now = opts.now ?? (() => new Date());
     if (this.entries % 8 !== 0 || this.entries <= 0) {
       throw new BitstringError("entries must be a positive multiple of 8");
+    }
+    // Signing misconfiguration fails at CONSTRUCTION, not at first publish.
+    if (opts.privateKeyPem && opts.signer) {
+      throw new SignerError("pass privateKeyPem OR signer, not both");
+    }
+    if (opts.signer) {
+      if (opts.signer.algorithm !== "Ed25519") {
+        throw new SignerError(
+          `signer declares algorithm "${String(opts.signer.algorithm)}"; only Ed25519 is supported`,
+        );
+      }
+      // Read the declared key ONCE, refuse it here if it does not parse, and
+      // FREEZE it: every published list is verified against this snapshot, so
+      // a backend that later rotates its declared key fails verification
+      // (deny) instead of publishing lists this deployment cannot verify.
+      const declaredPem = opts.signer.publicKeyPem;
+      try {
+        createPublicKey(declaredPem);
+      } catch (err) {
+        throw new SignerError("signer's declared publicKeyPem does not parse", { cause: err });
+      }
+      const inner = opts.signer;
+      this.signer = {
+        algorithm: "Ed25519",
+        publicKeyPem: declaredPem,
+        sign: (m) => inner.sign(m),
+      };
+    } else {
+      // A legacy privateKeyPem wraps into LocalKeySigner: ONE signing path,
+      // byte-identical published credentials (Ed25519 is deterministic).
+      this.signer = opts.privateKeyPem ? new LocalKeySigner(opts.privateKeyPem) : null;
     }
   }
 
@@ -436,53 +494,74 @@ export class RevocationRegistry {
     version: number,
     purpose: StatusPurpose = "revocation",
   ): Promise<StatusListCredential> {
-    if (!this.opts.privateKeyPem) {
-      throw new Error("RevocationRegistry was constructed without privateKeyPem; cannot publish");
-    }
-    if (!Number.isSafeInteger(version) || version <= this.lastPublishedVersion) {
+    if (!this.signer) {
       throw new Error(
-        `status list version must strictly increase: ${version} <= ${this.lastPublishedVersion}`,
+        "RevocationRegistry was constructed without privateKeyPem or signer; cannot publish",
       );
     }
-    const snap = await this.store.snapshot();
-    const bits = new Bitstring(this.entries);
-    let unpublishable = 0;
-    for (const r of snap.records) {
-      if (r.purpose !== purpose) continue;
-      if (r.index === null) {
-        unpublishable += 1;
-        continue;
-      }
-      bits.set(r.index, true);
+    // The floor covers BOTH published versions and versions currently being
+    // signed, and the reservation below happens before the first await. An
+    // async signer put a KMS round-trip between "check the floor" and
+    // "advance the floor"; without the reservation, a timer-driven publisher
+    // racing an on-demand publish could mint two validly-signed credentials
+    // at the SAME version — one showing a mandate revoked and one not — and
+    // the slower publish could regress the floor. That is exactly the
+    // rollback the strictly-increasing counter exists to prevent.
+    const floor = this.versionFloor();
+    if (!Number.isSafeInteger(version) || version <= floor) {
+      throw new Error(`status list version must strictly increase: ${version} <= ${floor}`);
     }
-    // Agent-wide kills: set every linked mandate's bit so a verifier sees them.
-    for (const agentId of snap.blockedAgents) {
-      const block = await this.store.getAgentBlock(agentId);
-      if (!block || block.purpose !== purpose) continue;
-      for (const mandateId of await this.store.mandatesFor(agentId)) {
-        const idx = await this.store.indexOf(mandateId);
-        if (idx !== null) bits.set(idx, true);
-        else unpublishable += 1;
+    this.signingVersions.add(version);
+    try {
+      const snap = await this.store.snapshot();
+      const bits = new Bitstring(this.entries);
+      let unpublishable = 0;
+      for (const r of snap.records) {
+        if (r.purpose !== purpose) continue;
+        if (r.index === null) {
+          unpublishable += 1;
+          continue;
+        }
+        bits.set(r.index, true);
       }
+      // Agent-wide kills: set every linked mandate's bit so a verifier sees them.
+      for (const agentId of snap.blockedAgents) {
+        const block = await this.store.getAgentBlock(agentId);
+        if (!block || block.purpose !== purpose) continue;
+        for (const mandateId of await this.store.mandatesFor(agentId)) {
+          const idx = await this.store.indexOf(mandateId);
+          if (idx !== null) bits.set(idx, true);
+          else unpublishable += 1;
+        }
+      }
+      // `lastPublishedVersion` advances only AFTER signing succeeds — and as
+      // a monotonic max, so a concurrent higher-version publish that finished
+      // first is never regressed. A signer failure releases the reservation
+      // (finally) with the floor unchanged, so the SAME version stays
+      // retryable and a verifier's rollback floor never sees a gap it could
+      // misread as a rollback.
+      const credential = await publishStatusListWith(bits, {
+        id: this.opts.listId,
+        issuer: this.opts.issuer,
+        statusPurpose: purpose,
+        signer: this.signer,
+        version,
+        ...(this.opts.publishTtlMs !== undefined ? { ttlMs: this.opts.publishTtlMs } : {}),
+        ...(this.opts.signTimeoutMs !== undefined ? { timeoutMs: this.opts.signTimeoutMs } : {}),
+        now: this.now,
+      });
+      this.lastPublishedVersion = Math.max(this.lastPublishedVersion, version);
+      await this.opts.ledger?.append("status_list_published", {
+        listId: credential.id,
+        version: credential.version,
+        purpose,
+        revokedCount: bits.setIndices().length,
+        unpublishable,
+        validUntil: credential.validUntil,
+      });
+      return credential;
+    } finally {
+      this.signingVersions.delete(version);
     }
-    const credential = publishStatusList(bits, {
-      id: this.opts.listId,
-      issuer: this.opts.issuer,
-      statusPurpose: purpose,
-      privateKeyPem: this.opts.privateKeyPem,
-      version,
-      ...(this.opts.publishTtlMs !== undefined ? { ttlMs: this.opts.publishTtlMs } : {}),
-      now: this.now,
-    });
-    this.lastPublishedVersion = version;
-    await this.opts.ledger?.append("status_list_published", {
-      listId: credential.id,
-      version: credential.version,
-      purpose,
-      revokedCount: bits.setIndices().length,
-      unpublishable,
-      validUntil: credential.validUntil,
-    });
-    return credential;
   }
 }

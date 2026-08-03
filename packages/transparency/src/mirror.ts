@@ -1,7 +1,15 @@
-import { canonicalJson, type AuditLedger, type LedgerEntry } from "@vaduno/guard";
+import { createPublicKey } from "node:crypto";
+import {
+  canonicalJson,
+  LocalKeySigner,
+  SignerError,
+  type AuditLedger,
+  type Ed25519Signer,
+  type LedgerEntry,
+} from "@vaduno/guard";
 import { leafHash } from "./merkle.js";
 import type { TransparencyLog, TreeHead } from "./tree.js";
-import { signTreeHead, type SignedTreeHead } from "./sth.js";
+import { signTreeHeadWith, type SignedTreeHead } from "./sth.js";
 
 /**
  * Binds the guard's hash-chained AuditLedger to a Merkle transparency log.
@@ -33,8 +41,20 @@ export interface MirrorAuditResult {
 }
 
 export interface LedgerMirrorOptions {
-  /** When set, every sync() also signs and returns the new head. */
-  signing?: { logId: string; privateKeyPem: string; now?: () => Date };
+  /**
+   * When set, every sync() also signs and returns the new head. Pass EITHER a
+   * `privateKeyPem` (in-process key) OR a `signer` (non-exportable KMS/HSM
+   * capability) — never both. A legacy `privateKeyPem` is wrapped into a
+   * `LocalKeySigner` at construction, so both configs share one signing path
+   * with byte-identical output.
+   */
+  signing?: {
+    logId: string;
+    privateKeyPem?: string;
+    signer?: Ed25519Signer;
+    now?: () => Date;
+    timeoutMs?: number;
+  };
 }
 
 /**
@@ -52,12 +72,62 @@ export function ledgerEntryLeaf(entry: LedgerEntry): string {
 
 export class LedgerMirror {
   private queue: Promise<unknown> = Promise.resolve();
+  /** Normalized signing config; null when the mirror does not sign heads. */
+  private readonly signing: {
+    logId: string;
+    signer: Ed25519Signer;
+    now?: () => Date;
+    timeoutMs?: number;
+  } | null;
 
   constructor(
     private readonly ledger: AuditLedger,
     private readonly tree: TransparencyLog,
-    private readonly opts: LedgerMirrorOptions = {},
-  ) {}
+    opts: LedgerMirrorOptions = {},
+  ) {
+    // Signing misconfiguration fails at CONSTRUCTION, not at first sync.
+    if (opts.signing) {
+      const { logId, privateKeyPem, signer, now, timeoutMs } = opts.signing;
+      if (privateKeyPem && signer) {
+        throw new SignerError("mirror signing config: pass privateKeyPem OR signer, not both");
+      }
+      if (!privateKeyPem && !signer) {
+        throw new SignerError("mirror signing config: pass privateKeyPem or signer");
+      }
+      if (signer && signer.algorithm !== "Ed25519") {
+        throw new SignerError(
+          `mirror signing config: signer declares algorithm "${String(signer.algorithm)}"; only Ed25519 is supported`,
+        );
+      }
+      let normalized: Ed25519Signer;
+      if (signer) {
+        // Read the declared key ONCE, refuse it here if it does not parse,
+        // and FREEZE it: every signed head is verified against this snapshot,
+        // so a backend that later rotates its declared key fails verification
+        // (deny) instead of signing heads this deployment cannot verify.
+        const declaredPem = signer.publicKeyPem;
+        try {
+          createPublicKey(declaredPem);
+        } catch (err) {
+          throw new SignerError(
+            "mirror signing config: signer's declared publicKeyPem does not parse",
+            { cause: err },
+          );
+        }
+        normalized = { algorithm: "Ed25519", publicKeyPem: declaredPem, sign: (m) => signer.sign(m) };
+      } else {
+        normalized = new LocalKeySigner(privateKeyPem as string);
+      }
+      this.signing = {
+        logId,
+        signer: normalized,
+        ...(now ? { now } : {}),
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      };
+    } else {
+      this.signing = null;
+    }
+  }
 
   /** Serialize an operation behind every previously queued one. */
   private run<T>(op: () => Promise<T>): Promise<T> {
@@ -93,8 +163,12 @@ export class LedgerMirror {
         head = await this.tree.head();
       }
       const result: MirrorSyncResult = { appended: fresh.length, head };
-      if (this.opts.signing) {
-        result.signedHead = signTreeHead(head, this.opts.signing);
+      if (this.signing) {
+        // A signer failure REJECTS this sync — but the leaves are already
+        // appended, and truthfully so (they mirror real ledger entries). The
+        // next healthy sync signs the same root; a wedged signer delays
+        // publication of NEW heads, it never forks or unwinds the tree.
+        result.signedHead = await signTreeHeadWith(head, this.signing);
       }
       return result;
     });

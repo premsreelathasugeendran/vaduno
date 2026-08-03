@@ -48,6 +48,15 @@ export {
   MANDATE_FORMAT_VERSION,
   MANDATE_ALG,
 } from "./mandate/mandate.js";
+export {
+  LocalKeySigner,
+  checkedSign,
+  SignerError,
+  SignerTimeoutError,
+  SignerVerificationError,
+  DEFAULT_SIGN_TIMEOUT_MS,
+} from "./mandate/signer.js";
+export type { Ed25519Signer, CheckedSignOptions } from "./mandate/signer.js";
 export type {
   Mandate,
   MandateCheck,

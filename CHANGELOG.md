@@ -10,6 +10,35 @@ See [`SECURITY.md`](SECURITY.md) for what is and isn't guaranteed.
 
 ### Added
 
+- **Pluggable non-exportable signing: `Ed25519Signer` + `checkedSign`
+  (`@vaduno/guard`).** Vaduno's evidence keys — mandate, tree-head,
+  checkpoint, cosignature, status-list — can now live in a cloud KMS/HSM;
+  only signatures enter the process. `checkedSign` is the single gate: copy
+  the message in, race a deadline (`SignerTimeoutError`), require exactly 64
+  bytes, verify against the signer's declared public key on the original
+  bytes — only a verified signature is ever returned, and every failure
+  denies. `MandateManager`, `RevocationRegistry`, and `LedgerMirror` accept
+  `{ signer }`; each SNAPSHOTS the declared public key at construction (a
+  backend that rotates mid-life is refused, never silently trusted), and
+  misconfiguration throws at construction in all three — both key and
+  signer, wrong algorithm, an unparseable declared or legacy key — with
+  `MandateManager` (the only one that also takes a verify key) additionally
+  refusing a `publicKeyPem` that does not match the signing key, whether it
+  comes from a `signer` or a legacy `privateKeyPem`. Async twins `signTreeHeadWith`
+  / `signCheckpointWith` / `cosignCheckpointWith` (`@vaduno/transparency`)
+  and `publishStatusListWith` (`@vaduno/revocation`) sit beside the
+  untouched sync functions with byte-identical wire output; a legacy
+  `privateKeyPem` wraps into `LocalKeySigner`, so there is one signing path.
+  `RevocationRegistry.publish()` now reserves its version before the signer
+  round-trip, so concurrent publishes can neither share a version nor
+  regress the rollback floor. `signCheckpointWith` refuses checkpoint bodies
+  containing control or non-ASCII bytes (the untagged, origin-led payload
+  must not be shapeable into a binary transaction framing). Zero new runtime
+  dependencies — KMS examples live in `docs/signers.md` only, which also
+  states the NORMATIVE key-separation requirement: keys behind a signer are
+  minted for Vaduno and hold no other signing authority (blockchain wallet
+  keys are explicitly prohibited).
+
 - **Merchant-scoped, multi-window velocity controls.**
   `velocity.maxTransactions` now also accepts an ARRAY of count limits (burst
   AND sustained, all enforced), and the new

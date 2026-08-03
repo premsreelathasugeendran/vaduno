@@ -1,13 +1,17 @@
 import {
   createHash,
-  createPrivateKey,
   createPublicKey,
   generateKeyPairSync,
   randomUUID,
-  sign as edSign,
   verify as edVerify,
   type KeyObject,
 } from "node:crypto";
+import {
+  checkedSign,
+  LocalKeySigner,
+  SignerError,
+  type Ed25519Signer,
+} from "./signer.js";
 import { canonicalJson, sha256Hex } from "../ledger/hash.js";
 import type { AuditLedger } from "../ledger/ledger.js";
 import type { PaymentIntent } from "../types.js";
@@ -187,7 +191,11 @@ interface MandateState {
  *
  * The private key stays wherever the ISSUER keeps it — an agent process that
  * only validates/consumes needs just the public key. Never put the private
- * key into an LLM's context.
+ * key into an LLM's context. For key custody where NO process ever holds the
+ * key, pass a non-exportable `signer` (KMS/HSM) instead of `privateKeyPem`;
+ * every signer output passes through `checkedSign` before anything is
+ * recorded. The key behind a signer MUST be dedicated to Vaduno — see
+ * docs/signers.md for the normative key-separation requirement.
  *
  * Consumption is enforced through a ConsumeStore — an atomic consume-once
  * registry keyed on (mandateId, intent id). The default MemoryConsumeStore
@@ -209,24 +217,98 @@ export class MandateManager {
   private readonly verifyKeys = new Map<string, KeyObject>();
   /** Key id of the signing key, so issued mandates can name it. */
   private readonly signingKeyId: string;
-  private readonly privateKey: KeyObject | null;
+  /**
+   * ALWAYS null, and typed so. The manager never holds private key material:
+   * a signer config never had any, and a legacy privateKeyPem is wrapped into
+   * a LocalKeySigner (whose key lives in an ECMAScript #private field) without
+   * the PEM being retained here. The field exists so a key-harvest probe can
+   * assert the invariant at runtime instead of trusting this comment.
+   */
+  private readonly privateKey: null = null;
+  /** Signing capability, or null for a verify-only manager. */
+  private readonly signer: Ed25519Signer | null;
+  private readonly signTimeoutMs: number | undefined;
   private readonly states = new Map<string, MandateState>();
   private readonly consumeStore: ConsumeStore;
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(
     keys: {
-      publicKeyPem: string;
+      /** Verify key. Optional when a signer is given (defaults to its key). */
+      publicKeyPem?: string;
+      /** Legacy in-process signing key. Mutually exclusive with `signer`. */
       privateKeyPem?: string;
+      /**
+       * Non-exportable signing capability (KMS/HSM/hardware). The key behind
+       * it MUST be dedicated to Vaduno — see docs/signers.md.
+       */
+      signer?: Ed25519Signer;
       /** Extra public keys to ACCEPT but never sign with — rotation overlap. */
       additionalPublicKeyPems?: string[];
     },
     private readonly ledger?: AuditLedger,
     private readonly now: () => Date = () => new Date(),
-    opts: { consumeStore?: ConsumeStore } = {},
+    opts: { consumeStore?: ConsumeStore; signTimeoutMs?: number } = {},
   ) {
-    this.publicKey = createPublicKey(keys.publicKeyPem);
-    this.signingKeyId = mandateKeyId(keys.publicKeyPem);
+    // Misconfiguration fails HERE, at construction, before any authority
+    // exists — never at first issue, where a half-configured manager would
+    // already be trusted.
+    if (keys.privateKeyPem && keys.signer) {
+      throw new SignerError(
+        "pass privateKeyPem OR signer, not both — two signing paths would make it ambiguous which key a mandate names",
+      );
+    }
+    if (keys.signer) {
+      if (keys.signer.algorithm !== "Ed25519") {
+        throw new SignerError(
+          `signer declares algorithm "${String(keys.signer.algorithm)}"; mandates are ${MANDATE_ALG} only`,
+        );
+      }
+      // Read the declared key ONCE and refuse it now if it does not parse —
+      // not at first issue.
+      const declaredPem = keys.signer.publicKeyPem;
+      try {
+        createPublicKey(declaredPem);
+      } catch (err) {
+        throw new SignerError("signer's declared publicKeyPem does not parse", { cause: err });
+      }
+      // FREEZE the declared key: every issue() verifies against this
+      // construction-time snapshot, never against whatever the backend
+      // declares at sign time. A KMS wrapper that resolves "latest key
+      // version" and rotates mid-life therefore FAILS verification (deny)
+      // instead of minting recorded mandates whose kid names the frozen key
+      // this manager can no longer verify them against.
+      const inner = keys.signer;
+      this.signer = {
+        algorithm: "Ed25519",
+        publicKeyPem: declaredPem,
+        sign: (m) => inner.sign(m),
+      };
+    } else {
+      // Legacy path wraps into LocalKeySigner: ONE signing path, and
+      // byte-identical wire output because Ed25519 is deterministic.
+      this.signer = keys.privateKeyPem ? new LocalKeySigner(keys.privateKeyPem) : null;
+    }
+    // One rule for BOTH signing configs: an explicit publicKeyPem must be the
+    // key that will actually sign. A mismatch (against a signer's declared
+    // key OR against the key derived from a legacy privateKeyPem) would mint
+    // mandates whose kid names a key that never signed them — permanently
+    // unverifiable. Refused up front.
+    if (
+      this.signer &&
+      keys.publicKeyPem !== undefined &&
+      mandateKeyId(keys.publicKeyPem) !== mandateKeyId(this.signer.publicKeyPem)
+    ) {
+      throw new SignerError(
+        "publicKeyPem does not match the signing key — issuing would mint mandates whose kid names a key that never signed them (permanently unverifiable)",
+      );
+    }
+    const verifyPem = keys.publicKeyPem ?? this.signer?.publicKeyPem;
+    if (verifyPem === undefined) {
+      throw new SignerError("MandateManager needs a publicKeyPem or a signer");
+    }
+    this.publicKey = createPublicKey(verifyPem);
+    this.signingKeyId = mandateKeyId(verifyPem);
     this.verifyKeys.set(this.signingKeyId, this.publicKey);
     // Additional keys are verify-only: they let a rotation overlap, or a second
     // issuer's mandates be accepted, without this manager being able to sign
@@ -234,9 +316,7 @@ export class MandateManager {
     for (const pem of keys.additionalPublicKeyPems ?? []) {
       this.verifyKeys.set(mandateKeyId(pem), createPublicKey(pem));
     }
-    this.privateKey = keys.privateKeyPem
-      ? createPrivateKey(keys.privateKeyPem)
-      : null;
+    this.signTimeoutMs = opts.signTimeoutMs;
     this.consumeStore = opts.consumeStore ?? new MemoryConsumeStore();
   }
 
@@ -312,15 +392,15 @@ export class MandateManager {
     }
   }
 
-  /** Issue and sign a new mandate. Requires the private key. */
+  /** Issue and sign a new mandate. Requires a private key or signer. */
   async issue(params: {
     issuer: string;
     agentId: string;
     constraints: MandateConstraints;
   }): Promise<Mandate> {
-    if (!this.privateKey) {
+    if (!this.signer) {
       throw new Error(
-        "MandateManager was constructed without a private key; cannot issue",
+        "MandateManager was constructed without a private key or signer; cannot issue",
       );
     }
     // Fail closed at issue time on unparseable constraint timestamps.
@@ -342,7 +422,15 @@ export class MandateManager {
       constraints: params.constraints,
       createdAt: this.now().toISOString(),
     };
-    const signature = edSign(null, mandatePayload(unsigned), this.privateKey);
+    // Ordering is the guarantee: build unsigned -> checkedSign -> ONLY THEN
+    // record. A signer that rejects, times out, or returns bad bytes throws
+    // out of checkedSign, so no phantom mandate ever reaches states or the
+    // ledger, and nothing unverifiable can leave this process.
+    const signature = await checkedSign(
+      this.signer,
+      mandatePayload(unsigned),
+      this.signTimeoutMs !== undefined ? { timeoutMs: this.signTimeoutMs } : {},
+    );
     const mandate: Mandate = {
       ...unsigned,
       signature: signature.toString("base64"),

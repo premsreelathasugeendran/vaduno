@@ -1,6 +1,7 @@
 export { Bitstring, BitstringError, MINIMUM_ENTRIES } from "./bitstring.js";
 export {
   publishStatusList,
+  publishStatusListWith,
   checkStatus,
 } from "./status-list.js";
 export type {
@@ -9,6 +10,7 @@ export type {
   StatusCheck,
   StatusCheckCode,
   PublishOptions,
+  PublishWithOptions,
 } from "./status-list.js";
 export { RevocationRegistry } from "./registry.js";
 export type {

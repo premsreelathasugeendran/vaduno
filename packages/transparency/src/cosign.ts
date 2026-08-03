@@ -4,6 +4,7 @@ import {
   sign as edSign,
   verify as edVerify,
 } from "node:crypto";
+import { checkedSign, type Ed25519Signer } from "@vaduno/guard";
 import {
   SIG_TYPE_COSIGNATURE_V1,
   CheckpointError,
@@ -114,6 +115,40 @@ export function cosignCheckpoint(
     rawEd25519PublicKey(opts.publicKeyPem),
   );
   // Blob = keyID || uint64BE timestamp || signature.
+  const blob = Buffer.concat([encodeTimestamp(timestamp), sig]);
+  return { name: opts.name, line: signatureLine(opts.name, id, blob), timestamp };
+}
+
+/**
+ * `cosignCheckpoint` through a non-exportable Ed25519Signer (KMS/HSM) — a
+ * witness whose cosigning key never leaves its HSM. Signs the exact
+ * tlog-cosignature v1 payload; byte-identical to the sync path for the same
+ * key and timestamp. Signer failures reject via `checkedSign` — a witness
+ * whose signer is down cosigns nothing, it never emits an unverified line.
+ */
+export async function cosignCheckpointWith(
+  note: string | ParsedNote,
+  opts: {
+    name: string;
+    signer: Ed25519Signer;
+    /** POSIX seconds; defaults to now. */
+    timestamp?: number;
+    timeoutMs?: number;
+  },
+): Promise<CosignatureRecord> {
+  const parsed = typeof note === "string" ? parseNote(note) : note;
+  const timestamp = opts.timestamp ?? Math.floor(Date.now() / 1000);
+  const payload = cosignaturePayload(parsed.body, timestamp);
+  const sig = await checkedSign(
+    opts.signer,
+    payload,
+    opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {},
+  );
+  const id = keyId(
+    opts.name,
+    SIG_TYPE_COSIGNATURE_V1,
+    rawEd25519PublicKey(opts.signer.publicKeyPem),
+  );
   const blob = Buffer.concat([encodeTimestamp(timestamp), sig]);
   return { name: opts.name, line: signatureLine(opts.name, id, blob), timestamp };
 }

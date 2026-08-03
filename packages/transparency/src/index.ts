@@ -13,7 +13,7 @@ export type { InclusionProof, ConsistencyProof } from "./merkle.js";
 export { TransparencyLog, MemoryTreeStore } from "./tree.js";
 export type { TreeStore, TreeHead, AppendResult, BatchAppendResult } from "./tree.js";
 export { JsonlTreeStore } from "./stores/jsonl.js";
-export { generateLogKeyPair, signTreeHead, verifyTreeHead } from "./sth.js";
+export { generateLogKeyPair, signTreeHead, signTreeHeadWith, verifyTreeHead } from "./sth.js";
 export type { SignedTreeHead, LogKeyPair } from "./sth.js";
 export {
   witnessObserve,
@@ -31,6 +31,7 @@ export type {
 export {
   checkpointBody,
   signCheckpoint,
+  signCheckpointWith,
   parseNote,
   verifyNoteSignature,
   assembleNote,
@@ -45,6 +46,7 @@ export {
 export type { Checkpoint, ParsedNote, NoteSignature } from "./checkpoint.js";
 export {
   cosignCheckpoint,
+  cosignCheckpointWith,
   cosignaturePayload,
   attachCosignatures,
   verifyCosignatures,

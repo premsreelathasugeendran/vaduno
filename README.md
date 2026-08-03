@@ -133,6 +133,18 @@ Attach `mandateId` to an intent (set `requireMandate: true` to demand it for eve
 
 If you automate signing on the agent's own machine, the mandate stops being an authorization and becomes merely an audit format. That's a legitimate use, but be clear with yourself about which one you're deploying.
 
+### Non-exportable signing (KMS / HSM)
+
+The strongest form of "somewhere the agent process cannot reach" is a key that *no* process can extract. Pass a `signer` instead of a `privateKeyPem` and the mandate key can live in a cloud KMS or an HSM — only signatures ever enter the process:
+
+```ts
+new MandateManager({ signer: myKmsSigner });   // Ed25519Signer: a capability, not a key
+```
+
+Every signer output is verified against the public key the signer declared at construction before anything is issued or recorded, and every signer failure (reject, hang, wrong key, rotated key, truncated bytes) **denies** — issuance never degrades to unsigned output, and a wedged KMS blocks *new* mandates only while existing ones still verify and consume. The same capability plugs into signed tree heads, checkpoints, witness cosignatures and status lists (`signTreeHeadWith`, `signCheckpointWith`, `cosignCheckpointWith`, `publishStatusListWith`). Wire output is byte-identical to the `privateKeyPem` path.
+
+**Key separation is normative:** the key behind a signer must be minted for Vaduno and hold no other signing authority — never an Ed25519 blockchain wallet key (Solana, NEAR, Stellar), never a key shared with another system. These keys sign authorization *evidence*, not funds, and [docs/signers.md](docs/signers.md) states the requirement, the reasons, and a Google Cloud KMS setup that creates a fresh, IAM-scoped key.
+
 ### Runtime enforcement: survive retries, races, and misapplication
 
 Signing a mandate proves it was *issued*; it does nothing to stop that valid mandate from being executed twice by a retry loop or raced by two workers. Vaduno enforces it at execution time through a **consume-once registry** keyed on `(mandateId, intentId)`:

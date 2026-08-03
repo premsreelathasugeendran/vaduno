@@ -168,7 +168,31 @@ licensing); no such adapter will be accepted.
   head only proves internal consistency.
 - Keep the mandate and log signing keys out of the repo and out of agent
   reach; prefer a cloud KMS. These keys sign *evidence*, not money — but a
-  stolen log key lets an attacker sign a forged history.
+  stolen log key lets an attacker sign a forged history. The `Ed25519Signer`
+  interface (see `docs/signers.md`) lets these keys live in a KMS/HSM so only
+  signatures ever enter the process; every signer output is verified against
+  the signer's declared public key before it is emitted — `MandateManager`,
+  `RevocationRegistry`, and `LedgerMirror` freeze that key at construction —
+  and every signer failure denies.
+- **NORMATIVE key separation: a key used behind `Ed25519Signer` MUST be
+  dedicated to Vaduno — minted for it, holding no other signing authority.
+  Pointing Vaduno at an Ed25519 blockchain wallet key (Solana, NEAR,
+  Stellar, any chain) or at any key shared with another system is PROHIBITED
+  and unsupported.** A shared wallet key would make the Vaduno process a
+  signing oracle adjacent to a key to funds — the deployment would cross the
+  structural invariant above even though the code does not. Domain
+  separation narrows what such a misdeployed key could be steered into, but
+  it is PARTIAL (tested at the signer boundary): mandate, tree-head, and
+  status-list payloads begin with fixed `vaduno-*` tags and witness
+  cosignatures with the fixed C2SP `cosignature/v1` header — none of those
+  tagged payloads can be a rail transaction. Checkpoint payloads carry NO
+  fixed tag: they are C2SP signed-note bodies whose leading line is the
+  operator-chosen `origin`. On the signer path Vaduno refuses a checkpoint
+  body containing control or non-ASCII bytes, so it cannot reproduce a
+  binary transaction framing (a Solana message header, for instance), but
+  its leading bytes remain operator-chosen. Domain separation is
+  defense-in-depth, NOT a licence to share keys — for checkpoints
+  especially, key separation is the only wall.
 - Run `verify()` / `audit()` on a schedule and on every dispute export.
 - **Concurrent ledger writers need every writer on the 0.3.0
   compare-and-append store** (item 11) — one pre-0.3.0 writer on the same
