@@ -20,6 +20,15 @@ create table if not exists vaduno_ledger (
   hash       text not null
 );
 
+-- Compare-and-append, enforced by the schema (0.3.0): the primary key admits
+-- one row per position, and this admits one CHILD per PARENT — so a fork is
+-- unrepresentable at the database even to a buggy or hostile client. Genesis
+-- (prev_hash = 64 zeros) appears exactly once, which is correct. A losing
+-- concurrent writer gets SQLSTATE 23505 and SupabaseLedgerStore retries onto
+-- the real tip instead of dropping the entry.
+create unique index if not exists vaduno_ledger_prev_hash_key
+  on vaduno_ledger (prev_hash);
+
 create index if not exists vaduno_ledger_agent_time
   on vaduno_ledger (agent_id, timestamp);
 

@@ -38,6 +38,7 @@ licensing); no such adapter will be accepted.
 | A mandate is bound to one approved task run | Optional `contextHash`: the intent must present the exact context blob, and its `agentId`/`merchantId` fields must match the intent (`CONTEXT_MISMATCH`) | Issuer sets a contextHash at issue time |
 | A revoked mandate or agent can never spend again | The guard consults the revocation registry inside its critical section (after approval, before mandate consumption) and fails closed | Spend flows through a guard wired with `revocationCheck` |
 | A revocation beats work already in flight | The check runs after any human approval, so a kill switch pulled mid-approval still denies | — |
+| An emergency freeze issued in ONE process stops every process's next authorization | A shared `FreezeStore` (one global row, monotonic epoch) consulted at authorization time via `createFreezeCheck` — inside the critical section, after approval, before the budget reservation. Unfreeze is epoch-fenced compare-and-set (a stale fence is refused, unchanged). An unreachable store denies every payment — a deliberate total stop, never fail-open | Every guard is wired with `createFreezeCheck` over the SAME store (`guard.freeze()` alone remains per-process), and spend flows through the guard |
 | A tampered, stale, or rolled-back status list cannot un-revoke | Ed25519-signed status lists with `validUntil` freshness and a monotonic version floor; every failure mode denies | Issuer's signing key stays private |
 | The log cannot show two different histories to two parties | C2SP witness cosigning: k independent witnesses each refuse to cosign a checkpoint contradicting one they already cosigned, so a fork cannot reach quorum | The k witnesses are genuinely independent parties, and each persists its state |
 | Recorded history cannot be *silently* edited or reordered | Hash-chained ledger; `verify()` re-derives every link | Verifier runs; a retained head is compared |
@@ -97,6 +98,56 @@ licensing); no such adapter will be accepted.
    surfaces data; it does not (cannot) alter rail-level outcomes.
 10. **Timestamps are informational.** Signed tree heads assert tree state, not
     trusted time.
+11. **Concurrent ledger writers are safe since 0.3.0 — within each store's
+    stated residual.** Before 0.3.0 `AuditLedger.append` derived
+    `seq = last.seq + 1` inside a promise queue scoped to a single *instance*,
+    so two `AuditLedger` objects over one store both read seq N and both wrote
+    N+1 (measured: 30 concurrent appends across three instances produced 10
+    distinct sequence numbers, each written three times) — Memory/Jsonl forked
+    and an honest system self-reported as tampered; Supabase quietly
+    **dropped** the losing row while `verify()` stayed green. `LedgerStore` is
+    now compare-and-append: a store admits an entry only if it still extends
+    the current tip, a losing writer is handed the real tip and retries
+    (bounded, then fails CLOSED as `AUDIT_WRITE_FAILED` / `auditDegraded` —
+    a hot rival can starve a writer into denial, never into a forked or
+    silently gappy chain). Hashing stays client-side, so a hostile store still
+    cannot fabricate history (item 4).
+
+    What "atomic" rests on, per store — trust the mechanism, not the label:
+    - `MemoryLedgerStore`: JS single-threading; the compare and the write are
+      one synchronous body.
+    - `JsonlLedgerStore`: a `FileMutex` lockfile (shared with
+      `FileSpendLimiter` / `FileConsumeStore`), tip re-read under the lock.
+      Residual, inherited and documented in file-mutex.ts: a holder stalled
+      past `staleMs` (default 30s) is reclaimed, briefly permitting two
+      holders. Verified by an in-repo test with two real OS processes
+      appending overlapping bursts to one file.
+    - `SupabaseLedgerStore`: the schema is the mechanism — `seq bigint
+      primary key` (one row per position) plus `unique (prev_hash)` (one
+      child per parent) make a fork unrepresentable at the database even to a
+      buggy or hostile client; the loser's SQLSTATE 23505 is classified as
+      contention and retried, not dropped. Requires the 0.3.0
+      `supabase/schema.sql` (the `prev_hash` unique index is new).
+    - `PostgresLedgerStore` (`@vaduno/postgres`, new): same two constraints,
+      plus `pg_advisory_xact_lock` to make retries rare rather than to be
+      correct.
+
+    A third-party `LedgerStore` written against the pre-0.3.0 interface is
+    REFUSED at runtime (its bare append is exactly the fork bug), and
+    `guard.isAuditDegraded()` remains the alarm for a durable record that
+    never landed.
+
+    **What has actually been exercised, exactly.** Memory and Jsonl run
+    against the real stores, Jsonl by two real OS processes. The two
+    database-backed stores are weaker evidence: `SupabaseLedgerStore` is
+    exercised only against a schema-faithful in-repo fake, and
+    `PostgresLedgerStore`'s conformance suite — while wired into the same CI
+    job that runs the limiter and consume-store suites against a real
+    Postgres 16 — is env-gated and skips on any machine without
+    `VADUNO_TEST_POSTGRES_URL`, which was every machine it was written on.
+    For both, correctness is Postgres's constraint guarantee rather than a
+    property this project has watched hold. Believe it exactly as much as you
+    believe the schema in `supabase/schema.sql`, and no more.
 
 ## Threat model summary
 
@@ -119,6 +170,56 @@ licensing); no such adapter will be accepted.
   reach; prefer a cloud KMS. These keys sign *evidence*, not money — but a
   stolen log key lets an attacker sign a forged history.
 - Run `verify()` / `audit()` on a schedule and on every dispute export.
+- **Concurrent ledger writers need every writer on the 0.3.0
+  compare-and-append store** (item 11) — one pre-0.3.0 writer on the same
+  store reintroduces the fork. Also alarm on
+  `guard.isAuditDegraded()`: it is the only signal that a charge executed and
+  its durable record did not land, and nothing surfaces it for you. It is a
+  live-process signal — a restart resets it — which is exactly where the
+  second alarm takes over: `hydrateFromLedger()` returns a `HydrateReport`,
+  and a nonzero `skippedUnparseableSpendRows` means the ledger holds rows
+  that claim a successful charge (or cannot be read at all) which the
+  restored caps do NOT include — for example rows written by a pre-0.3.0
+  `settle()`, which recorded no amount. Reconcile against the rail before
+  trusting restored totals. The two alarms cover different failures, and
+  together they still do not close everything: a record that never landed at
+  all (the write failed) leaves both the chain and the report clean — only
+  the original process's `isAuditDegraded()` ever knew. If that flag fired
+  and the process is gone, reconciliation against the rail is the remaining
+  recourse.
+- On restart over a persistent ledger, hydrate before serving — and pass
+  `requireHydration: true` so the guard denies (`HYDRATION_REQUIRED`) until
+  `hydrateFromLedger()` succeeds. A hydrate that is attempted and FAILS
+  already denies by default until a retry succeeds; the option closes the
+  remaining gap — a restart that never attempts hydrate and so serves with
+  fresh, empty state: no restored freeze, zero counted spend, the maximally
+  permissive configuration. Alarm on `guard.isFreezeDegraded()` as well: it
+  means a freeze/unfreeze is enforced live but has no durable record, so a
+  restart would not honour it.
+- `guard.freeze()` takes no lock: its deny flag flips before the first await,
+  and it is safe to call — and await — from anywhere, including inside an
+  executor or `revocationCheck` (a freeze issued from inside the rail call
+  cannot deadlock the guard). Its stopping power ends at the last freeze
+  re-check: a freeze landing after that final check — inside the
+  `execution_started` write that precedes the rail, or once `authorize()` has
+  handed an authorization back to the caller — cannot stop that payment.
+  Vaduno never recalls in-flight money; doing so would require the control
+  over funds it must never hold.
+- `guard.freeze()` is PER-PROCESS. For a freeze that binds every process,
+  wire a shared `FreezeStore` into every guard
+  (`revocationCheck: createFreezeCheck(store)`, `@vaduno/revocation`) — the
+  store freeze then denies each wired process's next authorization, and
+  `unfreeze(expectedEpoch)` is compare-and-set so a stale operator cannot
+  lift a re-freeze they never saw. The two halves are independent: a local
+  freeze does not write the store, and a store unfreeze does not clear a
+  peer's local flag. Know the availability cost before wiring it: the check
+  fails closed, so an unreachable freeze store denies EVERY payment on every
+  wired guard — a total stop, by design, with no cache and no fail-open
+  mode. The freeze store is a hard availability dependency for all payments;
+  deploy it like one. A freeze gates authorizations only — it deliberately
+  does not gate `settle()`, because a settle records money that already
+  moved, and refusing to record it would corrupt the caps and the evidence,
+  not protect anything.
 - Fail-closed configuration is mandatory in production: the dashboard refuses
   to start without a real session secret; the guard denies on any policy
   evaluation error; approval and mandate checks reject on any parse/crypto

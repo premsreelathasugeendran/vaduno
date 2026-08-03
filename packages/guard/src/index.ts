@@ -4,6 +4,7 @@ export type {
   VadunoGuardOptions,
   RevocationCheck,
   RevocationVerdict,
+  HydrateReport,
 } from "./guard.js";
 export { evaluatePolicy, merchantMatches, policyWindows } from "./policy/engine.js";
 export {
@@ -12,10 +13,13 @@ export {
 } from "./ledger/ledger.js";
 export type {
   EvidenceBundle,
+  ExpectedTip,
+  LedgerAppendResult,
   LedgerEntry,
   LedgerEntryType,
   LedgerHead,
   LedgerStore,
+  LedgerTip,
   VerifyResult,
 } from "./ledger/ledger.js";
 export { canonicalJson, sha256Hex } from "./ledger/hash.js";
@@ -39,6 +43,10 @@ export {
   MandateManager,
   generateMandateKeyPair,
   mandateContextHash,
+  mandateKeyId,
+  MANDATE_DOMAIN,
+  MANDATE_FORMAT_VERSION,
+  MANDATE_ALG,
 } from "./mandate/mandate.js";
 export type {
   Mandate,

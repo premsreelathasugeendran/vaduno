@@ -64,7 +64,10 @@ describe("MandateManager", () => {
     foreign.register(mandate);
     const check = foreign.check(mandate.id, makeIntent());
     expect(check.ok).toBe(false);
-    expect(check.code).toBe("SIGNATURE_INVALID");
+    // Since 0.3.0 a mandate names its signing key, so a verifier that does not
+    // hold that key says so precisely instead of reporting a bad signature.
+    // Both refuse; this one tells the operator which problem they have.
+    expect(check.code).toBe("KEY_UNKNOWN");
   });
 
   it("enforces expiry and validFrom", async () => {

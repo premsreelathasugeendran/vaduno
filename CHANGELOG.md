@@ -1,10 +1,185 @@
 # Changelog
 
-All six packages are versioned together and released as a matched set.
+All seven packages are versioned together and released as a matched set.
 
-This project is pre-1.0. Under semver, 0.x minor bumps may break the API. One
-has, and it was breaking because the fix for a real security bug required it. See [`SECURITY.md`](SECURITY.md) for what is and isn't
-guaranteed.
+This project is pre-1.0. Under semver, 0.x minor bumps may break the API. Two
+have, and each was breaking because the fix for a real security bug required it.
+See [`SECURITY.md`](SECURITY.md) for what is and isn't guaranteed.
+
+## 0.3.0 — 2026-08-03
+
+### Added
+
+- **Two-phase `authorize()` / `settle()` on the guard, and `@vaduno/agent`.**
+  Every agent framework's approval hook is decide-only (Claude Agent SDK
+  `PreToolUse`, Vercel AI SDK `toolApproval`, OpenAI Agents `needsApproval`,
+  LangChain `wrapToolCall`), so none of them could use
+  `execute(intent, executor)`. `authorize()` runs the same pipeline and stops
+  after the budget is reserved and any mandate use is consumed; the caller runs
+  the payment and reports back via `settle()`. `@vaduno/agent` packages this as
+  `createSpendHooks` plus a thin Claude Agent SDK binding.
+- **Prune APIs**: `SpendLimiter.pruneBefore(beforeMs)` and
+  `ConsumeStore.pruneMandates(ids)` — the retention advice in SECURITY.md now
+  points at something that exists. `pruneMandates` deliberately takes ids from
+  the caller because pruning a claim re-arms its intent id.
+- **`PostgresRevocationStore`**: status-list bit indices unique across
+  instances.
+- **Frozen wire format** (`docs/WIRE-FORMAT.md` + committed test vectors) and
+  mandate signing hardening: domain tag, format version, algorithm pin, key id.
+- **`requireHydration` guard option and `isFreezeDegraded()` /
+  `isLimiterDegraded()` accessors.** See the fixes below for why each exists.
+- **`PostgresLedgerStore`**: the audit ledger for multi-instance deployments.
+  This package shipped shared spend caps and shared consume-once with NO
+  shared ledger; the one backend with real transactions was the one backend
+  the ledger could not use.
+- **Cross-process freeze: a shared `FreezeStore` + `createFreezeCheck`.**
+  Measured before the fix: guard A calls `freeze("credentials leaked")`, A
+  denies, guard B EXECUTES — for B's whole lifetime, because `this.frozen` is
+  an instance field with no push and no pull (`hydrateFromLedger` is one-shot,
+  so an operator could not even poll it). The fix reuses the existing
+  `revocationCheck` seam — `VadunoGuard` itself is unchanged, zero lines: a
+  `FreezeStore` holds one global row `{epoch, frozen, reason, by, at}`, and
+  `createFreezeCheck(store)` (compose via `allChecks`) denies `GUARD_FROZEN`
+  with the operator's reason on every wired process's very next authorization
+  — checked inside the critical section, after human approval, before the
+  budget reservation. Every freeze bumps a monotonic epoch and
+  `unfreeze(expectedEpoch)` is compare-and-set, so a stale operator cannot
+  lift a re-freeze they never saw; a `freeze("")` never blanks a live reason.
+  Fail closed and stated loudly: an UNREACHABLE freeze store denies EVERY
+  payment (`FREEZE_CHECK_FAILED`) — a deliberate total stop that makes the
+  store a hard availability dependency (see SECURITY.md Known Limits 2). A
+  freeze denies NEW authorizations only: it never recalls in-flight money and
+  deliberately does not gate `settle()`, which records money that already
+  moved. Backends: `MemoryFreezeStore` + `FileFreezeStore`
+  (`@vaduno/revocation`; File shares the `FileMutex` primitive and its
+  `staleMs` residual) and `PostgresFreezeStore` (`@vaduno/postgres`; the
+  compare-and-set IS `UPDATE … WHERE epoch = $expected`; schema adds
+  `vaduno_freeze`). Proven by a seven-test conformance suite run against two
+  independent guard handles over one shared freeze resource (Memory and File
+  on every test run; Postgres env-gated in the CI job, NOT exercised against
+  a live database on the development machine). `guard.freeze()` — the local,
+  per-process flag — is unchanged and independent: a local freeze does not
+  write the store, and a store unfreeze does not clear a peer's local flag.
+
+### Fixed — concurrent ledger writers forked or silently dropped entries (breaking `LedgerStore` change)
+
+- Two `AuditLedger` instances over one store — two processes, or two instances
+  in one process — both read tip seq N and both wrote N+1: the per-instance
+  promise queue never protected the store. Measured, not theorized: 30
+  concurrent appends across three instances produced 10 distinct sequence
+  numbers, each written three times. Memory/Jsonl accepted the duplicates
+  (a FORK — the honest ledger then failed `verify()` forever, stamped
+  `chain:{ok:false}` on every evidence bundle, and made `hydrateFromLedger()`
+  throw on every restart); Supabase's `seq bigint primary key` rejected the
+  loser and the rejection was swallowed into `auditDegraded` — money moved,
+  the record was DROPPED, and `verify()` stayed green. The quiet one.
+- `LedgerStore.append` is now **compare-and-append** —
+  `append(entry, {prevSeq, prevHash})` persists only if the store's tip still
+  matches, else reports the real tip; `AuditLedger` re-chains and retries
+  (bounded, then fails CLOSED as `AUDIT_WRITE_FAILED` / `auditDegraded`).
+  Hashing stays client-side, so a hostile store still cannot fabricate
+  history. Atomicity is per-backend: Memory compares-and-pushes in one
+  synchronous body; Jsonl re-reads the tip under the same `FileMutex` the
+  other file stores share (inheriting its documented `staleMs` reclaim
+  window); Supabase/Postgres get it from the schema — `seq` primary key plus
+  a new `unique (prev_hash)` index (one child per parent) make a fork
+  unrepresentable at the database, and the loser's 23505 is classified as
+  contention and retried instead of rethrown. **Breaking for third-party
+  `LedgerStore` implementers** (this is pre-1.0; the fix required it):
+  a store built against the pre-0.3.0 `append(entry): Promise<void>` shape is
+  REFUSED at runtime rather than silently being the unsafe path.
+  `AuditLedger.append(type, data, refs)` and every guard call site are
+  unchanged. Supabase deployments must apply the 0.3.0 `supabase/schema.sql`.
+- `verify()` now distinguishes a fork (`duplicate or regressed seq … a second
+  writer, not a deletion`) from a gap (`entries missing`), so an honest ledger
+  that hit this race is no longer forensically misdiagnosed as
+  tampered-by-deletion; `head()` refuses to anchor a forked or truncated
+  chain instead of blessing whichever rows a later `verify()` would read.
+- Proven by a conformance suite that runs two-to-three independent writer
+  handles per backend (fresh store objects on one path for jsonl — a queue
+  hidden in the store object still fails it) plus a two-OS-process test on
+  one jsonl file with a file barrier so the bursts overlap by construction.
+  Scope of that proof, exactly: Memory and Jsonl run against the real stores.
+  Supabase runs against a schema-faithful in-repo fake, not a live instance.
+  `PostgresLedgerStore` rests on the same two constraints; its suite is wired
+  into the CI job that runs against a real Postgres 16, but it is env-gated
+  and skipped on every machine it was developed on. Its live evidence is
+  whatever that CI job reports, and nothing more.
+
+### Fixed — two-phase spends were invisible to restart recovery
+
+- **`settle()` recorded no money.** Its `execution_result` row held
+  `{success, selfReported}` with no `amountMinor`/`currency`, and both spend
+  consumers filter such rows out. Measured: 4000 of a 5000/day cap spent via
+  `authorize()`+`settle()`, restart, `hydrateFromLedger()` — another 4000
+  AUTHORIZED (the `execute()` control correctly denied). This is the path every
+  framework integration takes. The authorization now snapshots
+  amount/currency/merchant/rail onto its `execution_started` row, and
+  `settle()` recovers that snapshot so its row carries exactly the economic
+  fields an `execute()` row carries (plus `selfReported: true`), and names the
+  agent instead of an empty `agentId`.
+- **Settle dedupe is keyed by OUTCOME, not position** — an "executed" settle is
+  suppressed only by an existing success row for the current authorization; a
+  "failed" settle by any result row. A positional check (any result row after
+  the authorization) let a late-retried `settle(failed)` permanently suppress
+  the genuine executed outcome on the documented recovery interleave
+  (`settle(failed)` → `releaseSpend` → re-authorize same id → late retry →
+  `settle(executed)`) — the ledger then said `success: false` for a charge that
+  happened, and a restart re-authorized the full amount. A retried settle still
+  cannot double-count: at most one countable success row per authorization, and
+  the reservation commit is idempotent.
+- **`hydrateFromLedger()` now returns a `HydrateReport`**
+  (`{restoredSpendRows, skippedUnparseableSpendRows}`) instead of `void`. A
+  spend row the restore cannot parse is still skipped — a malformed historical
+  row must not NaN-poison the caps or crash startup — but the skip is now
+  REPORTED. Nonzero `skippedUnparseableSpendRows` (which is what a pre-0.3.0
+  `settle()` row hydrates as) means the restored caps under-count; reconcile
+  against the rail.
+- **`ledgerSpendHistory()` validates before counting** — requires a
+  safe-integer amount and string currency, and takes an optional
+  `onUnparseable` callback fired per malformed row. Previously
+  `totalMinor += data.amountMinor ?? 0` counted a malformed row as a $0 spend
+  and string-concatenated a string amount into the running total. A throwing
+  callback is swallowed: policy evaluation never becomes an outage over a bad
+  historical row.
+
+### Fixed — freeze and hydration semantics
+
+All three reproduced before fixing. `freeze()`/`unfreeze()` flip their flag
+synchronously, stamp a monotonic epoch, and append lock-free through the
+ledger's own queue — so a hydrate snapshot can no longer clobber a freeze taken
+during startup, no deferred re-assertion exists to go stale, and freezing from
+inside an executor cannot deadlock. A freeze whose `guard_frozen` append failed
+stays enforced locally and reports `isFreezeDegraded()` (it would not survive a
+restart). An attempted-and-FAILED hydrate now denies everything
+(`HYDRATION_REQUIRED`) until a retry succeeds — serving with fresh, empty state
+after the ledger failed verification is the permissive direction — and
+`requireHydration: true` covers the restart that never attempts hydrate at all.
+
+### Fixed — the rest
+
+- **Approval fingerprint collision**: `approvalFingerprint` joined raw
+  attacker-controlled strings with `|`, so a crafted `merchant.id`/`url` pair
+  could make one human approval cover a payment to a different destination.
+  Now domain-tagged canonical JSON (injective; throws rather than guesses).
+- **JSONL stores no longer trust a stale cache**: both `JsonlLedgerStore` and
+  the transparency store served a cached chain whenever the file SIZE was
+  unchanged, so a byte-length-preserving edit passed `verify()` — and defeated
+  `verify(retainedHead)` too. Every read now re-reads bytes; the deliberate
+  perf trade is re-parsing on every `all()`/`verify()` instead of serving a
+  cache that can lie.
+- **x402 402-body handling**: with no `Content-Length` the whole body was
+  buffered BEFORE the 64 KB cap applied (200 MiB measured); the cap also
+  counted UTF-16 code units, admitting ~3x the stated bytes. Now an abortable
+  byte-counting read that cancels at the cap; `extra` is validated by key and
+  type; x402 v2 is refused by name.
+- **`isAuditDegraded()` means exactly one thing**: an audit record failed to
+  persist. Limiter commit/release failures — benign over-holds — moved to
+  `isLimiterDegraded()`, and the two-phase/failed-execution audit appends that
+  used to fail silently now flag `auditDegraded`.
+- Doc-truth corrections: freeze is per-process (three places said otherwise),
+  the ledger append queue is per-INSTANCE not per-process, and six other
+  statements that were false.
 
 ## 0.2.2 — 2026-07-30
 

@@ -19,7 +19,7 @@ you're unsure whether something qualifies, report it privately anyway.
 ```bash
 npm install
 npm run build
-npm run test        # 364 tests across six packages
+npm run test        # 587 tests across seven packages
 ```
 
 Then run the scenarios — each is a story from the README, and they are the
@@ -96,7 +96,14 @@ spend limiter's was not and went out in 0.2.0. Run the conformance suites:
 ```bash
 npx vitest run packages/guard/test/consume-store.conformance.test.ts
 npx vitest run packages/guard/test/spend-limiter.conformance.test.ts
+npx vitest run packages/guard/test/ledger-concurrency.conformance.test.ts
 ```
+
+The ledger suite's harness differs in a way worth copying: a handle is minted
+from a shared **descriptor** (a path, a table, a pool) rather than from a shared
+store *object*. That distinction is load-bearing — hand every handle the same
+store object and a promise queue hidden inside it serializes them, so the suite
+goes green while the real cross-process bug is untouched.
 
 Both export a `run*Conformance(harness)`. They are **not** published to npm —
 `@vaduno/guard` ships only `dist/` — so either copy the file into your repo

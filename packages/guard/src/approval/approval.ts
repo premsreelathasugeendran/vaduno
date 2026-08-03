@@ -6,25 +6,44 @@ import type {
   PaymentIntent,
   PolicyReason,
 } from "../types.js";
-import { sha256Hex } from "../ledger/hash.js";
+import { canonicalJson, sha256Hex } from "../ledger/hash.js";
 
 /**
  * A binding fingerprint of the money-affecting fields of an intent. A human's
  * approval is tied to THIS fingerprint, so an agent cannot get a small payment
  * approved and then replay that approval to authorize a larger/different one
  * (the queued handler rejects a decision whose fingerprint doesn't match).
+ *
+ * INJECTIVE BY CONSTRUCTION, and it has to be. This used to `join("|")` over
+ * raw attacker-controlled strings, so a merchant could move the separator:
+ *
+ *   {id: "shop",                     url: "https://good.com|https://evil.com"}
+ *   {id: "shop|https://good.com",    url: "https://evil.com"}
+ *
+ * hashed identically — verified — which let one human approval cover a payment
+ * to a DIFFERENT destination, with the real approver's name in the ledger
+ * against it. The shipped approval UI renders `merchant.id` and not
+ * `merchant.url`, so in the exploitable direction the approver sees a clean
+ * name. Now domain-tagged + canonical JSON, the same construction
+ * `intentDigest` uses; `canonicalJson` is injective and throws rather than
+ * guessing, so no field can impersonate a separator.
+ *
+ * Changing the construction invalidates fingerprints cached by an approval
+ * store across this upgrade: a stale decision no longer matches and the human
+ * is asked again. That is the fail-closed direction, and deliberate.
  */
 export function approvalFingerprint(
   intent: Pick<PaymentIntent, "amount" | "merchant" | "rail">,
 ): string {
   return sha256Hex(
-    [
-      intent.amount.amountMinor,
-      intent.amount.currency.toUpperCase(),
-      intent.merchant.id,
-      intent.merchant.url ?? "",
-      intent.rail,
-    ].join("|"),
+    "vaduno-approval-fingerprint/v1\n" +
+      canonicalJson({
+        amountMinor: intent.amount.amountMinor,
+        currency: intent.amount.currency.toUpperCase(),
+        merchantId: intent.merchant.id,
+        merchantUrl: intent.merchant.url ?? null,
+        rail: intent.rail,
+      }),
   );
 }
 

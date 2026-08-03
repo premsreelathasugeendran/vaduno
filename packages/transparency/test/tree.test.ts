@@ -113,6 +113,59 @@ describe("JsonlTreeStore", () => {
     }
   });
 
+  it("recomputes the head from disk: a length-preserving leaf edit is seen by the SAME instance", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "vaduno-stale-"));
+    try {
+      const file = join(dir, "tree.leaves");
+      const log = new TransparencyLog(new JsonlTreeStore(file));
+      for (let i = 0; i < 4; i++) await log.appendLeaf(`leaf-${i}`);
+      const before = await log.head(); // would warm any read cache
+
+      // Flip the first hex character of leaf 0 to a DIFFERENT valid hex
+      // character: every line is fixed-width hex, so the byte length (and
+      // therefore stat().size) is unchanged and the line still parses.
+      const raw = await readFile(file, "utf8");
+      const flipped = (raw[0] === "0" ? "1" : "0") + raw.slice(1);
+      expect(Buffer.byteLength(flipped, "utf8")).toBe(Buffer.byteLength(raw, "utf8"));
+      await writeFile(file, flipped, "utf8");
+
+      // Same store instance — the recomputed root must commit to disk bytes.
+      const after = await log.head();
+      expect(after.treeSize).toBe(before.treeSize);
+      expect(after.rootHash).not.toBe(before.rootHash);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("retained-head consistency check fails through the SAME instance after a length-preserving edit", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "vaduno-stale-cons-"));
+    try {
+      const file = join(dir, "tree.leaves");
+      const log = new TransparencyLog(new JsonlTreeStore(file));
+      for (let i = 0; i < 3; i++) await log.appendLeaf(`old-${i}`);
+      const retained = await log.head(); // auditor keeps this out-of-band
+      await log.appendLeaf("new-3");
+      await log.appendLeaf("new-4");
+
+      // Tamper leaf 1 — inside the retained prefix — length-preserving.
+      const raw = await readFile(file, "utf8");
+      const off = 65; // line 1 starts after 64 hex chars + "\n"
+      const flipped =
+        raw.slice(0, off) + (raw[off] === "0" ? "1" : "0") + raw.slice(off + 1);
+      await writeFile(file, flipped, "utf8");
+
+      // A consistency proof from the SAME instance must be built from the
+      // tampered bytes, so it can no longer connect the honest retained root
+      // to the current root — a stale cache would falsely verify here.
+      const proof = await log.proveConsistency(retained.treeSize);
+      const current = await log.head();
+      expect(verifyConsistency(retained.rootHash, current.rootHash, proof)).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("repairs a torn tail: completes an unterminated hash, truncates garbage", async () => {
     const dir = await mkdtemp(join(tmpdir(), "vaduno-torn-"));
     try {

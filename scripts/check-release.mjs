@@ -165,6 +165,32 @@ for (const name of PACKAGES) {
   console.log(`  ${files.length} files, ${(meta.unpackedSize / 1024).toFixed(1)} kB unpacked`);
 }
 
+/**
+ * The root build/test scripts are hand-written lists, and a hand-written list
+ * silently omits whatever was added after it. That already happened: the
+ * now-deleted `release:pack` script never included @vaduno/postgres, so it
+ * reported success while never having packed it.
+ *
+ * A package missing from `build` is caught above (no dist/). A package missing
+ * from `test` is caught by NOTHING — its suite simply never runs, and the gate
+ * still prints "all packages look publishable". So assert both here.
+ */
+{
+  const rootPkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  for (const script of ["build", "test"]) {
+    const body = rootPkg.scripts?.[script] ?? "";
+    for (const name of PACKAGES) {
+      const full = JSON.parse(
+        readFileSync(join(root, "packages", name, "package.json"), "utf8"),
+      ).name;
+      if (!body.includes(full)) {
+        console.error(`  ✗ root "${script}" script never runs ${full}`);
+        failures++;
+      }
+    }
+  }
+}
+
 if (versions.size > 1) {
   console.error(`\n✗ versions differ across packages: ${[...versions].join(", ")}`);
   failures++;

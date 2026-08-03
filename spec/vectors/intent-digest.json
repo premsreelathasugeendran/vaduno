@@ -1,0 +1,20 @@
+{
+  "description": "intentDigest commits to the MONEY-AFFECTING fields only, so a replayed intent id carrying different money is detected while harmless metadata changes are not.",
+  "domain": "vaduno-consume-digest/v1\n",
+  "intent": {
+    "id": "intent-1",
+    "agentId": "agent-1",
+    "merchant": {
+      "id": "openai",
+      "url": "https://api.openai.com"
+    },
+    "amount": {
+      "amountMinor": 900,
+      "currency": "USD"
+    },
+    "rail": "x402",
+    "mandateId": "11111111-2222-3333-4444-555555555555",
+    "requestedAt": "2026-01-01T00:00:00.000Z"
+  },
+  "digest": "8f46f875b19d6ff5f5d5127921b6764b8c090fadecb479b0c0fe7f0abf05da85"
+}

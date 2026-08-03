@@ -2,7 +2,13 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    # Release branches too, not just master. Four commits' worth of
+    # concurrency work — a rewritten LedgerStore contract and a cross-process
+    # kill switch — once landed on release/0.3.0 with CI never running at all,
+    # which meant the postgres job below (the ONLY live-database proof this
+    # repo has) had not executed for either new store when they were written.
+    # A guarantee CI could have checked and didn't is worse than no CI.
+    branches: [master, "release/**"]
   pull_request:
   # Weekly, so a break caused by something outside the repo (a transitive
   # dependency, a Node release) surfaces on its own rather than the next time
@@ -108,7 +114,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - name: SpendLimiter + ConsumeStore conformance against real Postgres
+      # Every Postgres-backed store's conformance suite: SpendLimiter,
+      # ConsumeStore, LedgerStore and FreezeStore. The last two are new in
+      # 0.3.0 and this job is their ONLY live-database evidence — everywhere
+      # else the suite is env-gated and skips, so their correctness otherwise
+      # rests on reading the SQL. If this job is red, the claims in
+      # SECURITY.md about those two stores are not backed by anything.
+      - name: All store conformance suites against a real Postgres
         run: npm -w @vaduno/postgres run test
         env:
           VADUNO_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/vaduno_test
@@ -129,3 +141,78 @@ jobs:
       # source or tests leaking into a package, a stale dist/, an internal
       # dependency on "*", or a scoped package that would publish private.
       - run: node scripts/check-release.mjs
+
+  # The dashboard had ZERO CI coverage — it is the one workspace nothing
+  # built, so a break in it shipped undetected until someone ran it by hand.
+  # It is private and never published, but it is the only thing a visitor
+  # actually looks at, and it is where every third-party dependency in this
+  # repo lives.
+  dashboard:
+    name: dashboard builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run dashboard:build
+        env:
+          # The app refuses to start without a high-entropy session secret
+          # (fail closed by design, lib/auth.ts); CI supplies a throwaway so
+          # the build is exercised rather than skipped. This value never
+          # guards anything — no CI artifact is served.
+          VADUNO_SESSION_SECRET: ci-build-only-not-a-real-secret-0123456789
+
+  # Enforces the property the whole project rests on: the published packages
+  # have NO third-party runtime dependencies. `--omit=dev` scopes this to what
+  # an installing user actually gets, so a dev-only advisory in the dashboard's
+  # toolchain cannot turn this red — but the day someone adds a runtime
+  # dependency with a known vulnerability, it does.
+  supply-chain:
+    name: no vulnerable runtime dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      # Scoped per published package, NOT run at the workspace root. A root
+      # audit traverses apps/dashboard — private, never published — so a
+      # vulnerable transitive of Next would fail this job while no installing
+      # user is exposed to it. That false positive is how a supply-chain gate
+      # gets muted. These seven are exactly what npm serves.
+      - name: Audit what users actually install
+        run: |
+          for p in guard transparency revocation x402 stripe postgres agent; do
+            echo "--- @vaduno/$p ---"
+            npm audit --omit=dev --audit-level=low -w "@vaduno/$p"
+          done
+      # A published package gaining ANY third-party runtime dependency is a
+      # design change, not a routine bump — zero-dependency is a stated
+      # property of @vaduno/guard and the reason its supply chain is auditable
+      # by reading it. Fail loudly so the decision is deliberate.
+      - name: Published packages declare no third-party runtime deps
+        run: |
+          node -e '
+            const { readdirSync, readFileSync, existsSync } = require("node:fs");
+            const bad = [];
+            for (const name of readdirSync("packages")) {
+              const p = `packages/${name}/package.json`;
+              if (!existsSync(p)) continue;
+              const pkg = JSON.parse(readFileSync(p, "utf8"));
+              if (pkg.private) continue;
+              for (const dep of Object.keys(pkg.dependencies ?? {})) {
+                if (!dep.startsWith("@vaduno/")) bad.push(`${pkg.name} -> ${dep}`);
+              }
+            }
+            if (bad.length) {
+              console.error("::error::third-party runtime dependency added: " + bad.join(", "));
+              process.exit(1);
+            }
+            console.log("all published packages: zero third-party runtime deps");
+          '

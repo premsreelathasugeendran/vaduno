@@ -53,6 +53,73 @@ Rail fan-out runs **off** the kill path under a per-rail deadline, so a rail tha
 
 Without `revocationCheck` wired into the guard, revocation is only bookkeeping. **Wire it.**
 
+## The freeze every process observes (`FreezeStore`, new in 0.3.0)
+
+`guard.freeze()` is an in-memory flag: instant in its own process, invisible to
+every other live process — guard A denies while guard B keeps spending. The
+shared `FreezeStore` is the cross-process half: one global row
+`{ epoch, frozen, reason, by, at }` in a backend every process can reach,
+consulted on every authorization through the same `revocationCheck` seam:
+
+```ts
+import {
+  FileFreezeStore, createFreezeCheck, createRegistryCheck, allChecks,
+} from "@vaduno/revocation";
+
+const freezeStore = new FileFreezeStore("/var/lib/vaduno/freeze.json");
+
+const guard = new VadunoGuard({
+  policy, ledger, mandates,
+  revocationCheck: allChecks(
+    createRegistryCheck(registry),
+    createFreezeCheck(freezeStore),   // <- the cross-process kill switch
+  ),
+});
+
+// 2am, from ANY process:
+const { epoch } = await freezeStore.freeze("credentials leaked", "prem");
+// every wired process's NEXT authorization now denies GUARD_FROZEN,
+// message carrying "credentials leaked".
+
+// Later, once the incident is over — fenced on the epoch you LOOKED AT:
+await freezeStore.unfreeze(epoch);   // refused (STALE_EPOCH) if anyone froze again
+```
+
+What to know before wiring it:
+
+- **Checked inside the critical section, after human approval, before the
+  budget reservation** — a freeze pulled while an approval sat pending still
+  wins, and nothing is reserved for a payment the freeze denies.
+- **Epoch-fenced unfreeze.** Every freeze bumps a monotonic epoch;
+  `unfreeze(expectedEpoch)` applies only if the epoch is still the one you
+  read, so you can never silently lift a NEWER freeze someone else issued. A
+  refusal changes nothing. A `freeze("")` never blanks a live reason.
+- **TOTAL STOP on outage — the availability cost, stated plainly.** The check
+  fails closed, so an unreachable freeze store denies **every** payment on
+  every wired guard (`FREEZE_CHECK_FAILED`). That is deliberate — "no money
+  moves" is the recoverable direction, and it is the same stance the registry
+  takes — but it makes the freeze store a **hard availability dependency for
+  all payments**. There is no cache and no fail-open mode.
+- **Local and shared are independent.** `guard.freeze()` does not write the
+  store; a store `unfreeze()` does not clear a peer's local flag. An operator
+  who wants both issues both. Single-process deployments can keep using
+  `guard.freeze()` alone.
+- **A freeze denies NEW authorizations only.** It cannot recall, pause or
+  redirect a payment already handed to the rail — that power is exactly the
+  custody Vaduno must never hold — and it deliberately does not gate
+  `settle()`: a settle records money that already moved, and refusing to
+  record it would corrupt the evidence, not protect anything.
+- **Backends:** `MemoryFreezeStore` (one process — tests, reference
+  semantics), `FileFreezeStore` (several processes on one box; advisory
+  `FileMutex` lock, same documented `staleMs` reclaim residual as the other
+  file stores), `PostgresFreezeStore` in
+  [`@vaduno/postgres`](https://www.npmjs.com/package/@vaduno/postgres)
+  (multi-instance; `UPDATE … WHERE epoch = $expected` *is* the
+  compare-and-set). Memory and File are exercised by the freeze conformance
+  suite on every test run; the Postgres backend's suite is env-gated and has
+  only ever run where `VADUNO_TEST_POSTGRES_URL` points at a live database —
+  check the CI postgres job for the commit you install.
+
 ## The race that matters
 
 A kill switch is worthless if it loses to work already in flight. The guard checks revocation *inside its critical section, after human approval and before the mandate is consumed* — so an operator who pulls the switch while a human is still approving still wins:
@@ -76,6 +143,8 @@ Any inability to determine status denies the payment. An outage must never read 
 | Older (or different same-version) snapshot replayed | `STATUS_LIST_ROLLBACK` — denied |
 | A list for another id / issuer / purpose | `LIST_MISMATCH` / `ISSUER_MISMATCH` / `PURPOSE_MISMATCH` |
 | Mandate has no assigned status index | `NO_STATUS_INDEX` — denied |
+| Shared freeze store says frozen | `GUARD_FROZEN` — denied, message carries the operator's reason |
+| Shared freeze store unreachable or corrupt | `FREEZE_CHECK_FAILED` — **every** payment denied (total stop) |
 
 ## Publishing a status list (W3C Bitstring Status List v1.0)
 
@@ -139,7 +208,15 @@ Shows the full lifecycle: revoke → denied, the approval race, agent-wide kill,
 - **Call `hydrateFromLedger()` at startup** when using the in-memory store with a durable ledger. Without it a restart silently un-revokes everything *and* restarts index allocation from zero.
 - **A full status list still revokes locally.** If the bit space is exhausted the kill takes effect and the result is flagged `unpublishable` — enforced locally, invisible to third-party verifiers. Rotate to a new list.
 - **The agent kill is keyed on `intent.agentId`**, which the agent supplies. Bind agent identity by other means (`requireMandate: true`) where that matters.
-- **`MemoryRevocationStore` is single-process.** Supply a shared store for multi-instance deployments.
+- **`MemoryRevocationStore` is single-process.** Bit indices are allocated
+  from an in-memory counter, so two replicas would assign index **0** to
+  *different* mandates and the collision lands in the published status list
+  third parties read. For multiple instances supply `PostgresRevocationStore`
+  from [`@vaduno/postgres`](https://www.npmjs.com/package/@vaduno/postgres)
+  (new in 0.3.0 — allocation is serialized under an advisory lock with a
+  UNIQUE constraint as the backstop; its conformance suite is env-gated and
+  runs against a live Postgres only in CI). With the memory store, run one
+  revocation writer.
 
 See [docs/SECURITY-MODEL.md](../../docs/SECURITY-MODEL.md) for the full guarantee/non-guarantee list.
 

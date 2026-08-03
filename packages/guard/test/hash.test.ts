@@ -80,6 +80,59 @@ describe("AuditLedger chain", () => {
     (store as unknown as { entries: unknown[] }).entries.splice(1, 1);
     const result = await ledger.verify();
     expect(result.ok).toBe(false);
+    // Deletion must read as a GAP, never as a fork — the operator's next move
+    // (hunt the attacker vs hunt the second writer) hinges on this word.
+    expect(result.problem).toMatch(/sequence gap/);
+    expect(result.problem).not.toMatch(/fork/);
+  });
+
+  it("reports a DUPLICATED seq as a fork, distinctly from a gap", async () => {
+    // The concurrent-writer signature: two children of one parent. Before
+    // 0.3.0 verify() called this a "sequence gap" — deletion-shaped — so an
+    // honest ledger that hit its own race was forensically misdiagnosed as
+    // tampered-by-deletion.
+    const store = new MemoryLedgerStore();
+    const ledger = new AuditLedger(store);
+    await ledger.append("policy_updated", { i: 0 });
+    const first = (await store.all())[0]!;
+    // A second writer that read the same tip: same seq, same prevHash,
+    // different payload, correctly self-hashed. The store's own
+    // compare-and-append refuses this since 0.3.0, so the row is planted
+    // store-side — the pre-fix racing writer, a hostile store, and a
+    // pre-0.3.0 store that skipped the comparison all leave this exact shape.
+    const { hash: _drop, ...partial } = first;
+    const rival = { ...partial, data: { i: "rival" } };
+    (store as unknown as { entries: unknown[] }).entries.push({
+      ...rival,
+      hash: sha256Hex(canonicalJson(rival)),
+    });
+
+    const result = await ledger.verify();
+    expect(result.ok).toBe(false);
+    expect(result.firstBadSeq).toBe(0);
+    expect(result.problem).toMatch(/duplicate or regressed seq/);
+    expect(result.problem).toMatch(/fork/);
+    expect(result.problem).not.toMatch(/sequence gap/);
+  });
+
+  it("head() refuses to anchor a forked chain", async () => {
+    // A retained head is the operator's trust anchor. Issuing one over a
+    // chain with duplicated seqs would bless the fork: whichever branch
+    // verify(head) later reads becomes "the" history.
+    const store = new MemoryLedgerStore();
+    const ledger = new AuditLedger(store);
+    await ledger.append("policy_updated", { i: 0 });
+    const first = (await store.all())[0]!;
+    const { hash: _drop, ...partial } = first;
+    const rival = { ...partial, data: { i: "rival" } };
+    // Planted store-side: the compare-and-append API refuses a stale-tip
+    // write, but the store itself (or a pre-0.3.0 writer) can still hold one.
+    (store as unknown as { entries: unknown[] }).entries.push({
+      ...rival,
+      hash: sha256Hex(canonicalJson(rival)),
+    });
+
+    await expect(ledger.head()).rejects.toThrow(/forked or truncated/);
   });
 
   it("serializes concurrent appends into a valid chain", async () => {

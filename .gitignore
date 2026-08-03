@@ -19,3 +19,4 @@ docs/research/
 *.tgz
 packcheck/
 vad/
+.claude/worktrees/

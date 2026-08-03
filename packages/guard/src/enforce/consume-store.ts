@@ -85,6 +85,24 @@ export interface ConsumeStore {
   get(mandateId: string, useKey: string): Promise<UseClaim | null>;
   /** Total claims (pending + settled) against a mandate — its used count. */
   countClaims(mandateId: string): Promise<number>;
+  /**
+   * Delete every claim belonging to the given mandates. Returns how many rows
+   * were removed.
+   *
+   * SAFETY CONDITION, and it is not optional: pruning a claim means a retry of
+   * that intent id no longer replays — it looks new, and CAN EXECUTE AGAIN.
+   * So this is only safe for mandates that are already dead by another check,
+   * which in practice means past `expiresAt`: such a retry is denied EXPIRED
+   * before consume-once is ever consulted.
+   *
+   * The caller supplies the ids precisely because the store cannot verify that
+   * condition — it holds claims, not mandates. A `pruneBefore(timestamp)` would
+   * be easier to call and would silently re-arm live mandates.
+   *
+   * SECURITY.md told operators to prune long before any store could; that
+   * instruction pointed at nothing until 0.3.0.
+   */
+  pruneMandates(mandateIds: readonly string[]): Promise<number>;
 }
 
 function key(mandateId: string, useKey: string): string {
@@ -123,6 +141,18 @@ export class MemoryConsumeStore implements ConsumeStore {
   async get(mandateId: string, useKey: string): Promise<UseClaim | null> {
     const existing = this.claims.get(key(mandateId, useKey));
     return existing ? { ...existing } : null;
+  }
+
+  async pruneMandates(mandateIds: readonly string[]): Promise<number> {
+    const dead = new Set(mandateIds);
+    let removed = 0;
+    for (const [k, c] of this.claims) {
+      if (dead.has(c.mandateId)) {
+        this.claims.delete(k);
+        removed += 1;
+      }
+    }
+    return removed;
   }
 
   async countClaims(mandateId: string): Promise<number> {

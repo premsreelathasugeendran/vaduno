@@ -10,6 +10,7 @@ export {
   encodePaymentHeader,
   decodeSettlementResponse,
   X402ProtocolError,
+  X402VersionUnsupportedError,
 } from "./parse.js";
 export {
   requirementToIntent,

@@ -126,6 +126,14 @@ export class PostgresSpendLimiter implements SpendLimiter {
     );
   }
 
+  async pruneBefore(beforeMs: number): Promise<number> {
+    const res = await this.pool.query(
+      "DELETE FROM vaduno_spend WHERE occurred_ms < $1",
+      [beforeMs],
+    );
+    return res.rowCount ?? 0;
+  }
+
   /** NOTE: the first argument is the SCOPE (policy id), not an agent id. */
   async totalsSince(
     scope: string,

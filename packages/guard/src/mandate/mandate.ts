@@ -1,4 +1,5 @@
 import {
+  createHash,
   createPrivateKey,
   createPublicKey,
   generateKeyPairSync,
@@ -55,14 +56,71 @@ export function mandateContextHash(context: Record<string, unknown>): string {
   return sha256Hex("vaduno-mandate-ctx/v1\n" + canonicalJson(context));
 }
 
+/**
+ * Domain separator for the mandate signing payload.
+ *
+ * Added in 0.3.0. Before that the payload was bare `canonicalJson(mandate)`,
+ * while `mandateContextHash`, the transparency STH, the status-list credential
+ * and the transparency leaf ALL domain-separated correctly — mandates were the
+ * one signed structure that did not.
+ *
+ * Without a domain tag, a signature is only bound to some canonical JSON, not
+ * to what that JSON *means*. Any future structure whose canonical form could
+ * coincide with a mandate's would share a signature space with it. Tagging is
+ * a few bytes and removes the entire question.
+ */
+export const MANDATE_DOMAIN = "vaduno-mandate/v1\n";
+
+/** Value of `Mandate.v` this build issues and accepts. */
+export const MANDATE_FORMAT_VERSION = 1;
+
+/** The only signature algorithm currently defined for mandates. */
+export const MANDATE_ALG = "Ed25519";
+
+const KEY_ID_DOMAIN = "vaduno-mandate-key/v1\n";
+
+/**
+ * Stable short identifier for a mandate signing key: the first 8 bytes of
+ * SHA-256 over a domain tag and the key's SPKI DER encoding, in hex.
+ *
+ * This is what lets a verifier hold several public keys at once and pick the
+ * right one — which is what makes key ROTATION possible without an
+ * flag-day, and multiple ISSUERS possible at all. Derived from the key rather
+ * than assigned, so two parties independently compute the same id.
+ */
+export function mandateKeyId(publicKeyPem: string): string {
+  const der = createPublicKey(publicKeyPem).export({ type: "spki", format: "der" });
+  return createHash("sha256")
+    .update(KEY_ID_DOMAIN, "utf8")
+    .update(der)
+    .digest("hex")
+    .slice(0, 16);
+}
+
 export interface Mandate {
+  /**
+   * Mandate format version. A verifier that does not recognise the value MUST
+   * refuse rather than guess — an unversioned format cannot be changed safely
+   * once anyone else implements it.
+   */
+  v: number;
+  /**
+   * Signature algorithm. Present so a verifier refuses an algorithm it does
+   * not implement instead of mis-verifying under the one it assumed.
+   */
+  alg: string;
+  /** Which signing key produced `signature`. See `mandateKeyId`. */
+  kid: string;
   id: string;
   /** Human/organization that issued (signed) this mandate. */
   issuer: string;
   agentId: string;
   constraints: MandateConstraints;
   createdAt: string;
-  /** Ed25519 signature (base64) over the canonical JSON of the fields above. */
+  /**
+   * Ed25519 signature (base64) over `MANDATE_DOMAIN` followed by the canonical
+   * JSON of every field above.
+   */
   signature: string;
 }
 
@@ -71,6 +129,9 @@ export interface MandateCheck {
   code:
     | "OK"
     | "SIGNATURE_INVALID"
+    | "KEY_UNKNOWN"
+    | "ALG_UNSUPPORTED"
+    | "VERSION_UNSUPPORTED"
     | "NOT_YET_VALID"
     | "EXPIRED"
     | "TIME_UNPARSEABLE"
@@ -87,8 +148,17 @@ export interface MandateCheck {
   message: string;
 }
 
+/**
+ * The exact bytes a mandate signature covers: a domain tag, then the canonical
+ * JSON of every field except the signature itself.
+ *
+ * `canonicalJson` throws `CanonicalizeError` on anything JSON cannot represent
+ * exactly (0.3.0), so a mandate carrying a Date, bigint or NaN cannot be signed
+ * or verified at all rather than being signed under a coerced encoding that
+ * some other value would share.
+ */
 function mandatePayload(m: Omit<Mandate, "signature">): Buffer {
-  return Buffer.from(canonicalJson(m), "utf8");
+  return Buffer.from(MANDATE_DOMAIN + canonicalJson(m), "utf8");
 }
 
 export interface MandateKeyPair {
@@ -128,18 +198,42 @@ interface MandateState {
  */
 export class MandateManager {
   private readonly publicKey: KeyObject;
+  /**
+   * Every public key this manager will verify against, by key id.
+   *
+   * A map rather than a single key because that is what makes ROTATION
+   * possible without a flag-day: publish the new key, accept both while
+   * mandates signed by the old one are still inside their validity window,
+   * then drop the old. Also what allows several ISSUERS at once.
+   */
+  private readonly verifyKeys = new Map<string, KeyObject>();
+  /** Key id of the signing key, so issued mandates can name it. */
+  private readonly signingKeyId: string;
   private readonly privateKey: KeyObject | null;
   private readonly states = new Map<string, MandateState>();
   private readonly consumeStore: ConsumeStore;
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(
-    keys: { publicKeyPem: string; privateKeyPem?: string },
+    keys: {
+      publicKeyPem: string;
+      privateKeyPem?: string;
+      /** Extra public keys to ACCEPT but never sign with — rotation overlap. */
+      additionalPublicKeyPems?: string[];
+    },
     private readonly ledger?: AuditLedger,
     private readonly now: () => Date = () => new Date(),
     opts: { consumeStore?: ConsumeStore } = {},
   ) {
     this.publicKey = createPublicKey(keys.publicKeyPem);
+    this.signingKeyId = mandateKeyId(keys.publicKeyPem);
+    this.verifyKeys.set(this.signingKeyId, this.publicKey);
+    // Additional keys are verify-only: they let a rotation overlap, or a second
+    // issuer's mandates be accepted, without this manager being able to sign
+    // as them.
+    for (const pem of keys.additionalPublicKeyPems ?? []) {
+      this.verifyKeys.set(mandateKeyId(pem), createPublicKey(pem));
+    }
     this.privateKey = keys.privateKeyPem
       ? createPrivateKey(keys.privateKeyPem)
       : null;
@@ -239,6 +333,9 @@ export class MandateManager {
       );
     }
     const unsigned: Omit<Mandate, "signature"> = {
+      v: MANDATE_FORMAT_VERSION,
+      alg: MANDATE_ALG,
+      kid: this.signingKeyId,
       id: randomUUID(),
       issuer: params.issuer,
       agentId: params.agentId,
@@ -299,16 +396,49 @@ export class MandateManager {
     const { mandate } = state;
     const uses = usesOverride ?? state.uses;
     const { signature, ...unsigned } = mandate;
+
+    // Refuse a format or algorithm this build does not implement, rather than
+    // verifying under the one it happened to assume. Both checks precede
+    // signature verification because neither is decidable from the signature.
+    if (unsigned.v !== MANDATE_FORMAT_VERSION) {
+      return {
+        ok: false,
+        code: "VERSION_UNSUPPORTED",
+        message: `mandate format v${String(unsigned.v)} is not supported (this build issues and accepts v${MANDATE_FORMAT_VERSION})`,
+      };
+    }
+    if (unsigned.alg !== MANDATE_ALG) {
+      return {
+        ok: false,
+        code: "ALG_UNSUPPORTED",
+        message: `mandate signature algorithm "${String(unsigned.alg)}" is not supported (expected ${MANDATE_ALG})`,
+      };
+    }
+
+    // Pick the key the mandate NAMES, not whichever key we happen to hold.
+    // Trying every key would make a rotation window silently accept a mandate
+    // whose kid claims one key and whose signature was made by another.
+    const key = this.verifyKeys.get(unsigned.kid);
+    if (!key) {
+      return {
+        ok: false,
+        code: "KEY_UNKNOWN",
+        message: `mandate names signing key ${String(unsigned.kid)}, which this verifier does not hold`,
+      };
+    }
+
     let valid: boolean;
     try {
       valid = edVerify(
         null,
         mandatePayload(unsigned),
-        this.publicKey,
+        key,
         Buffer.from(signature, "base64"),
       );
     } catch {
-      // Non-canonicalizable / unverifiable payload -> treat as invalid, never throw.
+      // Non-canonicalizable / unverifiable payload -> treat as invalid, never
+      // throw. Since 0.3.0 canonicalJson refuses values JSON cannot represent,
+      // so this also covers a mandate carrying a Date, bigint or NaN.
       valid = false;
     }
     if (!valid) {

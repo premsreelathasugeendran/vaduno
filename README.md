@@ -15,15 +15,15 @@ Vaduno puts a deterministic guard between your agent and the money:
 - **Signed mandates** — Ed25519 "permission slips" binding what the human authorized (amount, merchant, time window) to what executes. Time-bound and **consume-once atomic**, closing the [mandate-replay attacks](https://arxiv.org/abs/2602.06345) published against agent-payment protocols.
 - **Runtime enforcement** — a mandate's "consume-once, context-bound" isn't just signed, it's *enforced on the execution path*: a retry storm or duplicate orchestration hop firing the same payment N times runs the rail **at most once** and replays the original outcome to the rest; a used intent id reused for a different payment is denied; an optional context hash binds a mandate to one approved task run.
 - **Flight recorder** — every attempt, decision, approval, and execution lands in a hash-chained, append-only audit ledger. Any edit, deletion, or reordering of history is detectable by `verify()`. Upgrade it to an [RFC 9162 Merkle transparency log](packages/transparency) for third-party inclusion (non-omission) and append-only consistency proofs.
-- **Kill switch & revocation** — `guard.freeze()` denies everything instantly. For targeted kills, [`@vaduno/revocation`](packages/revocation) revokes a single mandate or an agent's entire authority, checked *after* human approval so a switch pulled mid-approval still wins — plus signed [W3C Bitstring Status Lists](https://www.w3.org/TR/vc-bitstring-status-list/) so third parties can verify status themselves.
+- **Kill switch & revocation** — `guard.freeze()` denies everything on that guard instance instantly (**per-process**: a second live process keeps spending until it is frozen too — see [SECURITY.md](SECURITY.md) Known Limits). For a stop that every process actually observes, [`@vaduno/revocation`](packages/revocation) now also ships a shared **`FreezeStore`** (file on one box, Postgres across instances): wire `createFreezeCheck(store)` into each guard and one `store.freeze("credentials leaked")` denies every wired process's *next* authorization — no restart, no poll loop — with an epoch-fenced unfreeze so nobody lifts a re-freeze they never saw. Fail closed: an unreachable freeze store denies **every** payment on every wired guard (a total stop — the store becomes a hard availability dependency). The same package revokes a single mandate or an agent's entire authority against a *shared* registry, checked *after* human approval so a switch pulled mid-approval still wins — plus signed [W3C Bitstring Status Lists](https://www.w3.org/TR/vc-bitstring-status-list/) so third parties can verify status themselves.
 
 **Vaduno never holds funds, keys to funds, or the ability to move money.** It decides whether *your* executor function may run, and records everything. (Precisely: it has no custody, no card PANs, and no wallet or bank credentials. It *does* use Ed25519 keys to sign and verify mandates — the private half belongs to whoever issues them, and a guard that only validates and consumes needs nothing but the public key.) Rail-agnostic by design: wrap an x402 client, a Stripe issuing call, a UPI collect — anything.
 
-## Status: v0.2.2, new, and honest about it
+## Status: v0.3.0, new, and honest about it
 
 Read this before you put it anywhere near real money.
 
-- **Published this week. No known users. Never run in production.** The tests are thorough (364 across six packages, including concurrency and adversarial cases) but tests are not production. npm reports a few hundred weekly downloads; that is registry mirrors, security scanners and the author's own CI — the curve is a single spike on publish day and flat afterwards, which is what "nobody depends on this yet" looks like.
+- **Published this week. No known users. Never run in production.** The tests are thorough (613 across seven packages, including concurrency and adversarial cases) but tests are not production. npm reports a few hundred weekly downloads; that is registry mirrors, security scanners and the author's own CI — the curve is a single spike on publish day and flat afterwards, which is what "nobody depends on this yet" looks like.
 - **The Stripe adapter has never run against Stripe.** Not even in test mode. It is verified against an in-process mock of the `issuing_authorization.request` webhook — the decision logic and the 1.3-second fail-closed deadline are exercised, the network path is not. Live Issuing needs a business entity and Stripe approval the author doesn't have. Treat it as a reference implementation, not a tested integration.
 - **The API will break.** It's 0.x; breaking changes land in minor and patch versions. **Every API change so far has come from a security finding**, not from taste — the atomic limiter, the `agentId` → `policy.id` scope rename, the replay semantics, and the burn-on-failure rule each exist because something was found to be wrong. More review is planned, so expect more.
 - **In-process, it can be routed around.** A library the agent's own process imports is a guardrail against a *confused* agent, not a *compromised runtime* — an injected agent holding a raw wallet key can simply not call it. The one configuration where it is genuinely non-bypassable today is **Stripe Issuing**, where the guard answers the card authorization itself and the network enforces the answer. Out-of-process and rail-side enforcement is what would make the rest of it as strong.
@@ -202,16 +202,18 @@ Writing your own limiter is expected, and there's an oracle for it: [`spend-limi
 |---|---|
 | `MemoryLedgerStore` | tests, ephemeral agents |
 | `JsonlLedgerStore("ledger.jsonl")` | local flight-recorder file |
-| `SupabaseLedgerStore(client)` | shared/team ledger — schema in [supabase/schema.sql](supabase/schema.sql), RLS keeps it append-only server-side |
+| `SupabaseLedgerStore(client)` | shared/team ledger — schema in [supabase/schema.sql](supabase/schema.sql), RLS keeps it append-only server-side. **Requires the 0.3.0 schema**: the `unique (prev_hash)` index is new and is what makes a fork unrepresentable |
+| `PostgresLedgerStore(pool)` | multi-instance ledger — [`@vaduno/postgres`](packages/postgres), same two constraints plus an advisory lock to make retries rare |
 
 The chain is computed client-side; `verify()` re-derives every hash, so even a compromised database cannot silently rewrite history.
 
-## x402 rail adapter (`@vaduno/x402`)
+Since 0.3.0 a store admits an entry only if it still extends the tip the writer chained onto, so concurrent writers can no longer fork the chain — see [SECURITY.md](SECURITY.md) Known Limits item 3 for each store's mechanism and residual, including which of them have and have not been exercised against a live database.
 
-Turn the guard into a real payment path. `@vaduno/x402` wraps the HTTP 402
-"pay-per-request" flow: on a 402 it builds a `PaymentIntent` from the server's
-requirement, runs the guard, and only if allowed calls **your** signer. Vaduno
-never sees keys.
+## x402 rail adapter (`@vaduno/x402`) — experimental, v1 only
+
+`@vaduno/x402` wraps the HTTP 402 "pay-per-request" flow: on a 402 it builds a `PaymentIntent` from the server's requirement, runs the guard, and only if allowed calls **your** signer. Vaduno never sees keys.
+
+> **It implements x402 v1 and has never run against a real x402 server.** A v2 body — the rename of `maxAmountRequired` to `amount`, plus CAIP-2 network ids — is refused by name with `X402VersionUnsupportedError` and no payment is attempted. The demo and every test mock both the server and the payer in-process, so what is verified is agreement with a *reading of the spec*, not interoperability with anything. Same honest status as the Stripe adapter: **neither rail has ever touched a real endpoint.**
 
 ```ts
 import { createX402Fetch, usdc } from "@vaduno/x402";
@@ -268,6 +270,28 @@ Upgrade the hash chain to an [RFC 9162](https://www.rfc-editor.org/rfc/rfc9162) 
 
 On top of that, **witness cosigning** ([C2SP](https://github.com/C2SP/C2SP) `tlog-checkpoint` / `tlog-cosignature`) closes the one hole the log's own math cannot: an operator who signs *two* histories and shows a different one to each party. Independent witnesses refuse to cosign a checkpoint that contradicts one they already cosigned, so a fork can never reach a k-of-n quorum. Honest limit: this proves everyone sees the *same* log, not that the log is *complete* — and witnesses you run yourself count for nothing. See [packages/transparency](packages/transparency/README.md) and [docs/SECURITY-MODEL.md](docs/SECURITY-MODEL.md).
 
+## Agent framework hooks (`@vaduno/agent`)
+
+`guard.execute(intent, executor)` requires the guard to own the payment call, and **no agent framework works that way** — Claude Agent SDK `PreToolUse`, Vercel AI SDK `toolApproval`, OpenAI Agents `needsApproval`, LangChain `wrapToolCall` are all decide-only: they hand you a pending tool call, take an allow/deny, and run the tool themselves. So this binds to the two-phase `authorize()` / `settle()` path instead.
+
+```ts
+import { createSpendHooks, bindClaudeAgentSdk } from "@vaduno/agent";
+
+const hooks = createSpendHooks({
+  guard,
+  resolve(call) {
+    if (call.toolName !== "buy_api_credits") return null;      // not a spending tool
+    return intentFrom(call.input);                             // you write this
+  },
+});
+
+const sdk = bindClaudeAgentSdk(hooks);   // PreToolUse / PostToolUse
+```
+
+An allow **reserves budget immediately** — if it merely returned an opinion, two concurrent tool calls would both be told yes and the cap would mean nothing. Every ambiguous case fails toward over-holding: a throwing resolver denies, an unreadable tool result counts as spent, and a framework that never settles starves its own cap rather than leaking spend.
+
+**Honest scope:** the decision core is framework-free and tested against real guard behavior; the Claude Agent SDK binding's hook payload shapes come from the documented contract and **have never been run against a live SDK session**. That file imports nothing from any SDK and is deliberately thin, so a drifted contract is a few lines to fix. See [packages/agent](packages/agent/README.md).
+
 ## Design principles
 
 1. **Fail closed.** No approval handler? Approval-needing intents are denied. Internal error? Denied and audited. Unknown mandate? Denied.
@@ -285,6 +309,7 @@ On top of that, **witness cosigning** ([C2SP](https://github.com/C2SP/C2SP) `tlo
 - ✅ **Transparency log** (`@vaduno/transparency`) — RFC 9162 inclusion / consistency proofs
 - ✅ **Revocation registry** (`@vaduno/revocation`) — targeted kill switch + W3C Bitstring Status Lists
 - ✅ **Witness cosigning** — C2SP checkpoints + cosignatures; independent witnesses attest the log never forked
+- ✅ **Agent framework hooks** (`@vaduno/agent`) — decide-only tool-approval binding; SDK adapter not yet run against a live session
 - **Consent-evidence dossiers** — exportable dispute/representment packets built on the audit trail
 - **UPI adapter** — ready for NPCI delegated-payment APIs the day they open
 
@@ -301,6 +326,8 @@ What Vaduno adds is one policy and one portable signed authority that survive *a
 What that testing did catch, before release: a cross-process double-spend (the `maxUses` check was check-then-act across separate locks), a hanging payment rail that could freeze the kill switch for every later revocation, a witness-quorum bypass that required *zero* witness misbehaviour, and a C2SP wire-format error that would have broken interoperability with real Go/Sigsum witnesses while every local test still passed.
 
 Those are listed because a security tool that hides its near-misses is asking you to trust the wrong thing — and because each one is concrete enough to check against the code and the commit history rather than taken on faith. The concurrency and the cryptography are where the real bugs have been, and they are where outside review is most wanted.
+
+**Two adapters have never touched the system they adapt.** `@vaduno/stripe` has not contacted `api.stripe.com` in any mode, and `@vaduno/agent`'s Claude Agent SDK binding has not run in a live SDK session — both were written against published contracts. Their surrounding logic is tested; the wire shapes at the boundary are unconfirmed, and are isolated in one thin file each so that being wrong about them is cheap to fix and hard to miss.
 
 ## Contributing
 

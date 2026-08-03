@@ -117,6 +117,21 @@ export class FileConsumeStore implements ConsumeStore {
     return data.claims[this.key(mandateId, useKey)] ?? null;
   }
 
+  async pruneMandates(mandateIds: readonly string[]): Promise<number> {
+    const dead = new Set(mandateIds);
+    return this.mutate(async (data) => {
+      let removed = 0;
+      for (const [k, c] of Object.entries(data.claims)) {
+        if (dead.has(c.mandateId)) {
+          delete data.claims[k];
+          removed += 1;
+        }
+      }
+      if (removed > 0) await this.atomicSave(data);
+      return removed;
+    });
+  }
+
   async countClaims(mandateId: string): Promise<number> {
     return this.countFor(await this.load(), mandateId);
   }

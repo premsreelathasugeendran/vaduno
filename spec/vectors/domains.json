@@ -1,0 +1,13 @@
+{
+  "description": "Every domain separator in the project. A signature is bound to what its bytes MEAN only if the preimage is tagged; an untagged structure shares a signature space with any other whose canonical form could coincide.",
+  "domains": {
+    "mandate": "vaduno-mandate/v1\n",
+    "mandateKeyId": "vaduno-mandate-key/v1\n",
+    "mandateContext": "vaduno-mandate-ctx/v1\n",
+    "consumeIntentDigest": "vaduno-consume-digest/v1\n",
+    "transparencyLeaf": "vaduno-ledger-entry/v1\n",
+    "transparencySth": "vaduno-tlog-sth/v1\n",
+    "statusListCredential": "vaduno-status-list/v1\n"
+  },
+  "note": "The ledger entry hash is deliberately UNTAGGED: it is an internal chain link, not a signed assertion, and it is wrapped by the transparency leaf tag when published."
+}
