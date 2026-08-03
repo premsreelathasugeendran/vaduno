@@ -254,8 +254,15 @@ console.log(
 );
 
 // Simulate an attacker editing history, then re-verify against the retained head.
+// Since 0.3.0 append is compare-and-append: each copy must name the tip it
+// extends, exactly as a (well-behaved) writer would.
 const store2 = new MemoryLedgerStore();
-for (const e of entries) await store2.append(structuredClone(e));
+for (const e of entries) {
+  await store2.append(structuredClone(e), {
+    prevSeq: e.seq - 1,
+    prevHash: e.prevHash,
+  });
+}
 (await store2.all())[3]!.data = { policyResult: "doctored" };
 console.log("\n…attacker edits entry #3 in the database…");
 const tampered = await new AuditLedger(store2).verify(head);
