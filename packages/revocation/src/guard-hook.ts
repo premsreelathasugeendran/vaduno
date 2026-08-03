@@ -1,4 +1,5 @@
 import type { PaymentIntent } from "@vaduno/guard";
+import type { FreezeStore } from "./freeze-store.js";
 import type { RevocationRegistry } from "./registry.js";
 import { checkStatus, type StatusListCredential, type StatusPurpose } from "./status-list.js";
 
@@ -50,6 +51,70 @@ export function createRegistryCheck(registry: RevocationRegistry): RevocationChe
         allowed: false,
         code: "REVOCATION_CHECK_FAILED",
         message: `revocation status could not be determined (fail closed): ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  };
+}
+
+/**
+ * Cross-process kill switch: consult a shared `FreezeStore` at authorization
+ * time, so a freeze issued in ANY process binds every guard wired to the same
+ * store — on its very next authorization, with no push, no poll loop and no
+ * restart. This is what `guard.freeze()` (in-memory, per-process) cannot do;
+ * see freeze-store.ts for the relationship between the two.
+ *
+ * The guard runs this hook INSIDE its critical section, after any human
+ * approval and immediately before the budget reservation — so a freeze pulled
+ * while an approval sat pending still wins, and nothing is reserved or
+ * consumed for a payment the freeze denies.
+ *
+ * FAILS CLOSED, twice over: this function converts any store error into a
+ * denial, and the guard's own revocationCheck wrapper does the same for
+ * anything that escapes. The consequence is deliberate and worth repeating
+ * from the store's docblock: an UNREACHABLE freeze store DENIES EVERY PAYMENT
+ * on every wired guard — a total stop. "No money moves" is the recoverable
+ * failure; a kill switch that an outage disables is not. There is no cache
+ * and no fail-open option.
+ *
+ * WHAT A FREEZE DOES NOT DO — the non-custodial boundary:
+ *  - It cannot recall, pause or redirect a payment already inside the
+ *    executor (or an authorization already handed back to the caller). Vaduno
+ *    decides BEFORE and records AFTER; power over in-flight money is exactly
+ *    the custody it must never hold. A freeze kills the NEXT authorization.
+ *  - It does NOT gate `settle()`, deliberately. A settle records an outcome
+ *    that ALREADY HAPPENED on the rail; blocking it during a freeze would
+ *    destroy the record of real money rather than prevent any — the audit
+ *    trail (and the caps restored from it) would under-count actual spend.
+ *    The guard's settle path never consults revocation checks, and that is
+ *    correct: freeze gates decisions, never evidence.
+ *
+ * Compose with other checks via `allChecks(...)`:
+ *   revocationCheck: allChecks(createRegistryCheck(registry),
+ *                              createFreezeCheck(freezeStore))
+ */
+export function createFreezeCheck(store: FreezeStore): RevocationCheck {
+  return async (_intent) => {
+    try {
+      const state = await store.read();
+      if (state.frozen) {
+        return {
+          allowed: false,
+          // Same code the guard's local freeze denies with, so an operator
+          // sees ONE code for "the kill switch is on" — and the reason rides
+          // in the message, because a fleet stopped without its incident
+          // reason is a debugging session, not an emergency stop.
+          code: "GUARD_FROZEN",
+          message: `payments are frozen (epoch ${state.epoch}): ${state.reason ?? "frozen"}`,
+        };
+      }
+      return { allowed: true };
+    } catch (err) {
+      // FAIL CLOSED: we could not determine freeze status, so we must not
+      // authorize. An outage must never read as "not frozen".
+      return {
+        allowed: false,
+        code: "FREEZE_CHECK_FAILED",
+        message: `freeze status could not be determined (fail closed): ${err instanceof Error ? err.message : String(err)}`,
       };
     }
   };

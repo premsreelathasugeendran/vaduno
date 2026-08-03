@@ -39,6 +39,33 @@ const guard = new VadunoGuard({
 That is the whole change. Every instance pointed at the same database shares one
 budget, one consume-once registry, and one audit ledger.
 
+## The freeze that binds every instance (new in 0.3.0)
+
+`PostgresFreezeStore` is the multi-instance backend for the shared emergency
+freeze in [`@vaduno/revocation`](https://www.npmjs.com/package/@vaduno/revocation):
+
+```ts
+import { createFreezeCheck } from "@vaduno/revocation";
+import { PostgresFreezeStore } from "@vaduno/postgres";
+
+const freezeStore = new PostgresFreezeStore(pool);
+const guard = new VadunoGuard({
+  policy, ledger,
+  revocationCheck: createFreezeCheck(freezeStore),
+});
+
+const { epoch } = await freezeStore.freeze("credentials leaked", "oncall");
+// every instance's NEXT authorization denies GUARD_FROZEN
+await freezeStore.unfreeze(epoch);   // compare-and-set; a stale epoch is refused
+```
+
+One global row; no advisory lock — the compare-and-set that fences unfreezes
+**is** the SQL: `UPDATE … WHERE epoch = $expected` either matches exactly the
+state the operator looked at or changes nothing. Fail-closed cuts both ways
+and is deliberate: if this database is unreachable, **every payment on every
+wired guard is denied** — the freeze store is a hard availability dependency.
+See the availability discussion in the repo's SECURITY.md before wiring it.
+
 ## The ledger store (new in 0.3.0)
 
 Until 0.3.0 this package shipped shared spend caps and shared consume-once but
@@ -103,9 +130,17 @@ VADUNO_TEST_POSTGRES_URL=postgres://... npm -w @vaduno/postgres run test
   development. Its correctness argument rests on two Postgres constraints
   rather than on observed behavior. Weigh it accordingly, and check that the
   CI postgres job is green for the commit you are installing.
-- **`migrate()` is deliberately minimal** — two `CREATE TABLE IF NOT EXISTS`
-  statements and two indexes. It is not a migration framework and does not
-  version anything. Use `VADUNO_SCHEMA_SQL` with your own tool if you have one.
+- **`PostgresFreezeStore` has NOT been exercised against a live database on
+  the machine it was written on.** Like every store here its conformance
+  suite is env-gated on `VADUNO_TEST_POSTGRES_URL`; the Memory and File
+  freeze backends run the identical suite on every test run, and the
+  Postgres backend's correctness argument is one atomic
+  `UPDATE … WHERE epoch = $expected` statement. Check the CI postgres job
+  for the commit you install.
+- **`migrate()` is deliberately minimal** — a handful of
+  `CREATE TABLE IF NOT EXISTS` statements and indexes. It is not a migration
+  framework and does not version anything. Use `VADUNO_SCHEMA_SQL` with your
+  own tool if you have one. 0.3.0 adds the `vaduno_freeze` table.
 - **Old rows are never pruned.** A reservation outside every window stops
   counting but stays on disk. Add your own retention job.
 - **`amount_minor` is `BIGINT`** and comes back from node-postgres as a string;

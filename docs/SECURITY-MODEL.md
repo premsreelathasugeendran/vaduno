@@ -38,6 +38,7 @@ licensing); no such adapter will be accepted.
 | A mandate is bound to one approved task run | Optional `contextHash`: the intent must present the exact context blob, and its `agentId`/`merchantId` fields must match the intent (`CONTEXT_MISMATCH`) | Issuer sets a contextHash at issue time |
 | A revoked mandate or agent can never spend again | The guard consults the revocation registry inside its critical section (after approval, before mandate consumption) and fails closed | Spend flows through a guard wired with `revocationCheck` |
 | A revocation beats work already in flight | The check runs after any human approval, so a kill switch pulled mid-approval still denies | — |
+| An emergency freeze issued in ONE process stops every process's next authorization | A shared `FreezeStore` (one global row, monotonic epoch) consulted at authorization time via `createFreezeCheck` — inside the critical section, after approval, before the budget reservation. Unfreeze is epoch-fenced compare-and-set (a stale fence is refused, unchanged). An unreachable store denies every payment — a deliberate total stop, never fail-open | Every guard is wired with `createFreezeCheck` over the SAME store (`guard.freeze()` alone remains per-process), and spend flows through the guard |
 | A tampered, stale, or rolled-back status list cannot un-revoke | Ed25519-signed status lists with `validUntil` freshness and a monotonic version floor; every failure mode denies | Issuer's signing key stays private |
 | The log cannot show two different histories to two parties | C2SP witness cosigning: k independent witnesses each refuse to cosign a checkpoint contradicting one they already cosigned, so a fork cannot reach quorum | The k witnesses are genuinely independent parties, and each persists its state |
 | Recorded history cannot be *silently* edited or reordered | Hash-chained ledger; `verify()` re-derives every link | Verifier runs; a retained head is compared |
@@ -204,6 +205,21 @@ licensing); no such adapter will be accepted.
   handed an authorization back to the caller — cannot stop that payment.
   Vaduno never recalls in-flight money; doing so would require the control
   over funds it must never hold.
+- `guard.freeze()` is PER-PROCESS. For a freeze that binds every process,
+  wire a shared `FreezeStore` into every guard
+  (`revocationCheck: createFreezeCheck(store)`, `@vaduno/revocation`) — the
+  store freeze then denies each wired process's next authorization, and
+  `unfreeze(expectedEpoch)` is compare-and-set so a stale operator cannot
+  lift a re-freeze they never saw. The two halves are independent: a local
+  freeze does not write the store, and a store unfreeze does not clear a
+  peer's local flag. Know the availability cost before wiring it: the check
+  fails closed, so an unreachable freeze store denies EVERY payment on every
+  wired guard — a total stop, by design, with no cache and no fail-open
+  mode. The freeze store is a hard availability dependency for all payments;
+  deploy it like one. A freeze gates authorizations only — it deliberately
+  does not gate `settle()`, because a settle records money that already
+  moved, and refusing to record it would corrupt the caps and the evidence,
+  not protect anything.
 - Fail-closed configuration is mandatory in production: the dashboard refuses
   to start without a real session secret; the guard denies on any policy
   evaluation error; approval and mandate checks reject on any parse/crypto

@@ -32,6 +32,34 @@ guaranteed.
   This package shipped shared spend caps and shared consume-once with NO
   shared ledger; the one backend with real transactions was the one backend
   the ledger could not use.
+- **Cross-process freeze: a shared `FreezeStore` + `createFreezeCheck`.**
+  Measured before the fix: guard A calls `freeze("credentials leaked")`, A
+  denies, guard B EXECUTES — for B's whole lifetime, because `this.frozen` is
+  an instance field with no push and no pull (`hydrateFromLedger` is one-shot,
+  so an operator could not even poll it). The fix reuses the existing
+  `revocationCheck` seam — `VadunoGuard` itself is unchanged, zero lines: a
+  `FreezeStore` holds one global row `{epoch, frozen, reason, by, at}`, and
+  `createFreezeCheck(store)` (compose via `allChecks`) denies `GUARD_FROZEN`
+  with the operator's reason on every wired process's very next authorization
+  — checked inside the critical section, after human approval, before the
+  budget reservation. Every freeze bumps a monotonic epoch and
+  `unfreeze(expectedEpoch)` is compare-and-set, so a stale operator cannot
+  lift a re-freeze they never saw; a `freeze("")` never blanks a live reason.
+  Fail closed and stated loudly: an UNREACHABLE freeze store denies EVERY
+  payment (`FREEZE_CHECK_FAILED`) — a deliberate total stop that makes the
+  store a hard availability dependency (see SECURITY.md Known Limits 2). A
+  freeze denies NEW authorizations only: it never recalls in-flight money and
+  deliberately does not gate `settle()`, which records money that already
+  moved. Backends: `MemoryFreezeStore` + `FileFreezeStore`
+  (`@vaduno/revocation`; File shares the `FileMutex` primitive and its
+  `staleMs` residual) and `PostgresFreezeStore` (`@vaduno/postgres`; the
+  compare-and-set IS `UPDATE … WHERE epoch = $expected`; schema adds
+  `vaduno_freeze`). Proven by a seven-test conformance suite run against two
+  independent guard handles over one shared freeze resource (Memory and File
+  on every test run; Postgres env-gated in the CI job, NOT exercised against
+  a live database on the development machine). `guard.freeze()` — the local,
+  per-process flag — is unchanged and independent: a local freeze does not
+  write the store, and a store unfreeze does not clear a peer's local flag.
 
 ### Fixed — concurrent ledger writers forked or silently dropped entries (breaking `LedgerStore` change)
 

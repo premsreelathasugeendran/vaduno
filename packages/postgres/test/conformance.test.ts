@@ -16,14 +16,20 @@ import { describe, it } from "vitest";
 // SOURCE (like the suites themselves), not "@vaduno/guard": AuditLedger has
 // private fields, so the dist declaration is not assignable to the src one.
 import { AuditLedger } from "../../guard/src/ledger/ledger.js";
+import { VadunoGuard } from "../../guard/src/guard.js";
+import { MemoryLedgerStore } from "../../guard/src/ledger/stores/memory.js";
 import { runSpendLimiterConformance } from "../../guard/test/spend-limiter-conformance.js";
 import { runConsumeStoreConformance } from "../../guard/test/consume-store-conformance.js";
 import { runLedgerConcurrencyConformance } from "../../guard/test/ledger-concurrency.conformance.js";
+import { runFreezeConformance } from "../../guard/test/freeze.conformance.js";
+import { makePolicy } from "../../guard/test/helpers.js";
 import { runRevocationStoreConformance } from "../../revocation/test/revocation-store-conformance.js";
+import { createFreezeCheck } from "../../revocation/src/guard-hook.js";
 import { PostgresSpendLimiter } from "../src/spend-limiter.js";
 import { PostgresConsumeStore } from "../src/consume-store.js";
 import { PostgresRevocationStore } from "../src/revocation-store.js";
 import { PostgresLedgerStore } from "../src/ledger-store.js";
+import { PostgresFreezeStore } from "../src/freeze-store.js";
 import { migrate } from "../src/schema.js";
 import type { PgPool } from "../src/pg.js";
 
@@ -118,5 +124,61 @@ if (!URL) {
         new PostgresLedgerStore(r.nextPool++ % 2 === 0 ? poolA : poolB),
       ),
     reader: () => new PostgresLedgerStore(poolA),
+  });
+
+  // Freeze: the shared TABLE (its one global row) is the resource; each
+  // handle gets its own PostgresFreezeStore on its own pool, alternating —
+  // two independent connection sets, the same two-instances discipline as
+  // above. The outage simulation severs at the pool: every query throws, and
+  // the guard must turn that into a denial on EVERY handle (an unreachable
+  // freeze store is never "not frozen").
+  runFreezeConformance<{ severed: boolean; nextPool: number }>("PostgresFreezeStore", {
+    freshResource: async () => {
+      await poolA.query("TRUNCATE vaduno_freeze");
+      return { severed: false, nextPool: 0 };
+    },
+    handle: (r, opts) => {
+      const base = r.nextPool++ % 2 === 0 ? poolA : poolB;
+      const pool: PgPool = {
+        connect: () => {
+          if (r.severed) throw new Error("freeze backend unreachable (simulated outage)");
+          return base.connect();
+        },
+        query: <R = Record<string, unknown>>(text: string, values?: unknown[]) => {
+          if (r.severed) throw new Error("freeze backend unreachable (simulated outage)");
+          return base.query<R>(text, values);
+        },
+      };
+      const store = new PostgresFreezeStore(pool);
+      const guard = new VadunoGuard({
+        policy: makePolicy(),
+        // Per-handle ledger, per the suite contract: freeze state must ride
+        // the freeze resource, never a shared audit ledger.
+        ledger: opts?.ledger ?? new AuditLedger(new MemoryLedgerStore()),
+        revocationCheck: createFreezeCheck(store),
+      });
+      return {
+        guard,
+        freeze: async (reason) => {
+          const snap = await store.freeze(reason);
+          // The operator's other hand: also flip the local flag of the one
+          // process they stand in. The peer's denial rides on the store.
+          await guard.freeze(reason);
+          return snap;
+        },
+        unfreeze: async (expectedEpoch) => {
+          const outcome = await store.unfreeze(expectedEpoch);
+          if (outcome.ok) await guard.unfreeze();
+          return outcome;
+        },
+        read: () => store.read(),
+      };
+    },
+    breakResource: (r) => {
+      r.severed = true;
+    },
+    healResource: (r) => {
+      r.severed = false;
+    },
   });
 }

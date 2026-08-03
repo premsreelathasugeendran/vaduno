@@ -25,9 +25,12 @@ export type {
   RegistrySnapshot,
   AgentBlock,
 } from "./store.js";
+export { MemoryFreezeStore, FileFreezeStore } from "./freeze-store.js";
+export type { FreezeStore, FreezeState, UnfreezeResult } from "./freeze-store.js";
 export {
   createRegistryCheck,
   createStatusListCheck,
+  createFreezeCheck,
   allChecks,
 } from "./guard-hook.js";
 export type {

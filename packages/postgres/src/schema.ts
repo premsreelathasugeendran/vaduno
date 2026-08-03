@@ -75,6 +75,20 @@ CREATE TABLE IF NOT EXISTS vaduno_agent_block (
   purpose    TEXT NOT NULL
 );
 
+-- Emergency-freeze state: ONE global row per database (id is constrained to
+-- 1). The compare-and-set that fences unfreezes lives in the statement, not
+-- in a lock: UPDATE ... WHERE epoch = $expected either matches exactly the
+-- state the operator looked at, or matches nothing and changes nothing.
+-- epoch is monotonic — every freeze and every applied unfreeze bumps it.
+CREATE TABLE IF NOT EXISTS vaduno_freeze (
+  id        INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  epoch     BIGINT  NOT NULL,
+  frozen    BOOLEAN NOT NULL,
+  reason    TEXT,
+  frozen_by TEXT,
+  frozen_at TEXT
+);
+
 -- Audit ledger. The hash chain is computed CLIENT-SIDE (AuditLedger in
 -- @vaduno/guard) — this table persists it, and its two uniqueness rules ARE
 -- the compare-and-append: the primary key admits one row per position, the

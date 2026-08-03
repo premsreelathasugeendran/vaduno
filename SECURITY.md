@@ -34,7 +34,8 @@ does **not** yet cover — so you can decide whether it fits your threat model.
 | Timezone-offset expiry bypass | All timestamps compared as epoch ms via `Date.parse`; unparseable = fail closed |
 | Silent history tampering | Hash-chained ledger; `verify()` re-derives every hash; `verify(retainedHead)` also catches truncation/rewrite |
 | Human-in-the-loop for large spends | `approval` thresholds; **fails closed** if no approval handler is configured |
-| Emergency stop | `freeze()` flips its deny flag synchronously and takes no lock, so it is safe to call — and await — from anywhere, including inside an executor or `revocationCheck`. The flag is re-checked inside the critical section: at entry and again at a last exit before the final `execution_started` audit write, on both the `execute()` and `authorize()` paths. A freeze landing before that last exit denies the payment (a mandate use already consumed by it stays burned: over-hold, never overspend); one landing after it — a blind window of that one audit write plus a scheduler tick — cannot stop that payment, and money already handed to the rail (or an authorization already handed back to the caller) is never recalled: recalling in-flight money would require the control over funds Vaduno must never hold. A freeze whose `guard_frozen` write fails stays enforced locally and flags `isFreezeDegraded()` — it would not survive a restart. Per-process — see Known Limits item 2; a cross-process kill needs `@vaduno/revocation` with a shared registry |
+| Emergency stop | `freeze()` flips its deny flag synchronously and takes no lock, so it is safe to call — and await — from anywhere, including inside an executor or `revocationCheck`. The flag is re-checked inside the critical section: at entry and again at a last exit before the final `execution_started` audit write, on both the `execute()` and `authorize()` paths. A freeze landing before that last exit denies the payment (a mandate use already consumed by it stays burned: over-hold, never overspend); one landing after it — a blind window of that one audit write plus a scheduler tick — cannot stop that payment, and money already handed to the rail (or an authorization already handed back to the caller) is never recalled: recalling in-flight money would require the control over funds Vaduno must never hold. A freeze whose `guard_frozen` write fails stays enforced locally and flags `isFreezeDegraded()` — it would not survive a restart. The LOCAL flag is per-process; for a freeze every process observes, wire a shared `FreezeStore` via `createFreezeCheck` — see Known Limits item 2 for exactly what each half covers |
+| An operator freeze must stop OTHER live processes, not just the one it was issued in | A shared `FreezeStore` (one global row `{epoch, frozen, reason, by, at}` — `MemoryFreezeStore`/`FileFreezeStore` in `@vaduno/revocation`, `PostgresFreezeStore` in `@vaduno/postgres`) consulted on every authorization via `createFreezeCheck(store)` on the `revocationCheck` seam — inside the critical section, after human approval, immediately before the budget reservation. Freezing the store denies every wired process's VERY NEXT authorization; no push, no poll loop, no restart. `unfreeze(expectedEpoch)` is a compare-and-set: every freeze bumps a monotonic epoch, and a stale fence is refused without changing anything, so an operator cannot lift a re-freeze they never saw. Fail closed, loudly: an UNREACHABLE freeze store denies EVERY payment on every wired guard (`FREEZE_CHECK_FAILED`) — a deliberate total stop, which makes the store a hard availability dependency for all payments (see Known Limits item 2). A freeze only denies NEW authorizations: it does not recall in-flight money, and it deliberately does not gate `settle()` — settle records an outcome that already happened, and blocking it would destroy the record of real money rather than prevent any |
 | Compromised agent must be cut off mid-flight | `@vaduno/revocation`: revoking a mandate or an entire agent is checked inside the critical section **after** human approval, so a kill switch pulled while an approval is pending still wins. An unreachable registry denies (`REVOCATION_CHECK_FAILED`) — an outage never reads as "not revoked" |
 | Un-revoking by tampering with a published status list | Status lists are Ed25519-signed with `validUntil` freshness and a monotonic version floor; a forged bitstring, a stale list, or a replayed pre-revocation snapshot all fail closed |
 
@@ -123,23 +124,57 @@ These are documented, not hidden. Some are scope choices; some are on the roadma
      Before 0.3.0 this section told operators to prune through an API that did
      not exist.
 
-2. **`freeze()` is PER-PROCESS.** The kill switch is an in-memory field on the
-   guard instance (`private frozen`). Freezing one process does **not** stop
-   another live process — they keep spending until each is frozen or restarted.
-   `hydrateFromLedger()` restores freeze state at STARTUP from the ledger, so a
-   restart honours it, but nothing propagates to a running peer. Two caveats on
-   the restart path: a restart that never hydrates starts UNFROZEN (a hydrate
-   that is attempted and THROWS denies everything by default until a retry
-   succeeds; set `requireHydration: true` to also cover the restart that never
-   attempts one); and a freeze whose `guard_frozen` append failed was never
-   durable — the live process keeps enforcing it and reports
-   `isFreezeDegraded()`, but a restart would forget it. Re-issue the freeze or
-   repair the ledger before trusting one. This was
-   undocumented before 0.3.0, which is the worst possible combination: an
-   operator pulls the switch, sees it take effect locally, and reasonably
-   concludes spending has stopped. For a targeted kill that a second process
-   observes, use [`@vaduno/revocation`](packages/revocation) with a shared
-   registry — it is checked on the execution path, after approval.
+2. **`guard.freeze()` — the LOCAL flag — is PER-PROCESS; the cross-process
+   freeze is a separate, opt-in wiring.** Since 0.3.0 there are two halves,
+   and they are independent by design:
+   - **Local:** `guard.freeze()` is an in-memory field on the guard instance
+     (`private frozen`). Freezing one process does **not** stop another live
+     process — peers keep spending until each is frozen or restarted. That
+     was the whole kill switch before 0.3.0, and it was undocumented — the
+     worst combination: an operator pulls the switch, sees it take effect
+     locally, and reasonably concludes spending has stopped. Everything
+     documented about it still holds: `hydrateFromLedger()` restores freeze
+     state at STARTUP from the ledger (a restart that never hydrates starts
+     UNFROZEN — an attempted-and-failed hydrate denies until a retry
+     succeeds, and `requireHydration: true` covers the restart that never
+     attempts one), and a freeze whose `guard_frozen` append failed was never
+     durable — the live process keeps enforcing it and reports
+     `isFreezeDegraded()`, but a restart would forget it.
+   - **Cross-process (new in 0.3.0):** wire a shared
+     [`FreezeStore`](packages/revocation) into every guard via
+     `revocationCheck: createFreezeCheck(store)` (compose with `allChecks`
+     where a revocation registry is also in play). A `store.freeze(reason)`
+     then denies every wired process's VERY NEXT authorization
+     (`GUARD_FROZEN`, carrying the reason) — checked inside the critical
+     section, after human approval, before the budget reservation.
+     `unfreeze(expectedEpoch)` is epoch-fenced compare-and-set: a stale fence
+     is refused and changes nothing, so nobody lifts a re-freeze they never
+     evaluated. Backends: `MemoryFreezeStore` (one process — reference
+     semantics), `FileFreezeStore` (several processes on one box; same
+     advisory `FileMutex` and `staleMs` residual as the other file stores),
+     `PostgresFreezeStore` (multi-instance; the compare-and-set is
+     `UPDATE … WHERE epoch = $expected`). Honest evidence status: Memory and
+     File are exercised by the freeze conformance suite on every test run;
+     the Postgres backend's suite is env-gated on
+     `VADUNO_TEST_POSTGRES_URL` and has NOT been exercised against a live
+     database on the machine this was developed on — its live evidence is
+     whatever the CI postgres job reports for the commit you install.
+   - **What stays true either way:** the two halves do not write each other.
+     A local `guard.freeze()` does not touch the shared store, and a store
+     `unfreeze()` cannot clear a peer's local flag — an operator who wants
+     both issues both. A freeze (either kind) only denies NEW authorizations:
+     it never recalls a payment already handed to the rail, and it does not
+     gate `settle()` — blocking settlement would erase the record of money
+     that already moved.
+   - **AVAILABILITY COST, stated loudly:** because the freeze check fails
+     closed, an UNREACHABLE freeze store denies EVERY payment on every wired
+     guard — a total stop. That is the correct posture for a spend firewall
+     ("no money moves" is the recoverable direction, and it matches the
+     revocation registry's stance), but it means the freeze store is a HARD
+     AVAILABILITY DEPENDENCY for all payments the moment you wire it. Deploy
+     it like one. There is deliberately no negative cache and no fail-open
+     mode — a cached "not frozen" served during an outage is precisely how an
+     attacker who can down the backend would disable the kill switch.
 
 3. **Concurrent ledger writers hold since 0.3.0 — within each store's stated
    residual.** Before 0.3.0, `AuditLedger.append` derived `seq = last.seq + 1`
