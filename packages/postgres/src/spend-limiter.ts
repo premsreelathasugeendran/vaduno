@@ -9,6 +9,7 @@ import { inTransaction, toSafeInt, type PgPool } from "./pg.js";
 interface SpendRow {
   amount_minor: string | number;
   occurred_ms: string | number;
+  merchant_key: string | null;
 }
 
 /**
@@ -67,13 +68,24 @@ export class PostgresSpendLimiter implements SpendLimiter {
         };
       }
 
+      // Validate EVERY window before touching the database. A non-finite
+      // windowMs would otherwise reach the SELECT below as a NaN bind
+      // parameter and surface as a driver error rather than the refusal the
+      // other two stores give — same deny direction, wrong reason, and it
+      // would make this package's "SPEND_WINDOW_INVALID in all three stores"
+      // claim false for exactly that input.
+      const configViolation = firstViolatedWindow(req.windows, [], req.amountMinor, req.nowMs, req.merchantKey);
+      if (configViolation && configViolation.code === "SPEND_WINDOW_INVALID") {
+        return { ok: false as const, ...configViolation };
+      }
+
       // Only rows that could still be inside SOME window matter. With no
       // windows there is no rolling limit, so nothing needs loading.
       const widest = req.windows.reduce((m, w) => Math.max(m, w.windowMs), 0);
-      const existing: Array<{ amountMinor: number; ms: number }> = [];
+      const existing: Array<{ amountMinor: number; ms: number; merchantKey?: string }> = [];
       if (req.windows.length > 0) {
         const rows = await client.query<SpendRow>(
-          `SELECT amount_minor, occurred_ms
+          `SELECT amount_minor, occurred_ms, merchant_key
              FROM vaduno_spend
             WHERE scope = $1 AND currency = $2 AND occurred_ms > $3`,
           [req.scope, req.currency, req.nowMs - widest],
@@ -82,6 +94,9 @@ export class PostgresSpendLimiter implements SpendLimiter {
           existing.push({
             amountMinor: toSafeInt(r.amount_minor, "amount_minor"),
             ms: toSafeInt(r.occurred_ms, "occurred_ms"),
+            // NULL (a pre-upgrade row) maps to "no key", which
+            // firstViolatedWindow counts toward EVERY merchant window.
+            ...(typeof r.merchant_key === "string" ? { merchantKey: r.merchant_key } : {}),
           });
         }
       }
@@ -91,19 +106,21 @@ export class PostgresSpendLimiter implements SpendLimiter {
         existing,
         req.amountMinor,
         req.nowMs,
+        req.merchantKey,
       );
       if (violated) return { ok: false as const, ...violated };
 
       await client.query(
         `INSERT INTO vaduno_spend
-           (reservation_id, scope, currency, amount_minor, occurred_ms, state)
-         VALUES ($1, $2, $3, $4, $5, 'reserved')`,
+           (reservation_id, scope, currency, amount_minor, occurred_ms, merchant_key, state)
+         VALUES ($1, $2, $3, $4, $5, $6, 'reserved')`,
         [
           req.reservationId,
           req.scope,
           req.currency,
           req.amountMinor,
           req.nowMs,
+          req.merchantKey ?? null,
         ],
       );
       return { ok: true as const, reservationId: req.reservationId, replayed: false };

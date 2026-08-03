@@ -93,6 +93,7 @@ export class FileSpendLimiter implements SpendLimiter {
         inScope,
         req.amountMinor,
         req.nowMs,
+        req.merchantKey,
       );
       if (violated) return { ok: false as const, ...violated };
 
@@ -102,6 +103,10 @@ export class FileSpendLimiter implements SpendLimiter {
         currency: req.currency,
         amountMinor: req.amountMinor,
         ms: req.nowMs,
+        // Absent (not null) when the caller had none: a 0.3.0-format file and
+        // a new one must mean the same thing — keyless counts toward every
+        // merchant window.
+        ...(req.merchantKey !== undefined ? { merchantKey: req.merchantKey } : {}),
         state: "reserved",
       };
       await this.atomicSave(data);

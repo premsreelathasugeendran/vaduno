@@ -39,6 +39,12 @@ const guard = new VadunoGuard({
 That is the whole change. Every instance pointed at the same database shares one
 budget, one consume-once registry, and one audit ledger.
 
+Re-running `migrate(pool)` on an existing 0.3.0 database is safe and is the
+upgrade path for per-merchant velocity windows: one idempotent
+`ADD COLUMN IF NOT EXISTS merchant_key` on `vaduno_spend`. Existing rows stay
+`NULL`, and a `NULL` row counts toward **every** merchant window until it ages
+out — bounded over-hold instead of a velocity-free upgrade interval.
+
 ## The freeze that binds every instance (new in 0.3.0)
 
 `PostgresFreezeStore` is the multi-instance backend for the shared emergency

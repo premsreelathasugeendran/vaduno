@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { evaluatePolicy, merchantMatches } from "../src/policy/engine.js";
+import { merchantKeyOf } from "../src/enforce/spend-limiter.js";
 import { emptyHistory, makeIntent, makePolicy } from "./helpers.js";
 
 describe("evaluatePolicy", () => {
@@ -255,5 +256,133 @@ describe("timestamp handling (non-UTC offsets fail closed)", () => {
     );
     expect(result.decision).toBe("deny");
     expect(result.reasons.map((r) => r.code)).toContain("INVALID_AMOUNT");
+  });
+});
+
+describe("velocity v2: multi-window and per-merchant counts", () => {
+  it("the existing single-object maxTransactions shape still enforces (backward compat)", async () => {
+    // Same shape as the long-standing test above — kept SEPARATELY so array
+    // support can never quietly redefine the single-object contract.
+    const history = {
+      async totalsSince() {
+        return { totalMinor: 100, count: 3 };
+      },
+    };
+    const result = await evaluatePolicy(
+      makeIntent(),
+      makePolicy({ velocity: { maxTransactions: { count: 3, perSeconds: 60 } } }),
+      history,
+    );
+    expect(result.decision).toBe("deny");
+    expect(result.reasons.map((r) => r.code)).toContain("VELOCITY_EXCEEDED");
+  });
+
+  it("an ARRAY of count limits enforces every listed window (burst AND sustained)", async () => {
+    const history = {
+      async totalsSince() {
+        return { totalMinor: 100, count: 5 };
+      },
+    };
+    const result = await evaluatePolicy(
+      makeIntent(),
+      makePolicy({
+        velocity: {
+          maxTransactions: [
+            { count: 10, perSeconds: 60 },     // burst window: room to spare
+            { count: 5, perSeconds: 86_400 },  // sustained window: full
+          ],
+        },
+      }),
+      history,
+    );
+    expect(result.decision).toBe("deny");
+    const velocity = result.reasons.filter((r) => r.code === "VELOCITY_EXCEEDED");
+    expect(velocity).toHaveLength(1);
+    expect(velocity[0]!.message).toContain("limit is 5");
+  });
+
+  it("per-merchant windows deny via merchantCountSince when the merchant is saturated", async () => {
+    const history = {
+      async totalsSince() {
+        return { totalMinor: 0, count: 0 };
+      },
+      async merchantCountSince(_a: string, merchantKey: string) {
+        return { count: merchantKey === "host:api.openai.com" ? 5 : 0 };
+      },
+    };
+    const saturated = await evaluatePolicy(
+      makeIntent({ merchant: { id: "openai", url: "https://api.openai.com/v1" } }),
+      makePolicy({ velocity: { maxTransactionsPerMerchant: { count: 5, perSeconds: 3_600 } } }),
+      history,
+    );
+    expect(saturated.decision).toBe("deny");
+    expect(saturated.reasons.map((r) => r.code)).toContain("MERCHANT_VELOCITY_EXCEEDED");
+
+    const other = await evaluatePolicy(
+      makeIntent({ merchant: { id: "aws", url: "https://aws.amazon.com/pay" } }),
+      makePolicy({ velocity: { maxTransactionsPerMerchant: { count: 5, perSeconds: 3_600 } } }),
+      history,
+    );
+    expect(other.decision).toBe("allow");
+  });
+
+  it("a history WITHOUT merchantCountSince skips the merchant check (advisory only — the limiter still enforces)", async () => {
+    const result = await evaluatePolicy(
+      makeIntent(),
+      makePolicy({ velocity: { maxTransactionsPerMerchant: { count: 1, perSeconds: 3_600 } } }),
+      emptyHistory, // totalsSince only
+    );
+    expect(result.decision).toBe("allow");
+  });
+
+  it("malformed velocity config denies SPEND_WINDOW_INVALID instead of enforcing nothing", async () => {
+    const cases = [
+      { maxTransactions: { count: Number.NaN, perSeconds: 60 } },
+      { maxTransactions: { count: 5, perSeconds: 0 } },
+      { maxTransactions: { count: 0, perSeconds: 60 } },
+      { maxTransactions: { count: 2.5, perSeconds: 60 } },
+      // Type-illegal runtime shapes a JSON config can smuggle in: never
+      // coerced, always refused.
+      { maxTransactions: "5" as unknown as { count: number; perSeconds: number } },
+      { maxTransactionsPerMerchant: { count: Number.NaN, perSeconds: 60 } },
+    ];
+    for (const velocity of cases) {
+      const result = await evaluatePolicy(
+        makeIntent(),
+        makePolicy({ velocity }),
+        emptyHistory,
+      );
+      expect(result.decision, JSON.stringify(velocity)).toBe("deny");
+      expect(
+        result.reasons.map((r) => r.code),
+        JSON.stringify(velocity),
+      ).toContain("SPEND_WINDOW_INVALID");
+    }
+  });
+});
+
+describe("merchantKeyOf: the ONE merchant-identity function", () => {
+  it("URL host wins, normalized: lowercased, trailing FQDN dot stripped", () => {
+    expect(merchantKeyOf({ id: "stripe", url: "https://API.Stripe.com./v1" })).toBe(
+      "host:api.stripe.com",
+    );
+  });
+
+  it("no url falls back to the trimmed, lowercased id", () => {
+    expect(merchantKeyOf({ id: "x" })).toBe("id:x");
+    expect(merchantKeyOf({ id: "  OpenAI  " })).toBe("id:openai");
+  });
+
+  it("an id crafted to look like a host key cannot collide with a url-derived key", () => {
+    // The two prefix families are disjoint by construction.
+    expect(merchantKeyOf({ id: "host:evil" })).toBe("id:host:evil");
+    expect(merchantKeyOf({ id: "host:evil" })).not.toBe(
+      merchantKeyOf({ id: "anything", url: "https://evil" }),
+    );
+  });
+
+  it("an unparseable or hostless url falls back to the id family", () => {
+    expect(merchantKeyOf({ id: "x", url: "::not a url::" })).toBe("id:x");
+    expect(merchantKeyOf({ id: "x", url: "file:///local/path" })).toBe("id:x");
   });
 });

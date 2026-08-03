@@ -11,7 +11,7 @@
  * container; see .github/workflows/ci.yml. Without the URL the suite SKIPS —
  * and says so, loudly, because a silent skip reads as a pass.
  */
-import { describe, it } from "vitest";
+import { describe, expect, it } from "vitest";
 // The class the conformance suite's handles are typed as. Imported from guard
 // SOURCE (like the suites themselves), not "@vaduno/guard": AuditLedger has
 // private fields, so the dist declaration is not assignable to the src one.
@@ -83,6 +83,93 @@ if (!URL) {
         ],
       };
     },
+  });
+
+  describe("merchant_key migration over an EXISTING vaduno_spend", () => {
+    const HOUR_MS = 3_600_000;
+    const merchantWindow = {
+      code: "MERCHANT_VELOCITY_EXCEEDED",
+      windowMs: HOUR_MS,
+      maxCount: 1,
+      dimension: "merchant" as const,
+    };
+
+    it("ADD COLUMN IF NOT EXISTS upgrades a pre-velocity table in place", async () => {
+      await reset();
+      // Recreate the 0.3.0 shape: the table exists, the column does not.
+      await poolA.query("ALTER TABLE vaduno_spend DROP COLUMN IF EXISTS merchant_key");
+      await migrate(poolA);
+      const cols = await poolA.query<{ column_name: string }>(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 'vaduno_spend'",
+      );
+      expect(cols.rows.map((r) => r.column_name)).toContain("merchant_key");
+    });
+
+    it("NULL (pre-upgrade) rows count toward EVERY merchant window", async () => {
+      await reset();
+      const T0 = 1_700_000_000_000;
+      // A row exactly as 0.3.0 wrote it: no merchant_key value at all.
+      await poolA.query(
+        `INSERT INTO vaduno_spend
+           (reservation_id, scope, currency, amount_minor, occurred_ms, state)
+         VALUES ('legacy-1', 'policy-1', 'USD', 100, $1, 'committed')`,
+        [T0],
+      );
+      const limiter = new PostgresSpendLimiter(poolB);
+      const refused = await limiter.reserve({
+        scope: "policy-1",
+        currency: "USD",
+        amountMinor: 100,
+        reservationId: "new-1",
+        windows: [merchantWindow],
+        merchantKey: "host:never-seen.example",
+        nowMs: T0 + 1,
+      });
+      expect(refused.ok).toBe(false);
+      if (!refused.ok) expect(refused.code).toBe("MERCHANT_VELOCITY_EXCEEDED");
+    });
+
+    it("merchant_key round-trips: written by one handle, enforced by the other", async () => {
+      await reset();
+      const T0 = 1_700_000_000_000;
+      const a = new PostgresSpendLimiter(poolA);
+      const b = new PostgresSpendLimiter(poolB);
+      const ok = await a.reserve({
+        scope: "policy-1",
+        currency: "USD",
+        amountMinor: 100,
+        reservationId: "rt-1",
+        windows: [merchantWindow],
+        merchantKey: "host:rt.example",
+        nowMs: T0,
+      });
+      expect(ok.ok).toBe(true);
+      const stored = await poolA.query<{ merchant_key: string | null }>(
+        "SELECT merchant_key FROM vaduno_spend WHERE reservation_id = 'rt-1'",
+      );
+      expect(stored.rows[0]?.merchant_key).toBe("host:rt.example");
+
+      const same = await b.reserve({
+        scope: "policy-1",
+        currency: "USD",
+        amountMinor: 100,
+        reservationId: "rt-2",
+        windows: [merchantWindow],
+        merchantKey: "host:rt.example",
+        nowMs: T0 + 1,
+      });
+      expect(same.ok).toBe(false);
+      const other = await b.reserve({
+        scope: "policy-1",
+        currency: "USD",
+        amountMinor: 100,
+        reservationId: "rt-3",
+        windows: [merchantWindow],
+        merchantKey: "host:other.example",
+        nowMs: T0 + 1,
+      });
+      expect(other.ok).toBe(true);
+    });
   });
 
   runConsumeStoreConformance({

@@ -6,6 +6,46 @@ This project is pre-1.0. Under semver, 0.x minor bumps may break the API. Two
 have, and each was breaking because the fix for a real security bug required it.
 See [`SECURITY.md`](SECURITY.md) for what is and isn't guaranteed.
 
+## Unreleased
+
+### Added
+
+- **Merchant-scoped, multi-window velocity controls.**
+  `velocity.maxTransactions` now also accepts an ARRAY of count limits (burst
+  AND sustained, all enforced), and the new
+  `velocity.maxTransactionsPerMerchant` (same shapes) counts per merchant,
+  denying `MERCHANT_VELOCITY_EXCEEDED`. Merchant identity is the exported
+  `merchantKeyOf()` — URL host when present, else the id, in two disjoint
+  prefix families — and it is ONE function so the limiter and any future
+  consumer cannot disagree about which merchant a spend belongs to. Counts
+  ride the existing atomic `reserve()` step in all three stores (memory,
+  file, Postgres — one idempotent `ADD COLUMN IF NOT EXISTS merchant_key`),
+  so they inherit the same cross-process atomicity amounts have. A
+  merchant-dimension window with no merchant key on the request denies
+  `MERCHANT_KEY_MISSING`, never skips; records written before merchant
+  attribution (including Postgres NULL rows) count toward EVERY merchant
+  window until they age out. Per-merchant velocity alone is NOT a security
+  boundary — merchant fields are attacker-controlled and rotation mints
+  fresh per-merchant budgets; it is a tightening layered UNDER global count
+  windows (which are rotation-proof) and the allowlist. Scope stays
+  `policy.id`, so agentId rotation mints no count budget.
+
+### Fixed
+
+- **Malformed spend-window config silently enforced NOTHING (fail-open).**
+  In 0.3.0, a window configured with `maxCount: NaN` or `windowMs: 0`
+  (e.g. `velocity: { maxTransactions: { count: NaN, perSeconds: 60 } }`)
+  made every comparison in the evaluation loop false — the window LOOKED
+  configured and enforced nothing, in the policy engine and in every store.
+  Every window's configuration is now validated before any cap or count
+  check (`windowConfigError()`, exported); one malformed window refuses
+  everything under that policy with `SPEND_WINDOW_INVALID`, in the advisory
+  engine AND all three stores. Corrupted config is now a DoS the operator
+  notices, never an uncapped budget. (`maxCount: 0` — which previously
+  refused, but with the window's own code — is also rejected as invalid
+  config: a zero-slot window is "deny everything", and the denial should
+  say so.)
+
 ## 0.3.0 — 2026-08-03
 
 ### Added

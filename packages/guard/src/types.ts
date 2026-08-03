@@ -67,6 +67,20 @@ export interface PolicyResult {
 }
 
 /**
+ * One transaction-count limit over a rolling window ending "now".
+ *
+ * The analogue of a card network's velocity rule (transactions per hour/day),
+ * enforced deterministically at THIS deployment — nothing here configures or
+ * claims network-side enforcement.
+ */
+export interface CountLimit {
+  /** Max transactions (reserved + committed) inside the window. Positive integer. */
+  count: number;
+  /** Window length in seconds, counted back from now. */
+  perSeconds: number;
+}
+
+/**
  * Declarative spend policy. All checks are deterministic — no model calls.
  * Windows (day/week/month) are ROLLING: last 24h / 7d / 30d from "now".
  */
@@ -102,8 +116,24 @@ export interface SpendPolicy {
     always?: boolean;
   };
   velocity?: {
-    /** Max number of executed transactions within the window. */
-    maxTransactions?: { count: number; perSeconds: number };
+    /**
+     * Max transaction count within the window, scope-wide. A single limit, or
+     * an ARRAY of limits that are ALL enforced — a burst window and a
+     * sustained window layered on one policy. Denies with VELOCITY_EXCEEDED.
+     *
+     * Scope stays `policy.id`, so agentId rotation mints no count budget.
+     */
+    maxTransactions?: CountLimit | CountLimit[];
+    /**
+     * Same shapes, counted PER MERCHANT (see `merchantKeyOf`). Denies with
+     * MERCHANT_VELOCITY_EXCEEDED.
+     *
+     * Per-merchant velocity alone is NOT a security boundary — merchant
+     * fields are attacker-controlled and rotation mints fresh per-merchant
+     * budgets. It is a tightening layered UNDER global count windows (which
+     * are rotation-proof) and the allowlist.
+     */
+    maxTransactionsPerMerchant?: CountLimit | CountLimit[];
   };
   /** ISO timestamp after which the policy denies everything. */
   expiresAt?: string;
@@ -126,6 +156,21 @@ export interface SpendHistory {
     sinceIso: string,
     currency: string,
   ): Promise<{ totalMinor: number; count: number }>;
+  /**
+   * Transactions since `sinceIso` attributed to ONE merchant (a `merchantKeyOf`
+   * key). An entry recorded without a merchant key must count toward EVERY
+   * merchant — deny over guess.
+   *
+   * OPTIONAL, and its absence is an ADVISORY skip only: the policy engine
+   * then skips its per-merchant fast-fail, while the atomic `SpendLimiter`
+   * still enforces every merchant window authoritatively at reserve time.
+   */
+  merchantCountSince?(
+    agentId: string,
+    merchantKey: string,
+    sinceIso: string,
+    currency: string,
+  ): Promise<{ count: number }>;
 }
 
 /**
@@ -144,6 +189,18 @@ export interface SpendWindow {
   capMinor?: number;
   /** Max transaction COUNT in the window. Omit for an amount-only window. */
   maxCount?: number;
+  /**
+   * Which records this window counts. "scope" (the default) counts every
+   * record in the budget scope. "merchant" counts only records whose
+   * merchantKey matches the request's — plus every record that has NO
+   * merchantKey (pre-upgrade rows), which counts toward every merchant:
+   * bounded over-hold that self-heals as those records age out, rather than
+   * a velocity-free upgrade interval.
+   *
+   * A "merchant" window with no `merchantKey` on the request is a
+   * MERCHANT_KEY_MISSING denial, never a skip.
+   */
+  dimension?: "scope" | "merchant";
 }
 
 export interface ReserveRequest {
@@ -172,6 +229,16 @@ export interface ReserveRequest {
   reservationId: string;
   /** Every window must pass. Empty means "no rolling limits configured". */
   windows: SpendWindow[];
+  /**
+   * Merchant identity for "merchant"-dimension windows, derived via
+   * `merchantKeyOf()` — the ONE function every component must share, so the
+   * limiter and any future risk scorer are structurally incapable of
+   * disagreeing about which merchant a spend belongs to.
+   *
+   * If any window counts per merchant and this is absent, the reserve is
+   * refused MERCHANT_KEY_MISSING — a missing key is a denial, never a skip.
+   */
+  merchantKey?: string;
   nowMs: number;
 }
 

@@ -1,5 +1,7 @@
 import { parseMs } from "../util/time.js";
+import { merchantKeyOf, windowConfigError } from "../enforce/spend-limiter.js";
 import type {
+  CountLimit,
   PaymentIntent,
   PolicyReason,
   PolicyResult,
@@ -9,6 +11,30 @@ import type {
 } from "../types.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** One limit or several — every listed limit is a window of its own. */
+function countLimits(v: CountLimit | CountLimit[] | undefined | null): CountLimit[] {
+  if (v === undefined || v === null) return [];
+  return Array.isArray(v) ? v : [v];
+}
+
+/**
+ * Non-numbers become NaN, NEVER coerced (a string "5" from a JSON config is
+ * config corruption, not five) — the NaN then fails windowConfigError and the
+ * whole policy refuses, which is the fail-closed path for poisoned config.
+ */
+function numOrNaN(x: unknown): number {
+  return typeof x === "number" ? x : Number.NaN;
+}
+
+function countWindow(limit: CountLimit, code: string): SpendWindow {
+  const l = limit as { count?: unknown; perSeconds?: unknown } | null;
+  return {
+    code,
+    windowMs: numOrNaN(l?.perSeconds) * 1000,
+    maxCount: numOrNaN(l?.count),
+  };
+}
 
 /**
  * The rolling constraints a policy implies, in ONE place.
@@ -30,12 +56,14 @@ export function policyWindows(policy: SpendPolicy): SpendWindow[] {
     if (capMinor === undefined) continue;
     windows.push({ code, windowMs, capMinor });
   }
-  const v = policy.velocity?.maxTransactions;
-  if (v) {
+  const velocity = policy.velocity ?? {};
+  for (const limit of countLimits(velocity.maxTransactions)) {
+    windows.push(countWindow(limit, "VELOCITY_EXCEEDED"));
+  }
+  for (const limit of countLimits(velocity.maxTransactionsPerMerchant)) {
     windows.push({
-      code: "VELOCITY_EXCEEDED",
-      windowMs: v.perSeconds * 1000,
-      maxCount: v.count,
+      ...countWindow(limit, "MERCHANT_VELOCITY_EXCEEDED"),
+      dimension: "merchant",
     });
   }
   return windows;
@@ -160,9 +188,41 @@ export async function evaluatePolicy(
   // check is the guard's atomic `SpendLimiter.reserve()` immediately before
   // execution. Both derive their windows from `policyWindows()` so the two can
   // never disagree about what the caps are.
-  for (const w of policyWindows(policy)) {
+  const windows = policyWindows(policy);
+  // Config validity comes BEFORE any window arithmetic, here exactly as in
+  // the limiter: a malformed window makes its comparisons silently false, so
+  // it must refuse the whole policy instead of enforcing nothing.
+  const misconfigured = windows
+    .map((w) => ({ w, problem: windowConfigError(w) }))
+    .find((x): x is { w: SpendWindow; problem: string } => x.problem !== null);
+  if (misconfigured) {
+    reasons.push({
+      code: "SPEND_WINDOW_INVALID",
+      message: `window "${misconfigured.w.code}" is misconfigured (${misconfigured.problem}); refusing everything under this policy rather than enforcing nothing`,
+    });
+  }
+  for (const w of misconfigured ? [] : windows) {
     if (w.capMinor !== undefined && !amountValid) continue;
     const since = new Date(nowMs - w.windowMs).toISOString();
+    if (w.dimension === "merchant") {
+      // Advisory-only skip when the history cannot attribute spend to a
+      // merchant: the atomic limiter still enforces this window at reserve
+      // time, with MERCHANT_KEY_MISSING as the deny for an unkeyed request.
+      if (!history.merchantCountSince) continue;
+      const { count } = await history.merchantCountSince(
+        intent.agentId,
+        merchantKeyOf(intent.merchant),
+        since,
+        policy.currency,
+      );
+      if (w.maxCount !== undefined && count + 1 > w.maxCount) {
+        reasons.push({
+          code: w.code,
+          message: `${count} transactions for this merchant in window; limit is ${w.maxCount}`,
+        });
+      }
+      continue;
+    }
     const { totalMinor, count } = await history.totalsSince(
       intent.agentId,
       since,

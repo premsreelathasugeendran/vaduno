@@ -1,5 +1,5 @@
 import { evaluatePolicy, policyWindows } from "./policy/engine.js";
-import { MemorySpendLimiter } from "./enforce/spend-limiter.js";
+import { MemorySpendLimiter, merchantKeyOf } from "./enforce/spend-limiter.js";
 import type { AuditLedger, LedgerEntry } from "./ledger/ledger.js";
 import type { MandateManager } from "./mandate/mandate.js";
 import type {
@@ -135,6 +135,8 @@ export class VadunoGuard {
     ms: number;
     amountMinor: number;
     currency: string;
+    /** merchantKeyOf() key. Absent on rows hydrated from a pre-velocity ledger. */
+    merchantKey?: string;
   }> = [];
   private readonly usingInMemoryHistory: boolean;
   private auditDegraded = false;
@@ -391,6 +393,7 @@ export class VadunoGuard {
         amountMinor: number;
         currency: string;
         merchantId: string;
+        merchantKey?: string;
         rail: string;
       } | null = null;
       let agentId = "";
@@ -401,6 +404,7 @@ export class VadunoGuard {
           amountMinor?: unknown;
           currency?: unknown;
           merchantId?: unknown;
+          merchantKey?: unknown;
           rail?: unknown;
         };
         if (
@@ -414,6 +418,11 @@ export class VadunoGuard {
             currency: d.currency,
             merchantId: d.merchantId,
             rail: d.rail,
+            // OPTIONAL on purpose: an authorization row written before
+            // merchant velocity existed has no key, and its settle row must
+            // still be countable — it lands keyless and counts toward every
+            // merchant window rather than escaping them.
+            ...(typeof d.merchantKey === "string" ? { merchantKey: d.merchantKey } : {}),
           };
         }
       }
@@ -468,6 +477,21 @@ export class VadunoGuard {
           count += 1;
         }
         return { totalMinor, count };
+      },
+      merchantCountSince: async (_agentId, merchantKey, sinceIso, currency) => {
+        const sinceMs = Date.parse(sinceIso);
+        const want = currency.toUpperCase();
+        let count = 0;
+        for (const e of this.executed) {
+          if (e.ms < sinceMs) continue;
+          if (e.currency.toUpperCase() !== want) continue;
+          // A keyless entry (hydrated from a pre-velocity ledger row) counts
+          // toward EVERY merchant — deny over guess, self-heals as it ages
+          // out of the window.
+          if (e.merchantKey !== undefined && e.merchantKey !== merchantKey) continue;
+          count += 1;
+        }
+        return { count };
       },
     };
   }
@@ -540,7 +564,12 @@ export class VadunoGuard {
     }
     const entries = await this.ledger.all();
 
-    const executed: Array<{ ms: number; amountMinor: number; currency: string }> = [];
+    const executed: Array<{
+      ms: number;
+      amountMinor: number;
+      currency: string;
+      merchantKey?: string;
+    }> = [];
     let restoredSpendRows = 0;
     let skippedUnparseableSpendRows = 0;
     if (this.usingInMemoryHistory) {
@@ -554,7 +583,12 @@ export class VadunoGuard {
           skippedUnparseableSpendRows += 1;
           continue;
         }
-        const d = data as { success?: unknown; amountMinor?: unknown; currency?: unknown };
+        const d = data as {
+          success?: unknown;
+          amountMinor?: unknown;
+          currency?: unknown;
+          merchantKey?: unknown;
+        };
         // Failed/denied attempts are not spend — not restored, not "skipped".
         if (d.success !== true) continue;
         // Skip malformed rows rather than poisoning the counter with NaN
@@ -574,6 +608,10 @@ export class VadunoGuard {
           ms: Date.parse(entry.timestamp),
           amountMinor: d.amountMinor as number,
           currency: d.currency,
+          // A row with no usable merchantKey (every pre-velocity row) is
+          // restored KEYLESS, and a keyless entry counts toward every
+          // merchant window — the upgrade has no velocity-free interval.
+          ...(typeof d.merchantKey === "string" ? { merchantKey: d.merchantKey } : {}),
         });
         restoredSpendRows += 1;
       }
@@ -946,6 +984,11 @@ export class VadunoGuard {
     //
     // The reservation, not `evaluatePolicy`, is what actually enforces the
     // cap: evaluatePolicy reads totals and is check-then-act by construction.
+    //
+    // Derived from the SAFE snapshot via merchantKeyOf() — the one shared
+    // merchant-identity function — so the limiter's merchant windows and the
+    // advisory engine cannot disagree about which merchant this spend is.
+    const merchantKey = merchantKeyOf(intent.merchant);
     const reservation = await this.limiter.reserve({
       // The POLICY id, never intent.agentId. The threat model assumes the agent
       // controls every field of the intent, so scoping a cap by agentId lets a
@@ -959,6 +1002,7 @@ export class VadunoGuard {
       // the budget one refused attempt at a time.
       reservationId: intent.id,
       windows: policyWindows(this.policy),
+      merchantKey,
       nowMs: this.now().getTime(),
     });
     if (!reservation.ok) {
@@ -1060,10 +1104,13 @@ export class VadunoGuard {
     // Snapshot the money-affecting fields BEFORE calling the executor, so the
     // counted/recorded amount is exactly what policy checked — independent of
     // any mutation the executor might make to the passed object.
+    // merchantKey rides along so a restart (hydrateFromLedger) can rebuild
+    // per-merchant counts from the rows this snapshot lands in.
     const recorded = {
       amountMinor: intent.amount.amountMinor,
       currency: intent.amount.currency,
       merchantId: intent.merchant.id,
+      merchantKey,
       rail: intent.rail,
     };
 
@@ -1190,6 +1237,7 @@ export class VadunoGuard {
         ms: this.now().getTime(),
         amountMinor: recorded.amountMinor,
         currency: recorded.currency,
+        merchantKey: recorded.merchantKey,
       });
     }
 
@@ -1438,6 +1486,39 @@ export function ledgerSpendHistory(
         count += 1;
       }
       return { totalMinor, count };
+    },
+    async merchantCountSince(_agentId, merchantKey, sinceIso, currency) {
+      const entries = await ledger.all();
+      let count = 0;
+      const wantCurrency = currency.toUpperCase();
+      for (const entry of entries) {
+        if (entry.type !== "execution_result") continue;
+        if (entry.timestamp < sinceIso) continue;
+        const data = entry.data;
+        if (data === null || typeof data !== "object") {
+          surface(entry, "data is not an object");
+          continue;
+        }
+        const d = data as {
+          success?: unknown;
+          currency?: unknown;
+          merchantKey?: unknown;
+        };
+        if (d.success !== true) continue;
+        if (typeof d.currency !== "string") {
+          surface(entry, "currency is not a string");
+          continue;
+        }
+        if (d.currency.toUpperCase() !== wantCurrency) continue;
+        // A row with no usable merchantKey — every row written before
+        // merchant velocity existed — counts toward EVERY merchant: deny
+        // over guess, ages out of the window on its own.
+        if (typeof d.merchantKey === "string" && d.merchantKey !== merchantKey) {
+          continue;
+        }
+        count += 1;
+      }
+      return { count };
     },
   };
 }

@@ -40,6 +40,7 @@ export interface SpendLimiterHarness {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
 const SCOPE = "policy-1";
 const CUR = "USD";
 
@@ -50,11 +51,27 @@ const dayCap = (capMinor: number): SpendWindow => ({
   capMinor,
 });
 
+/** A scope-wide transaction-count window. */
+const countWindow = (maxCount: number, windowMs = HOUR_MS): SpendWindow => ({
+  code: "VELOCITY_EXCEEDED",
+  windowMs,
+  maxCount,
+});
+
+/** A per-merchant transaction-count window. */
+const merchantWindow = (maxCount: number, windowMs = HOUR_MS): SpendWindow => ({
+  code: "MERCHANT_VELOCITY_EXCEEDED",
+  windowMs,
+  maxCount,
+  dimension: "merchant",
+});
+
 function req(
   id: string,
   amountMinor: number,
   windows: SpendWindow[],
   nowMs: number,
+  merchantKey?: string,
 ): ReserveRequest {
   return {
     scope: SCOPE,
@@ -62,6 +79,7 @@ function req(
     amountMinor,
     reservationId: id,
     windows,
+    ...(merchantKey !== undefined ? { merchantKey } : {}),
     nowMs,
   };
 }
@@ -246,6 +264,150 @@ export function runSpendLimiterConformance(harness: SpendLimiterHarness): void {
       });
     });
 
+    // ---- merchant-dimension windows ----------------------------------------
+
+    it("MERCHANT: the third same-merchant reserve is refused; a different merchant in the same scope still fits", async () => {
+      // Kills scope-wide counting: if the window ignored merchantKey, the
+      // fourth reserve would be refused too.
+      await withLimiter(async ([l]) => {
+        const w = [merchantWindow(2)];
+        expect((await l.reserve(req("a", 100, w, T0, "host:a.example"))).ok).toBe(true);
+        expect((await l.reserve(req("b", 100, w, T0, "host:a.example"))).ok).toBe(true);
+        const third = await l.reserve(req("c", 100, w, T0, "host:a.example"));
+        expect(third.ok).toBe(false);
+        if (!third.ok) expect(third.code).toBe("MERCHANT_VELOCITY_EXCEEDED");
+        expect((await l.reserve(req("d", 100, w, T0, "host:b.example"))).ok).toBe(true);
+      });
+    });
+
+    it("MERCHANT: a merchant window with no merchantKey on the request refuses MERCHANT_KEY_MISSING — deny, never skip", async () => {
+      // Kills skip-and-allow: omitting the key must not opt a caller out of
+      // the window.
+      await withLimiter(async ([l]) => {
+        const r = await l.reserve(req("a", 100, [merchantWindow(5)], T0));
+        expect(r.ok).toBe(false);
+        if (!r.ok) expect(r.code).toBe("MERCHANT_KEY_MISSING");
+      });
+    });
+
+    it("MERCHANT: a keyless (pre-upgrade) record counts toward EVERY merchant window", async () => {
+      await withLimiter(async ([l]) => {
+        // Seeded the way a 0.3.0 deployment would have: no merchant windows
+        // configured, no merchantKey supplied.
+        expect((await l.reserve(req("legacy", 100, [dayCap(50_000)], T0))).ok).toBe(true);
+        const w = [merchantWindow(1)];
+        const a = await l.reserve(req("a", 100, w, T0, "host:a.example"));
+        expect(a.ok).toBe(false);
+        if (!a.ok) expect(a.code).toBe("MERCHANT_VELOCITY_EXCEEDED");
+        const b = await l.reserve(req("b", 100, w, T0, "host:b.example"));
+        expect(b.ok).toBe(false);
+        if (!b.ok) expect(b.code).toBe("MERCHANT_VELOCITY_EXCEEDED");
+      });
+    });
+
+    it("SLOTS: a release frees its slot; a committed slot never frees", async () => {
+      // Kills decrement-on-any-release: real (committed) money must keep its
+      // slot even through a mistaken release.
+      await withLimiter(async ([l]) => {
+        const w = [countWindow(2)];
+        expect((await l.reserve(req("a", 100, w, T0))).ok).toBe(true);
+        expect((await l.reserve(req("b", 100, w, T0))).ok).toBe(true);
+        expect((await l.reserve(req("c", 100, w, T0))).ok).toBe(false);
+        await l.release("b");
+        expect((await l.reserve(req("c", 100, w, T0))).ok).toBe(true);
+        await l.commit("a");
+        await l.release("a"); // must be refused/ignored
+        const d = await l.reserve(req("d", 100, w, T0));
+        expect(d.ok).toBe(false);
+        if (!d.ok) expect(d.code).toBe("VELOCITY_EXCEEDED");
+      });
+    });
+
+    it("SLOTS: re-reserving the same id against a FULL count window replays and consumes zero extra slots", async () => {
+      await withLimiter(async ([l]) => {
+        const w = [countWindow(2)];
+        expect((await l.reserve(req("a", 100, w, T0))).ok).toBe(true);
+        expect((await l.reserve(req("b", 100, w, T0))).ok).toBe(true);
+        const again = await l.reserve(req("a", 100, w, T0));
+        expect(again.ok).toBe(true);
+        if (again.ok) expect(again.replayed).toBe(true);
+        const t = await l.totalsSince(SCOPE, new Date(T0 - DAY_MS).toISOString(), CUR);
+        expect(t.count).toBe(2);
+      });
+    });
+
+    it("MULTI-WINDOW: burst AND sustained count limits are both enforced", async () => {
+      await withLimiter(async ([l]) => {
+        const w = [countWindow(10, 60_000), countWindow(3, DAY_MS)];
+        for (const id of ["a", "b", "c"]) {
+          expect((await l.reserve(req(id, 100, w, T0))).ok).toBe(true);
+        }
+        const fourth = await l.reserve(req("d", 100, w, T0));
+        expect(fourth.ok).toBe(false);
+        if (!fourth.ok) {
+          expect(fourth.code).toBe("VELOCITY_EXCEEDED");
+          // The SUSTAINED window (limit 3) is the one that refused, not the
+          // burst window with room for 10.
+          expect(fourth.message).toContain("limit is 3");
+        }
+      });
+    });
+
+    // ---- malformed window config: the fail-open this build closes ----------
+
+    it("FAIL CLOSED: a malformed window refuses SPEND_WINDOW_INVALID rather than enforcing nothing", async () => {
+      // In 0.3.0, maxCount: NaN and windowMs: 0 each silently enforced
+      // NOTHING (every NaN/empty-window comparison is false = allowed).
+      // maxCount: 0 refused, but with the window's own code; it is invalid
+      // config and must say so. This test MUST fail against that code.
+      await withLimiter(async ([l]) => {
+        const cases: Array<[string, SpendWindow]> = [
+          ["maxCount NaN", { code: "VELOCITY_EXCEEDED", windowMs: HOUR_MS, maxCount: Number.NaN }],
+          ["windowMs 0", { code: "VELOCITY_EXCEEDED", windowMs: 0, maxCount: 1 }],
+          ["maxCount 0", { code: "VELOCITY_EXCEEDED", windowMs: HOUR_MS, maxCount: 0 }],
+          ["maxCount 2.5", { code: "VELOCITY_EXCEEDED", windowMs: HOUR_MS, maxCount: 2.5 }],
+          ["no cap, no count", { code: "PER_DAY_LIMIT_EXCEEDED", windowMs: DAY_MS }],
+        ];
+        for (const [note, w] of cases) {
+          const r = await l.reserve(req(`bad-${note}`, 100, [w], T0));
+          expect(r.ok, note).toBe(false);
+          if (!r.ok) expect(r.code, note).toBe("SPEND_WINDOW_INVALID");
+        }
+      });
+    });
+
+    it("FAIL CLOSED: one malformed window poisons the whole request even when other windows would pass", async () => {
+      await withLimiter(async ([l]) => {
+        const w = [dayCap(50_000), { code: "VELOCITY_EXCEEDED", windowMs: HOUR_MS, maxCount: Number.NaN }];
+        const r = await l.reserve(req("a", 100, w, T0));
+        expect(r.ok).toBe(false);
+        if (!r.ok) expect(r.code).toBe("SPEND_WINDOW_INVALID");
+        // The refusal reserved nothing.
+        const t = await l.totalsSince(SCOPE, new Date(T0 - DAY_MS).toISOString(), CUR);
+        expect(t.count).toBe(0);
+      });
+    });
+
+    it("FAIL CLOSED: config validation runs before ANY cap check, so a malformed window is reported even behind a window that would itself refuse", async () => {
+      // The distinguishing case for "validate EVERY window BEFORE any cap or
+      // count check". An implementation that validates each window inline —
+      // check window 0, then window 1 — passes every other test in this file:
+      // it returns window 0's own refusal and never reaches the malformed
+      // window 1. Same deny direction, but the operator is told their spend
+      // exceeded a cap when the truth is their config is broken, and they go
+      // looking for the wrong thing.
+      await withLimiter(async ([l]) => {
+        const w: SpendWindow[] = [
+          // Would refuse on its own: the request is larger than the cap.
+          { code: "PER_DAY_LIMIT_EXCEEDED", windowMs: DAY_MS, capMinor: 50 },
+          { code: "VELOCITY_EXCEEDED", windowMs: HOUR_MS, maxCount: Number.NaN },
+        ];
+        const r = await l.reserve(req("ordering", 100, w, T0));
+        expect(r.ok).toBe(false);
+        if (!r.ok) expect(r.code).toBe("SPEND_WINDOW_INVALID");
+      });
+    });
+
     // ---- pruning -----------------------------------------------------------
 
     it("pruneBefore removes only reservations older than the cutoff", async () => {
@@ -333,6 +495,63 @@ export function runSpendLimiterConformance(harness: SpendLimiterHarness): void {
           ),
         );
         expect(results.filter((r) => r.ok)).toHaveLength(3);
+      });
+    });
+
+    it("CONCURRENCY: a per-merchant count window holds under parallel load", async () => {
+      // Counts inherit the same atomicity amounts have: 9 parallel reserves
+      // for ONE merchant admit exactly 3 under maxCount 3, across handles.
+      await withLimiter(async (limiters) => {
+        const w = [merchantWindow(3), countWindow(100)];
+        const results = await Promise.all(
+          Array.from({ length: 9 }, (_, i) =>
+            limiters[i % limiters.length].reserve(
+              req(`m-${i}`, 1, w, T0, "host:one.example"),
+            ),
+          ),
+        );
+        expect(results.filter((r) => r.ok)).toHaveLength(3);
+        for (const r of results) {
+          if (!r.ok) expect(r.code).toBe("MERCHANT_VELOCITY_EXCEEDED");
+        }
+      });
+    });
+
+    it("CONCURRENCY: three merchants with three slots each all fit; the scope window is untouched", async () => {
+      await withLimiter(async (limiters) => {
+        const w = [merchantWindow(3), countWindow(100)];
+        const results = await Promise.all(
+          Array.from({ length: 9 }, (_, i) =>
+            limiters[i % limiters.length].reserve(
+              req(`m-${i}`, 1, w, T0, `host:m${i % 3}.example`),
+            ),
+          ),
+        );
+        // If merchant counting leaked scope-wide, only 3 of these would win.
+        expect(results.filter((r) => r.ok)).toHaveLength(9);
+      });
+    });
+
+    it("CONCURRENCY: a replay storm on one id against a count window claims exactly one slot", async () => {
+      // 100 parallel reserves of ONE reservationId: all ok, exactly one did
+      // the reserving, and the window holds one slot — so the rail behind it
+      // can run at most once.
+      await withLimiter(async (limiters) => {
+        const w = [countWindow(5)];
+        const results = await Promise.all(
+          Array.from({ length: 100 }, (_, i) =>
+            limiters[i % limiters.length].reserve(req("one-id", 100, w, T0)),
+          ),
+        );
+        expect(results.every((r) => r.ok)).toBe(true);
+        const fresh = results.filter((r) => r.ok && !r.replayed);
+        expect(fresh).toHaveLength(1);
+        const t = await limiters[0].totalsSince(
+          SCOPE,
+          new Date(T0 - DAY_MS).toISOString(),
+          CUR,
+        );
+        expect(t.count).toBe(1);
       });
     });
 

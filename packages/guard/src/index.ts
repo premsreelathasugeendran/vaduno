@@ -66,7 +66,9 @@ export { FileConsumeStore } from "./enforce/file-consume-store.js";
 export {
   MemorySpendLimiter,
   firstViolatedWindow,
+  merchantKeyOf,
   scopeKey,
+  windowConfigError,
 } from "./enforce/spend-limiter.js";
 export type { SpendRecord } from "./enforce/spend-limiter.js";
 export { FileSpendLimiter } from "./enforce/file-spend-limiter.js";

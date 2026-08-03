@@ -18,6 +18,9 @@ CREATE TABLE IF NOT EXISTS vaduno_spend (
   currency       TEXT   NOT NULL,
   amount_minor   BIGINT NOT NULL,
   occurred_ms    BIGINT NOT NULL,
+  -- merchantKeyOf() key, for per-merchant velocity windows. NULL means the
+  -- row predates merchant attribution and counts toward EVERY merchant.
+  merchant_key   TEXT,
   state          TEXT   NOT NULL CHECK (state IN ('reserved', 'committed'))
 );
 
@@ -25,6 +28,12 @@ CREATE TABLE IF NOT EXISTS vaduno_spend (
 -- time window.
 CREATE INDEX IF NOT EXISTS vaduno_spend_scope
   ON vaduno_spend (scope, currency, occurred_ms);
+
+-- Merchant attribution for per-merchant velocity windows (merchantKeyOf()).
+-- Nullable BY DESIGN: rows written before this column existed are NULL, and a
+-- NULL row counts toward EVERY merchant window — bounded over-hold instead of
+-- a velocity-free upgrade interval. Idempotent, safe over existing rows.
+ALTER TABLE vaduno_spend ADD COLUMN IF NOT EXISTS merchant_key TEXT;
 
 -- Consume-once registry. The PRIMARY KEY is the uniqueness half of the
 -- contract; the advisory lock in claim() is the budget half.
