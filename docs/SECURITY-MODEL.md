@@ -267,7 +267,9 @@ does not use that phrase; the release gate rejects it.
 ## Threat model summary
 
 - **In scope:** compromised/prompt-injected agent, hostile merchant/server
-  (x402 402 bodies, redirects, spoofed assets), replayed or tampered
+  (x402 402 bodies AND the v2 `PAYMENT-REQUIRED` header carrier, the v2
+  extensions echo channel, role-constant `payTo`, redirects, spoofed
+  assets), replayed or tampered
   approvals/mandates/webhooks, post-hoc modification of audit history,
   malicious dashboard input, DoS-shaped inputs (nesting, oversized bodies).
 - **Out of scope (delegated):** custody of funds/keys (rails/user signer),

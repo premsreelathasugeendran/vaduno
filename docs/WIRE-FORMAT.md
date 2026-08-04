@@ -21,6 +21,11 @@ No second implementation exists yet. If you are writing one, the vectors are
 the contract — and disagreements are bugs worth
 [reporting](https://github.com/premsreelathasugeendran/vaduno/issues).
 
+One vector family is different in kind: §8's x402 carrier vectors freeze this
+adapter's CONFORMANCE to someone else's wire format (the x402 spec's), not a
+format Vaduno signs. They were added alongside — never in place of — the
+frozen set above, which is byte-identical before and after.
+
 ---
 
 ## 1. Canonicalization
@@ -304,6 +309,48 @@ Index 0 is the leftmost/most-significant bit; GZIP then multibase base64url
 store, so two replicas assign index 0 to *different* mandates. A Postgres store
 is [the next thing to build](../CHANGELOG.md). Until then, allocate indices from
 one process.
+
+---
+
+## 8. x402 HTTP carrier conformance (adapter vectors, nothing signed)
+
+Unlike everything above, these commit no Vaduno preimage: `@vaduno/x402`
+neither signs nor hashes x402 wire data. What they freeze is the adapter's
+**reading** of the two x402 protocol versions, so a future edit cannot quietly
+change what gets validated before money moves.
+
+| | v1 | v2 |
+|---|---|---|
+| PaymentRequired carrier | 402 JSON **body** | `PAYMENT-REQUIRED` **header** (base64 JSON); body is a server concern |
+| Client payment header | `X-PAYMENT` | `PAYMENT-SIGNATURE` |
+| Settlement header | `X-PAYMENT-RESPONSE` | `PAYMENT-RESPONSE` |
+| Amount field | `maxAmountRequired` | `amount` (still atomic-unit decimal string) |
+| Network id | v1 names (`base-sepolia`) | CAIP-2 (`eip155:84532`) — a **different registry key space** |
+
+Two properties the vectors pin:
+
+- **The version discriminant is TOTAL.** Every possible `x402Version` value —
+  absent, `1`, `2`, `"2"`, `0`, `-7`, `1.5`, `null`, object, array — has a
+  committed outcome per carrier. On the body carrier only absent (documented
+  back-compat) and integer `1` parse; on the header carrier only integer `2`
+  parses. A non-integer is never coerced to 1 — the pre-0.5 read
+  `typeof v === "number" ? v : 1` was a downgrade channel, and the committed
+  table is what keeps it closed.
+- **Carriers never mix.** A `PAYMENT-REQUIRED` header routes to the v2 parser
+  and the body is never read; `x402Version: 2` in a JSON body is a refusal,
+  as are v1 fields (`maxAmountRequired`, per-requirement `resource`) inside a
+  v2 requirement. The thing validated is the thing paid, from exactly one
+  carrier.
+
+The v2 example blobs are **verbatim from the x402 spec** (`coinbase/x402`,
+`specs/transports-v2/http.md`, commit `dd927a26`) — the spec's own base64
+examples reused as conformance fixtures, including the settlement-failure
+case (`HTTP 402` + `PAYMENT-RESPONSE{success:false}`).
+
+Asserted by [`packages/x402/test/vectors.test.ts`](../packages/x402/test/vectors.test.ts).
+
+Vectors: [`x402-http-v1.json`](../spec/vectors/x402-http-v1.json),
+[`x402-http-v2.json`](../spec/vectors/x402-http-v2.json)
 
 ---
 

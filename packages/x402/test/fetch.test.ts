@@ -386,3 +386,28 @@ describe("createX402Fetch", () => {
     expect(pay).not.toHaveBeenCalled();
   });
 });
+
+describe("the v1 path carries the same redirect protection as v2", () => {
+  it("redirect:'manual' rides on BOTH the probe and the paid retry", async () => {
+    // A 3xx must never carry the probe — or, far worse, the paid retry with its
+    // X-PAYMENT bearer — to a different origin: that would defeat both the
+    // resource-origin check and the host allowlist in one hop. v2 pinned this
+    // from the start; v1 relied on the option being set and nothing asserted it,
+    // so a change to "follow" was caught only by the v2 suite.
+    const redirects: Array<RequestInit["redirect"]> = [];
+    const inner = mockServer();
+    const spying: FetchLike = async (input, init) => {
+      redirects.push(init?.redirect);
+      return inner.fetch(input, init);
+    };
+    const { guard } = makeGuard();
+    const x402 = createX402Fetch({
+      guard,
+      agentId: "a",
+      pay: async () => "v1-payload",
+      fetch: spying,
+    });
+    await x402("https://api.example.com/data");
+    expect(redirects).toEqual(["manual", "manual"]);
+  });
+});

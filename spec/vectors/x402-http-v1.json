@@ -1,0 +1,402 @@
+{
+  "description": "x402 v1 HTTP carrier conformance: PaymentRequired travels as the 402 JSON body; the client pays via the X-PAYMENT header; settlement returns via X-PAYMENT-RESPONSE. `parsed` is the exact normalized output parsePaymentRequired must produce. `versionOutcomes` freezes the TOTAL version decision table for this carrier: a non-integer or non-{1} declaration is REFUSED by the named error, never coerced to 1 (absent is the one documented back-compat default).",
+  "headers": {
+    "payment": "X-PAYMENT",
+    "settlement": "X-PAYMENT-RESPONSE"
+  },
+  "body": {
+    "x402Version": 1,
+    "accepts": [
+      {
+        "scheme": "exact",
+        "network": "base-sepolia",
+        "maxAmountRequired": "10000",
+        "resource": "https://api.example.com/premium-data",
+        "description": "Access to premium market data",
+        "mimeType": "application/json",
+        "payTo": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C",
+        "maxTimeoutSeconds": 60,
+        "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+        "extra": {
+          "name": "USDC",
+          "version": "2"
+        }
+      }
+    ]
+  },
+  "parsed": {
+    "x402Version": 1,
+    "accepts": [
+      {
+        "scheme": "exact",
+        "network": "base-sepolia",
+        "maxAmountRequired": "10000",
+        "resource": "https://api.example.com/premium-data",
+        "payTo": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C",
+        "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+        "description": "Access to premium market data",
+        "mimeType": "application/json",
+        "maxTimeoutSeconds": 60,
+        "extra": {
+          "name": "USDC",
+          "version": "2"
+        }
+      }
+    ]
+  },
+  "versionOutcomes": [
+    {
+      "x402Version": "absent",
+      "body": {
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "base-sepolia",
+            "maxAmountRequired": "10000",
+            "resource": "https://api.example.com/premium-data",
+            "description": "Access to premium market data",
+            "mimeType": "application/json",
+            "payTo": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C",
+            "maxTimeoutSeconds": 60,
+            "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            "extra": {
+              "name": "USDC",
+              "version": "2"
+            }
+          }
+        ]
+      },
+      "outcome": "parsed",
+      "value": {
+        "x402Version": 1,
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "base-sepolia",
+            "maxAmountRequired": "10000",
+            "resource": "https://api.example.com/premium-data",
+            "payTo": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C",
+            "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            "description": "Access to premium market data",
+            "mimeType": "application/json",
+            "maxTimeoutSeconds": 60,
+            "extra": {
+              "name": "USDC",
+              "version": "2"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": "1",
+      "body": {
+        "x402Version": 1,
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "base-sepolia",
+            "maxAmountRequired": "10000",
+            "resource": "https://api.example.com/premium-data",
+            "description": "Access to premium market data",
+            "mimeType": "application/json",
+            "payTo": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C",
+            "maxTimeoutSeconds": 60,
+            "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            "extra": {
+              "name": "USDC",
+              "version": "2"
+            }
+          }
+        ]
+      },
+      "outcome": "parsed",
+      "value": {
+        "x402Version": 1,
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "base-sepolia",
+            "maxAmountRequired": "10000",
+            "resource": "https://api.example.com/premium-data",
+            "payTo": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C",
+            "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            "description": "Access to premium market data",
+            "mimeType": "application/json",
+            "maxTimeoutSeconds": 60,
+            "extra": {
+              "name": "USDC",
+              "version": "2"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "x402Version": "2",
+      "body": {
+        "x402Version": 2,
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "base-sepolia",
+            "maxAmountRequired": "10000",
+            "resource": "https://api.example.com/premium-data",
+            "description": "Access to premium market data",
+            "mimeType": "application/json",
+            "payTo": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C",
+            "maxTimeoutSeconds": 60,
+            "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            "extra": {
+              "name": "USDC",
+              "version": "2"
+            }
+          }
+        ]
+      },
+      "outcome": "X402VersionUnsupportedError",
+      "detectedVersion": 2
+    },
+    {
+      "x402Version": "\"2\"",
+      "body": {
+        "x402Version": "2",
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "base-sepolia",
+            "maxAmountRequired": "10000",
+            "resource": "https://api.example.com/premium-data",
+            "description": "Access to premium market data",
+            "mimeType": "application/json",
+            "payTo": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C",
+            "maxTimeoutSeconds": 60,
+            "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            "extra": {
+              "name": "USDC",
+              "version": "2"
+            }
+          }
+        ]
+      },
+      "outcome": "X402ProtocolError"
+    },
+    {
+      "x402Version": "\"1\"",
+      "body": {
+        "x402Version": "1",
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "base-sepolia",
+            "maxAmountRequired": "10000",
+            "resource": "https://api.example.com/premium-data",
+            "description": "Access to premium market data",
+            "mimeType": "application/json",
+            "payTo": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C",
+            "maxTimeoutSeconds": 60,
+            "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            "extra": {
+              "name": "USDC",
+              "version": "2"
+            }
+          }
+        ]
+      },
+      "outcome": "X402ProtocolError"
+    },
+    {
+      "x402Version": "0",
+      "body": {
+        "x402Version": 0,
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "base-sepolia",
+            "maxAmountRequired": "10000",
+            "resource": "https://api.example.com/premium-data",
+            "description": "Access to premium market data",
+            "mimeType": "application/json",
+            "payTo": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C",
+            "maxTimeoutSeconds": 60,
+            "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            "extra": {
+              "name": "USDC",
+              "version": "2"
+            }
+          }
+        ]
+      },
+      "outcome": "X402ProtocolError"
+    },
+    {
+      "x402Version": "-7",
+      "body": {
+        "x402Version": -7,
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "base-sepolia",
+            "maxAmountRequired": "10000",
+            "resource": "https://api.example.com/premium-data",
+            "description": "Access to premium market data",
+            "mimeType": "application/json",
+            "payTo": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C",
+            "maxTimeoutSeconds": 60,
+            "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            "extra": {
+              "name": "USDC",
+              "version": "2"
+            }
+          }
+        ]
+      },
+      "outcome": "X402ProtocolError"
+    },
+    {
+      "x402Version": "1.5",
+      "body": {
+        "x402Version": 1.5,
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "base-sepolia",
+            "maxAmountRequired": "10000",
+            "resource": "https://api.example.com/premium-data",
+            "description": "Access to premium market data",
+            "mimeType": "application/json",
+            "payTo": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C",
+            "maxTimeoutSeconds": 60,
+            "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            "extra": {
+              "name": "USDC",
+              "version": "2"
+            }
+          }
+        ]
+      },
+      "outcome": "X402ProtocolError"
+    },
+    {
+      "x402Version": "null",
+      "body": {
+        "x402Version": null,
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "base-sepolia",
+            "maxAmountRequired": "10000",
+            "resource": "https://api.example.com/premium-data",
+            "description": "Access to premium market data",
+            "mimeType": "application/json",
+            "payTo": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C",
+            "maxTimeoutSeconds": 60,
+            "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            "extra": {
+              "name": "USDC",
+              "version": "2"
+            }
+          }
+        ]
+      },
+      "outcome": "X402ProtocolError"
+    },
+    {
+      "x402Version": "{}",
+      "body": {
+        "x402Version": {},
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "base-sepolia",
+            "maxAmountRequired": "10000",
+            "resource": "https://api.example.com/premium-data",
+            "description": "Access to premium market data",
+            "mimeType": "application/json",
+            "payTo": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C",
+            "maxTimeoutSeconds": 60,
+            "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            "extra": {
+              "name": "USDC",
+              "version": "2"
+            }
+          }
+        ]
+      },
+      "outcome": "X402ProtocolError"
+    },
+    {
+      "x402Version": "[]",
+      "body": {
+        "x402Version": [],
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "base-sepolia",
+            "maxAmountRequired": "10000",
+            "resource": "https://api.example.com/premium-data",
+            "description": "Access to premium market data",
+            "mimeType": "application/json",
+            "payTo": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C",
+            "maxTimeoutSeconds": 60,
+            "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            "extra": {
+              "name": "USDC",
+              "version": "2"
+            }
+          }
+        ]
+      },
+      "outcome": "X402ProtocolError"
+    },
+    {
+      "x402Version": "3",
+      "body": {
+        "x402Version": 3,
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "base-sepolia",
+            "maxAmountRequired": "10000",
+            "resource": "https://api.example.com/premium-data",
+            "description": "Access to premium market data",
+            "mimeType": "application/json",
+            "payTo": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C",
+            "maxTimeoutSeconds": 60,
+            "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            "extra": {
+              "name": "USDC",
+              "version": "2"
+            }
+          }
+        ]
+      },
+      "outcome": "X402VersionUnsupportedError",
+      "detectedVersion": 3
+    },
+    {
+      "x402Version": "true",
+      "body": {
+        "x402Version": true,
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "base-sepolia",
+            "maxAmountRequired": "10000",
+            "resource": "https://api.example.com/premium-data",
+            "description": "Access to premium market data",
+            "mimeType": "application/json",
+            "payTo": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C",
+            "maxTimeoutSeconds": 60,
+            "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            "extra": {
+              "name": "USDC",
+              "version": "2"
+            }
+          }
+        ]
+      },
+      "outcome": "X402ProtocolError"
+    }
+  ]
+}

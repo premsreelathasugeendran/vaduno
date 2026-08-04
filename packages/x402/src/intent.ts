@@ -1,5 +1,9 @@
 import type { PaymentIntent } from "@vaduno/guard";
-import type { PaymentRequirements } from "./types.js";
+import type {
+  PaymentRequirements,
+  PaymentRequirementsV2,
+  ResourceInfo,
+} from "./types.js";
 
 export interface RequirementToIntentOptions {
   agentId: string;
@@ -72,6 +76,57 @@ export function requirementToIntent(
   if (opts.category !== undefined) intent.category = opts.category;
   if (opts.mandateId !== undefined) intent.mandateId = opts.mandateId;
   if (req.description !== undefined) intent.description = req.description;
+  return intent;
+}
+
+/**
+ * Map a chosen x402 v2 payment requirement (plus the body-level ResourceInfo)
+ * to a Vaduno PaymentIntent. Identical stance to v1:
+ *  - merchant.url = the ACTUAL request URL; the server's `resource.url` claim
+ *    is recorded as metadata.resourceClaimed and never drives a decision.
+ *  - merchant.id  = payTo (the fund recipient) — constrain it with an
+ *    `id:<payTo>` allowlist if the recipient matters.
+ *  - amount = req.amount, atomic units, integer-or-NaN so policy denies junk.
+ *    Under the `upto` scheme this is the authorized MAXIMUM — the correct
+ *    pessimistic number to count, because it is what the signature permits.
+ *  - currency: trusted registry override, else the server's display-only
+ *    extra.symbol, else the asset id. Only the override is a security boundary.
+ */
+export function requirementToIntentV2(
+  req: PaymentRequirementsV2,
+  resource: ResourceInfo,
+  opts: RequirementToIntentOptions,
+): PaymentIntent {
+  const now = opts.now ?? (() => new Date());
+  const currency = (opts.currency ?? req.extra?.symbol ?? req.asset).toUpperCase();
+  const intent: PaymentIntent = {
+    id: opts.intentId,
+    agentId: opts.agentId,
+    merchant: {
+      id: req.payTo,
+      url: opts.requestUrl,
+      ...(req.extra?.name ? { name: req.extra.name } : {}),
+    },
+    amount: { amountMinor: parseAtomicAmount(req.amount), currency },
+    rail: "x402",
+    requestedAt: now().toISOString(),
+    metadata: {
+      x402Version: 2,
+      scheme: req.scheme,
+      network: req.network,
+      asset: req.asset,
+      payTo: req.payTo,
+      requestUrl: opts.requestUrl,
+      // The server's own claim about what's being paid for — audit only.
+      resourceClaimed: resource.url,
+      amount: req.amount,
+      maxTimeoutSeconds: req.maxTimeoutSeconds,
+      ...(req.extra?.decimals !== undefined ? { decimals: req.extra.decimals } : {}),
+    },
+  };
+  if (opts.category !== undefined) intent.category = opts.category;
+  if (opts.mandateId !== undefined) intent.mandateId = opts.mandateId;
+  if (resource.description !== undefined) intent.description = resource.description;
   return intent;
 }
 

@@ -344,4 +344,142 @@ write("cosign-mldsa44-payload.json", {
     "keyID || uint64BE timestamp || 2420-byte ML-DSA-44 signature",
 });
 
+// ── 11. x402 HTTP carrier conformance (v1 and v2) — ADDITIVE ────────────────
+// These are CONFORMANCE vectors for the x402 adapter's carrier handling, not
+// signed Vaduno structures: no domain tags, nothing here is hashed or signed
+// by Vaduno. They freeze (a) what a well-formed carrier of each version looks
+// like, (b) the exact normalized output the parser must produce from it, and
+// (c) the TOTAL version decision table — every possible x402Version value has
+// a committed outcome, so a future edit that re-opens the "string '2' reads
+// as 1" downgrade channel diffs these files.
+import {
+  parsePaymentRequired,
+  parsePaymentRequiredHeader,
+  decodeSettlementResponse,
+} from "../packages/x402/dist/index.js";
+
+const outcomeOf = (fn) => {
+  try {
+    return { outcome: "parsed", value: fn() };
+  } catch (err) {
+    return {
+      outcome: err.name,
+      ...(err.detectedVersion !== undefined ? { detectedVersion: err.detectedVersion } : {}),
+    };
+  }
+};
+
+const V1_REQUIREMENT = {
+  scheme: "exact",
+  network: "base-sepolia",
+  maxAmountRequired: "10000",
+  resource: "https://api.example.com/premium-data",
+  description: "Access to premium market data",
+  mimeType: "application/json",
+  payTo: "0x209693Bc6afc0C5328bA36FaF03C514EF312287C",
+  maxTimeoutSeconds: 60,
+  asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+  extra: { name: "USDC", version: "2" },
+};
+
+// The body-carrier version decision table. `body` omits x402Version for the
+// "absent" case; every other case declares the literal shown.
+const v1VersionCases = [
+  { label: "absent", body: { accepts: [V1_REQUIREMENT] } },
+  ...[1, 2, "2", "1", 0, -7, 1.5, null, {}, [], 3, true].map((v) => ({
+    label: JSON.stringify(v) ?? String(v),
+    body: { x402Version: v, accepts: [V1_REQUIREMENT] },
+  })),
+];
+
+write("x402-http-v1.json", {
+  description:
+    "x402 v1 HTTP carrier conformance: PaymentRequired travels as the 402 JSON body; the " +
+    "client pays via the X-PAYMENT header; settlement returns via X-PAYMENT-RESPONSE. " +
+    "`parsed` is the exact normalized output parsePaymentRequired must produce. " +
+    "`versionOutcomes` freezes the TOTAL version decision table for this carrier: a " +
+    "non-integer or non-{1} declaration is REFUSED by the named error, never coerced to 1 " +
+    "(absent is the one documented back-compat default).",
+  headers: { payment: "X-PAYMENT", settlement: "X-PAYMENT-RESPONSE" },
+  body: { x402Version: 1, accepts: [V1_REQUIREMENT] },
+  parsed: parsePaymentRequired({ x402Version: 1, accepts: [V1_REQUIREMENT] }),
+  versionOutcomes: v1VersionCases.map(({ label, body }) => ({
+    x402Version: label,
+    body,
+    ...outcomeOf(() => parsePaymentRequired(body)),
+  })),
+});
+
+// The v2 blobs below are VERBATIM from the x402 spec's HTTP transport
+// (coinbase/x402 specs/transports-v2/http.md, commit dd927a26) — the spec's
+// own examples used as conformance vectors, not re-authored. Each decodes to
+// the compact JSON committed beside it (verify: base64(JSON.stringify(json))
+// reproduces the blob exactly).
+const SPEC_V2_PAYMENT_REQUIRED =
+  "eyJ4NDAyVmVyc2lvbiI6MiwiZXJyb3IiOiJQQVlNRU5ULVNJR05BVFVSRSBoZWFkZXIgaXMgcmVxdWlyZWQiLCJyZXNvdXJjZSI6eyJ1cmwiOiJodHRwczovL2FwaS5leGFtcGxlLmNvbS9wcmVtaXVtLWRhdGEiLCJkZXNjcmlwdGlvbiI6IkFjY2VzcyB0byBwcmVtaXVtIG1hcmtldCBkYXRhIiwibWltZVR5cGUiOiJhcHBsaWNhdGlvbi9qc29uIn0sImFjY2VwdHMiOlt7InNjaGVtZSI6ImV4YWN0IiwibmV0d29yayI6ImVpcDE1NTo4NDUzMiIsImFtb3VudCI6IjEwMDAwIiwiYXNzZXQiOiIweDAzNkNiRDUzODQyYzU0MjY2MzRlNzkyOTU0MWVDMjMxOGYzZENGN2UiLCJwYXlUbyI6IjB4MjA5NjkzQmM2YWZjMEM1MzI4YkEzNkZhRjAzQzUxNEVGMzEyMjg3QyIsIm1heFRpbWVvdXRTZWNvbmRzIjo2MCwiZXh0cmEiOnsibmFtZSI6IlVTREMiLCJ2ZXJzaW9uIjoiMiJ9fV19";
+const SPEC_V2_PAYMENT_SIGNATURE =
+  "eyJ4NDAyVmVyc2lvbiI6MiwicmVzb3VyY2UiOnsidXJsIjoiaHR0cHM6Ly9hcGkuZXhhbXBsZS5jb20vcHJlbWl1bS1kYXRhIiwiZGVzY3JpcHRpb24iOiJBY2Nlc3MgdG8gcHJlbWl1bSBtYXJrZXQgZGF0YSIsIm1pbWVUeXBlIjoiYXBwbGljYXRpb24vanNvbiJ9LCJhY2NlcHRlZCI6eyJzY2hlbWUiOiJleGFjdCIsIm5ldHdvcmsiOiJlaXAxNTU6ODQ1MzIiLCJhbW91bnQiOiIxMDAwMCIsImFzc2V0IjoiMHgwMzZDYkQ1Mzg0MmM1NDI2NjM0ZTc5Mjk1NDFlQzIzMThmM2RDRjdlIiwicGF5VG8iOiIweDIwOTY5M0JjNmFmYzBDNTMyOGJBMzZGYUYwM0M1MTRFRjMxMjI4N0MiLCJtYXhUaW1lb3V0U2Vjb25kcyI6NjAsImV4dHJhIjp7Im5hbWUiOiJVU0RDIiwidmVyc2lvbiI6IjIifX0sInBheWxvYWQiOnsic2lnbmF0dXJlIjoiMHgyZDZhNzU4OGQ2YWNjYTUwNWNiZjBkOWE0YTIyN2UwYzUyYzZjMzQwMDhjOGU4OTg2YTEyODMyNTk3NjQxNzM2MDhhMmNlNjQ5NjY0MmUzNzdkNmRhOGRiYmY1ODM2ZTliZDE1MDkyZjllY2FiMDVkZWQzZDYyOTNhZjE0OGI1NzFjIiwiYXV0aG9yaXphdGlvbiI6eyJmcm9tIjoiMHg4NTdiMDY1MTlFOTFlM0E1NDUzODc5MWJEYmIwRTIyMzczZTM2YjY2IiwidG8iOiIweDIwOTY5M0JjNmFmYzBDNTMyOGJBMzZGYUYwM0M1MTRFRjMxMjI4N0MiLCJ2YWx1ZSI6IjEwMDAwIiwidmFsaWRBZnRlciI6IjE3NDA2NzIwODkiLCJ2YWxpZEJlZm9yZSI6IjE3NDA2NzIxNTQiLCJub25jZSI6IjB4ZjM3NDY2MTNjMmQ5MjBiNWZkYWJjMDg1NmYyYWViMmQ0Zjg4ZWU2MDM3YjhjYzVkMDRhNzFhNDQ2MmYxMzQ4MCJ9fX0=";
+const SPEC_V2_SETTLEMENT_OK =
+  "eyJzdWNjZXNzIjp0cnVlLCJ0cmFuc2FjdGlvbiI6IjB4MTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZiIsIm5ldHdvcmsiOiJlaXAxNTU6ODQ1MzIiLCJwYXllciI6IjB4ODU3YjA2NTE5RTkxZTNBNTQ1Mzg3OTFiRGJiMEUyMjM3M2UzNmI2NiJ9";
+const SPEC_V2_SETTLEMENT_FAIL =
+  "eyJzdWNjZXNzIjpmYWxzZSwiZXJyb3JSZWFzb24iOiJpbnN1ZmZpY2llbnRfZnVuZHMiLCJ0cmFuc2FjdGlvbiI6IiIsIm5ldHdvcmsiOiJlaXAxNTU6ODQ1MzIiLCJwYXllciI6IjB4ODU3YjA2NTE5RTkxZTNBNTQ1Mzg3OTFiRGJiMEUyMjM3M2UzNmI2NiJ9";
+
+const decodeB64Json = (b) => JSON.parse(Buffer.from(b, "base64").toString("utf8"));
+
+const v2VersionCases = [
+  {
+    label: "absent",
+    body: {
+      resource: { url: "https://api.example.com/premium-data" },
+      accepts: decodeB64Json(SPEC_V2_PAYMENT_REQUIRED).accepts,
+    },
+  },
+  ...[2, 1, "2", 0, -7, 1.5, null, {}, [], 3].map((v) => ({
+    label: JSON.stringify(v) ?? String(v),
+    body: {
+      x402Version: v,
+      resource: { url: "https://api.example.com/premium-data" },
+      accepts: decodeB64Json(SPEC_V2_PAYMENT_REQUIRED).accepts,
+    },
+  })),
+];
+
+write("x402-http-v2.json", {
+  description:
+    "x402 v2 HTTP carrier conformance. All protocol data travels in headers: the 402 " +
+    "carries PAYMENT-REQUIRED (base64 JSON PaymentRequired; the body is a server " +
+    "implementation concern), the paid retry carries PAYMENT-SIGNATURE (base64 JSON " +
+    "PaymentPayload, built by the HOST's payer — Vaduno polices the requirement and never " +
+    "constructs or signs the payload), settlement returns via PAYMENT-RESPONSE. The four " +
+    "base64 blobs are VERBATIM from the spec's transports-v2/http.md examples " +
+    "(coinbase/x402 @ dd927a26). `parsed` is the exact normalized output " +
+    "parsePaymentRequiredHeader must produce from the spec's PAYMENT-REQUIRED blob. " +
+    "`versionOutcomes` freezes the TOTAL version decision table for this carrier: only the " +
+    "integer 2 parses; absent and 1 are refusals (version confusion on a v2-only carrier), " +
+    "and no non-integer is ever guessed at.",
+  headers: {
+    paymentRequired: "PAYMENT-REQUIRED",
+    payment: "PAYMENT-SIGNATURE",
+    settlement: "PAYMENT-RESPONSE",
+  },
+  specExample: {
+    paymentRequiredHeader: SPEC_V2_PAYMENT_REQUIRED,
+    paymentRequiredDecoded: decodeB64Json(SPEC_V2_PAYMENT_REQUIRED),
+    parsed: parsePaymentRequiredHeader(SPEC_V2_PAYMENT_REQUIRED),
+    paymentSignatureHeader: SPEC_V2_PAYMENT_SIGNATURE,
+    paymentSignatureDecoded: decodeB64Json(SPEC_V2_PAYMENT_SIGNATURE),
+    settlementOkHeader: SPEC_V2_SETTLEMENT_OK,
+    settlementOkDecoded: decodeSettlementResponse(SPEC_V2_SETTLEMENT_OK),
+    settlementFailHeader: SPEC_V2_SETTLEMENT_FAIL,
+    settlementFailDecoded: decodeSettlementResponse(SPEC_V2_SETTLEMENT_FAIL),
+  },
+  versionOutcomes: v2VersionCases.map(({ label, body }) => ({
+    x402Version: label,
+    body,
+    ...outcomeOf(() =>
+      parsePaymentRequiredHeader(Buffer.from(JSON.stringify(body), "utf8").toString("base64")),
+    ),
+  })),
+});
+
 console.log("\nvectors regenerated — a diff here is a WIRE FORMAT CHANGE");

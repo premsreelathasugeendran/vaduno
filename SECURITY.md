@@ -294,29 +294,65 @@ These are documented, not hidden. Some are scope choices; some are on the roadma
 The x402 adapter maps an untrusted, server-controlled 402 response onto a
 PaymentIntent. Its threat model treats the **server as hostile** (it controls
 every field of the payment requirement) and the **agent as possibly
-prompt-injected** into calling arbitrary URLs. Guarantees:
+prompt-injected** into calling arbitrary URLs. It speaks x402 v1 (body-carried)
+and, opt-in, v2 (header-carried); neither has ever run against a live x402
+server. Guarantees:
 
 - **The policed endpoint is the real one.** `merchant.url` is set from the URL
-  the agent actually contacts, never the server's `resource` field. The server's
-  claim is kept in `metadata.resourceClaimed` for audit only. By default a
-  requirement whose `resource` origin differs from the request origin is refused
-  (`requireResourceOriginMatch`, fail closed).
-- **Host allowlist ≠ recipient control.** In x402 funds go to `payTo` (an
-  address), decoupled from the request host. Constrain the recipient explicitly
-  with an `id:<payTo>` merchant pattern; a host allowlist alone does not.
+  the agent actually contacts, never the server's claim (v1: per-requirement
+  `resource`; v2: body-level `resource.url`). The claim is kept in
+  `metadata.resourceClaimed` for audit only. By default a claim whose origin
+  differs from the request origin is refused (`requireResourceOriginMatch`,
+  fail closed).
+- **Host allowlist ≠ recipient control.** In x402 funds go to `payTo`,
+  decoupled from the request host. Constrain the recipient explicitly with an
+  `id:<payTo>` merchant pattern; a host allowlist alone does not. v2 permits
+  `payTo` to be a role constant (e.g. `"merchant"`) resolved out of band —
+  refused by default (`PAYTO_ROLE_REFUSED`) when it matches `^[a-z]{1,16}$` —
+  a SHAPE HEURISTIC, not a role list, so `MERCHANT` or `merchant_wallet` are
+  treated as addresses — because an unresolvable recipient
+  cannot be allowlisted; admitting one via `v2.allowPayToRoles` delegates
+  recipient policing to whoever resolves the role.
 - **The token is pinned by the `assets` registry, not a label.** `extra.symbol`
   is attacker-controlled display text. Supply `assets: [{network, asset, symbol,
   decimals}]` so a requirement whose `(network, asset)` pair is unlisted is
-  refused and the policy `currency` comes from your trusted symbol.
-- **Pessimistic spend accounting.** Once the `X-PAYMENT` bearer authorization is
-  transmitted, the spend is counted even if the server then returns an error —
-  the server can still settle it. A payer that throws *before* transmitting is
-  not counted. Bind a consume-once mandate to bound retries.
-- **Vaduno still never holds keys to funds.** `pay()` is your signer; it must
-  sign for exactly the requirement it is handed. Vaduno polices the
-  requirement, not the bytes you sign. (Mandate signing uses a separate Ed25519
-  key that belongs to the *issuer* and cannot move money; a guard that only
-  validates and consumes needs nothing but the public half.)
+  refused and the policy `currency` comes from your trusted symbol. v1 network
+  names and v2 CAIP-2 ids are separate key spaces (an entry for `base` does not
+  trust `eip155:8453`); v2 matching is case-sensitive, with the asset
+  case-folded only on `eip155:` (EVM hex) networks.
+- **Pessimistic spend accounting.** Once the bearer authorization is
+  transmitted (`X-PAYMENT` in v1, `PAYMENT-SIGNATURE` in v2), the spend is
+  counted even if the server then returns an error — the server can still
+  settle it. A payer that throws *before* transmitting is not counted. Under
+  v2's `upto` scheme the counted amount is the authorized MAXIMUM; the settled
+  amount an untrusted `PAYMENT-RESPONSE` later reports is never reconciled
+  downward. Bind a consume-once mandate to bound retries. The v2 schemes ANALYSED for this work — `exact` (single-use by
+  EIP-3009 nonce) and `upto` (settles at most once) — carry no sessions and
+  no reusable authorizations, so per-authorization counting matches them
+  exactly. A `batch-settlement` scheme also exists in the spec tree and was
+  **not** analysed; it describes a signed running total redeemed at session
+  end. Counting stays CONSERVATIVE under it rather than complete: every
+  transmitted signature is counted at its stated amount, so a batch would be
+  over-counted, never under. This is not a survey of every scheme the spec
+  may define.
+- **One carrier, one reading.** The `x402Version` discriminant is total —
+  exactly two values are ACCEPTED on the v1 body carrier (absent, for
+  back-compat with v1 servers in the wild, and the integer 1), and every
+  other value including `"2"`, `1.5`, `0` and negative integers has a
+  defined refusal, none coerced to 1 — and version routing is single-carrier: a
+  `PAYMENT-REQUIRED` header means v2 and the body is never read; `x402Version:
+  2` inside a JSON body is refused; v1 money/binding fields inside a v2
+  requirement are refused as mixed-version shapes. The requirement the guard
+  validates is the identical fixed-allowlist object handed to the payer. The
+  full decision table is frozen in `spec/vectors/x402-http-v{1,2}.json`.
+- **Vaduno still never holds keys to funds.** `pay()` / `v2.pay()` is your
+  signer; it must sign for exactly the requirement it is handed (and in v2,
+  echo exactly that requirement as the payload's `accepted`). Vaduno polices
+  the requirement, not the bytes you sign — that includes any sign-in-with-x
+  identity signature, which is likewise the host signer's operation. (Mandate
+  signing uses a separate Ed25519 key that belongs to the *issuer* and cannot
+  move money; a guard that only validates and consumes needs nothing but the
+  public half.)
 
 ## Dependency posture
 

@@ -6,6 +6,59 @@ This project is pre-1.0. Under semver, 0.x minor bumps may break the API. Two
 have, and each was breaking because the fix for a real security bug required it.
 See [`SECURITY.md`](SECURITY.md) for what is and isn't guaranteed.
 
+## Unreleased
+
+### Fixed
+
+- **The x402 version discriminant is now TOTAL (`@vaduno/x402`).** Both sites
+  that read `x402Version` did `typeof v === "number" ? v : 1`, so the STRING
+  `"2"` silently became 1 — a downgrade channel letting v2 data be read under
+  v1 rules — and `0` / `-7` / `1.5` passed through verbatim. Every possible
+  value now has a defined outcome per carrier (absent is the one documented
+  v1 back-compat default; nothing else is ever coerced), and the full
+  decision table is frozen as vectors (`spec/vectors/x402-http-v{1,2}.json`)
+  asserted by `packages/x402/test/vectors.test.ts`.
+- **The v2-shape heuristic no longer depends on `amount` being a string
+  (`@vaduno/x402`).** A v2 body carrying a NUMERIC amount skipped detection
+  and died on the misleading "maxAmountRequired must be a non-empty string";
+  it now fires on `amount` of any type (when `maxAmountRequired` is absent)
+  and on a top-level `resource` object — and at the fetch layer, the
+  PAYMENT-REQUIRED header (the dominant real-world v2 signal) routes to the
+  v2 parser before the body is ever read.
+
+### Added
+
+- **x402 v2 support (HTTP transport), opt-in (`@vaduno/x402`).** On a 402
+  carrying a `PAYMENT-REQUIRED` header the adapter parses the base64
+  PaymentRequired (total version check; CAIP-2 network grammar enforced;
+  `maxTimeoutSeconds` required; body-level `ResourceInfo`; `extensions`
+  validated, size-capped and defensively copied), selects a requirement,
+  runs the guard, and only then calls the new `v2.pay(req, ctx)` — which
+  returns the `PAYMENT-SIGNATURE` header value; settlement is read from
+  `PAYMENT-RESPONSE`, including the specced failure form (402 +
+  `success:false`, still counted — pessimistic accounting). The v1 `pay()`
+  contract is unchanged; without the `v2` option, v2 402s are refused with
+  `V2_NOT_CONFIGURED`. Carrier binding is single and total: header present →
+  body never read; `x402Version: 2` in a JSON body refused; v1 fields inside
+  a v2 requirement (`maxAmountRequired`, per-requirement `resource`) refused
+  as mixed-version shapes. v2 `payTo` role constants are refused by default
+  (`PAYTO_ROLE_REFUSED`; opt in via `v2.allowPayToRoles`). The trusted asset
+  registry keys v1 names and v2 CAIP-2 ids separately, matching v2 networks
+  case-sensitively (asset case-folded only on `eip155:`). All v1 security
+  properties are re-proven on the v2 path by tests: redirect `manual`,
+  origin match (against `resource.url`), asset registry, pessimistic
+  accounting, bounded untrusted input, extra validation, and
+  validated-object-is-paid-object identity. v2 core has no sessions or
+  reusable authorizations (spec: out of scope; single-use EIP-3009 nonces;
+  `upto` settles at most once — an unanalysed `batch-settlement` scheme exists in the spec tree), so cap accounting remains
+  count-the-authorized-amount-once-at-transmission — for `upto`, the
+  authorized MAX, never reconciled downward from the untrusted settlement.
+- **x402 carrier conformance vectors** (`spec/vectors/x402-http-v1.json`,
+  `x402-http-v2.json`), the v2 examples VERBATIM from the x402 spec's
+  `transports-v2/http.md` (coinbase/x402 @ dd927a26). Added alongside the
+  frozen set; every pre-existing vector is byte-identical. Documented in
+  `docs/WIRE-FORMAT.md` §8.
+
 ## 0.4.0 — 2026-08-04
 
 ### Fixed

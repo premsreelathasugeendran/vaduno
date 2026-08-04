@@ -227,11 +227,11 @@ The chain is computed client-side; `verify()` re-derives every hash, so even a c
 
 Since 0.3.0 a store admits an entry only if it still extends the tip the writer chained onto, so concurrent writers can no longer fork the chain — see [SECURITY.md](SECURITY.md) Known Limits item 3 for each store's mechanism and residual, including which of them have and have not been exercised against a live database.
 
-## x402 rail adapter (`@vaduno/x402`) — experimental, v1 only
+## x402 rail adapter (`@vaduno/x402`) — experimental, v1 + v2
 
 `@vaduno/x402` wraps the HTTP 402 "pay-per-request" flow: on a 402 it builds a `PaymentIntent` from the server's requirement, runs the guard, and only if allowed calls **your** signer. Vaduno never sees keys.
 
-> **It implements x402 v1 and has never run against a real x402 server.** A v2 body — the rename of `maxAmountRequired` to `amount`, plus CAIP-2 network ids — is refused by name with `X402VersionUnsupportedError` and no payment is attempted. The demo and every test mock both the server and the payer in-process, so what is verified is agreement with a *reading of the spec*, not interoperability with anything. Same honest status as the Stripe adapter: **neither rail has ever touched a real endpoint.**
+> **It implements x402 v1 and v2 (HTTP transport) and has never run against a real x402 server.** The demo and every test mock both the server and the payer in-process — the v2 vector file ([spec/vectors/x402-http-v2.json](spec/vectors/x402-http-v2.json)) carries the spec's own wire examples verbatim *alongside* this adapter's own version-outcome table, which is Vaduno policy rather than spec text — so what is verified is agreement with the *spec's text and examples*, not interoperability with anything deployed. Same honest status as the Stripe adapter: **neither rail has ever touched a real endpoint.**
 
 ```ts
 import { createX402Fetch, usdc } from "@vaduno/x402";
@@ -239,9 +239,13 @@ import { createX402Fetch, usdc } from "@vaduno/x402";
 const fetchWithPay = createX402Fetch({
   guard,                                   // your VadunoGuard
   agentId: "researcher-agent-1",
-  pay: (req) => myWallet.signX402(req),    // your signer — Vaduno never holds keys to funds
+  pay: (req) => myWallet.signX402(req),    // your v1 signer — Vaduno never holds keys to funds
+  v2: {                                    // v2 is OPT-IN; omit it and v2 402s are refused
+    pay: (req, ctx) => myWallet.signX402V2(req, ctx),
+  },
   assets: [                                // bind spend to the REAL token, not a label
-    { network: "base", asset: "0x833589...2913", symbol: "USDC", decimals: 6 },
+    { network: "base",        asset: "0x833589...2913", symbol: "USDC", decimals: 6 },
+    { network: "eip155:8453", asset: "0x833589...2913", symbol: "USDC", decimals: 6 },
   ],
 });
 
@@ -249,19 +253,28 @@ const fetchWithPay = createX402Fetch({
 const res = await fetchWithPay("https://api.example.com/premium");
 ```
 
-Rail-specific security notes (see [SECURITY.md](SECURITY.md)):
+Version routing is per-response and single-carrier: a `PAYMENT-REQUIRED` header means v2 (the body is never read); no header means v1 (the JSON body). The `x402Version` discriminant is **total** — `"2"`, `1.5`, `0`, negative and friends are named refusals, never coerced to 1 — and the whole decision table is frozen as vectors ([docs/WIRE-FORMAT.md §8](docs/WIRE-FORMAT.md)).
+
+Rail-specific security notes (see [SECURITY.md](SECURITY.md) and the [package README](packages/x402/README.md)):
 
 - **`merchant.url` is the real endpoint you contact**, not the server's `resource`
   claim — host allowlists bind where you actually connect. A server that claims a
   different origin than the one reached is refused.
-- **In x402 the money goes to `payTo` (an address), decoupled from the request
-  host.** A host allowlist does *not* constrain the recipient — pin it with an
-  `id:<payTo>` pattern if that matters.
+- **In x402 the money goes to `payTo`, decoupled from the request host.** A host
+  allowlist does *not* constrain the recipient — pin it with an `id:<payTo>`
+  pattern if that matters. v2 role-constant `payTo` values (e.g. `"merchant"`)
+  are refused by default: an unresolvable recipient cannot be allowlisted.
 - **Pass the `assets` registry.** Without it, `currency` comes from the server's
   spoofable `extra.symbol`. With it, a token that isn't on your list is refused.
-- **Spend is counted once the `X-PAYMENT` is transmitted** — because it's a bearer
-  authorization the server can still settle even while returning an error. Bind a
-  consume-once mandate (`maxUses`) to bound retries.
+  v1 network names and v2 CAIP-2 ids are **separate registry keys**.
+- **Spend is counted once the payment header (`X-PAYMENT` / `PAYMENT-SIGNATURE`)
+  is transmitted** — because it's a bearer authorization the server can still
+  settle even while returning an error. Under v2's `upto` scheme the counted
+  amount is the authorized maximum. Bind a consume-once mandate (`maxUses`) to
+  bound retries. the v2 schemes analysed here (`exact`, `upto`) carry no reusable
+  authorizations, so per-authorization counting matches them; an unanalysed
+  `batch-settlement` scheme exists in the spec tree, under which counting is
+  conservative rather than complete.
 
 ## Revocation & kill switch (`@vaduno/revocation`)
 

@@ -20,6 +20,8 @@ import {
   type AssetInfo,
   type FetchLike,
   type PaymentRequirements,
+  type PaymentRequirementsV2,
+  type X402V2PayContext,
 } from "@vaduno/x402";
 
 const money = (atomic: number) => `$${(atomic / 1e6).toFixed(2)}`;
@@ -55,6 +57,48 @@ function x402Server(priceAtomic: number, resource: string, payTo: string): Fetch
   };
 }
 
+// ── A mock x402 V2 server: all protocol data in HEADERS, body is just "{}" ──
+// 402 + PAYMENT-REQUIRED (base64 PaymentRequired) until a PAYMENT-SIGNATURE
+// header arrives, then 200 + PAYMENT-RESPONSE.
+function x402ServerV2(priceAtomic: number, resourceUrl: string, payTo: string): FetchLike {
+  const paymentRequired = {
+    x402Version: 2,
+    resource: { url: resourceUrl, description: "Demo API (x402 v2)" },
+    accepts: [
+      {
+        scheme: "exact",
+        network: "eip155:84532", // CAIP-2 in v2 — a different registry key than "base-sepolia"
+        amount: String(priceAtomic),
+        payTo,
+        asset: "0xUSDCTokenContract",
+        maxTimeoutSeconds: 60,
+        extra: { symbol: "USDC", decimals: 6, name: "Demo API" },
+      },
+    ],
+  };
+  return async (_input, init) => {
+    const headers = new Headers(init?.headers);
+    if (headers.has("PAYMENT-SIGNATURE")) {
+      const settlement = encodePaymentHeader({
+        success: true,
+        transaction: "0xv2settle_" + Math.floor(priceAtomic).toString(16),
+        network: "eip155:84532",
+      });
+      return new Response(JSON.stringify({ ok: true, data: "premium content (v2)" }), {
+        status: 200,
+        headers: { "PAYMENT-RESPONSE": settlement, "Content-Type": "application/json" },
+      });
+    }
+    return new Response("{}", {
+      status: 402,
+      headers: {
+        "Content-Type": "application/json",
+        "PAYMENT-REQUIRED": encodePaymentHeader(paymentRequired),
+      },
+    });
+  };
+}
+
 // ── The agent's wallet lives HERE — Vaduno never sees it. ───────────────────
 // In production this signs an EIP-3009 transferWithAuthorization (or similar)
 // and returns the base64 X-PAYMENT payload. Here we just fake the payload.
@@ -64,6 +108,27 @@ async function mockPayer(req: PaymentRequirements): Promise<string> {
     scheme: req.scheme,
     network: req.network,
     payload: { signature: "0xMOCK_SIGNATURE", authorization: { value: req.maxAmountRequired } },
+  });
+}
+
+// The v2 payer builds the PAYMENT-SIGNATURE value. It MUST echo exactly the
+// requirement it was handed as `accepted` — the same object Vaduno validated.
+async function mockPayerV2(
+  req: PaymentRequirementsV2,
+  ctx: X402V2PayContext,
+): Promise<string> {
+  return encodePaymentHeader({
+    x402Version: 2,
+    resource: ctx.resource,
+    accepted: req,
+    payload: { signature: "0xMOCK_SIGNATURE_V2", authorization: { value: req.amount } },
+    ...(ctx.extensions
+      ? {
+          extensions: Object.fromEntries(
+            Object.entries(ctx.extensions).map(([id, e]) => [id, { info: e.info }]),
+          ),
+        }
+      : {}),
   });
 }
 
@@ -84,9 +149,11 @@ const PAYTO = "0x000000000000000000000000000000000000dEaD";
 const USDC_CONTRACT = "0xUSDCTokenContract";
 
 // Trusted token registry: binds spend to the REAL token contract, so a hostile
-// server can't spoof extra.symbol="USDC" over a different asset.
+// server can't spoof extra.symbol="USDC" over a different asset. v1 names and
+// v2 CAIP-2 ids are SEPARATE keys — the same chain must be authored twice.
 const ASSETS: AssetInfo[] = [
   { network: "base-sepolia", asset: USDC_CONTRACT, symbol: "USDC", decimals: 6 },
+  { network: "eip155:84532", asset: USDC_CONTRACT, symbol: "USDC", decimals: 6 },
 ];
 
 function agentFetch(serverFetch: FetchLike) {
@@ -94,6 +161,7 @@ function agentFetch(serverFetch: FetchLike) {
     guard,
     agentId: "researcher-agent-1",
     pay: mockPayer,
+    v2: { pay: mockPayerV2 }, // opt-in: without this, v2 402s are refused
     fetch: serverFetch,
     assets: ASSETS,
     category: "api-credits",
@@ -102,8 +170,8 @@ function agentFetch(serverFetch: FetchLike) {
   });
 }
 
-async function callPaidApi(label: string, url: string, priceAtomic: number) {
-  const fetchWithPay = agentFetch(x402Server(priceAtomic, url, PAYTO));
+async function callApi(label: string, priceAtomic: number, url: string, server: FetchLike) {
+  const fetchWithPay = agentFetch(server);
   try {
     const res = await fetchWithPay(url);
     const body = (await res.json()) as { data: string };
@@ -118,6 +186,14 @@ async function callPaidApi(label: string, url: string, priceAtomic: number) {
       console.log(`💥 ${label}: ${(err as Error).message}`);
     }
   }
+}
+
+async function callPaidApi(label: string, url: string, priceAtomic: number) {
+  await callApi(label, priceAtomic, url, x402Server(priceAtomic, url, PAYTO));
+}
+
+async function callPaidApiV2(label: string, url: string, priceAtomic: number) {
+  await callApi(label, priceAtomic, url, x402ServerV2(priceAtomic, url, PAYTO));
 }
 
 // A hostile server: the agent is tricked into calling evil.example, which
@@ -160,14 +236,28 @@ async function callHostile() {
   }
 }
 
+// A v2 server offering a payTo ROLE CONSTANT instead of an address. Vaduno
+// refuses it by default: an unresolvable recipient cannot be allowlisted.
+async function callV2RolePayTo() {
+  const url = "https://trusted-api.com/role";
+  await callApi("v2 server with payTo role \"merchant\"", usdc(1), url,
+    x402ServerV2(usdc(1), url, "merchant"));
+}
+
 console.log("— Vaduno x402 demo: agent paying for APIs in USDC, $5/txn $10/day —\n");
 
-await callPaidApi("Cheap API call", "https://trusted-api.com/weather", usdc(3));
-await callPaidApi("Another call", "https://trusted-api.com/news", usdc(4));
+await callPaidApi("Cheap API call (v1)", "https://trusted-api.com/weather", usdc(3));
+await callPaidApi("Another call (v1)", "https://trusted-api.com/news", usdc(4));
+// Same agent, same policy, same caps — but this server speaks x402 v2:
+// PaymentRequired arrives in the PAYMENT-REQUIRED header, the paid retry
+// carries PAYMENT-SIGNATURE, and the network id is CAIP-2.
+await callPaidApiV2("Premium call (v2, header transport)", "https://trusted-api.com/quotes", usdc(2));
 await callPaidApi("Over per-txn cap", "https://trusted-api.com/bulk", usdc(6));
 await callPaidApi("Untrusted host (prompt-injected URL)", "https://evil-api.com/data", usdc(1));
 await callHostile();
-// $3 + $4 = $7 spent; this $4 would make $11 > $10/day → blocked by the daily cap.
+await callV2RolePayTo();
+// $3 + $4 + $2 = $9 spent; this $4 would make $13 > $10/day → daily cap blocks
+// it, and v1/v2 spends share ONE budget — the protocol version cannot reset caps.
 await callPaidApi("Blows the daily cap", "https://trusted-api.com/expensive", usdc(4));
 
 console.log("\n— Flight recorder —\n");
