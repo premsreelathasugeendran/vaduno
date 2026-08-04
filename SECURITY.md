@@ -303,9 +303,12 @@ prompt-injected** into calling arbitrary URLs. Guarantees:
 ## Dependency posture
 
 `@vaduno/guard` has **zero runtime dependencies** — deliberately, because it is
-the package that sits between an agent and real money. The other four published
-packages depend only on `@vaduno/guard` and, for `@vaduno/stripe`, a `stripe`
-*peer* dependency you supply.
+the package that sits between an agent and real money. The other six published
+packages depend only on `@vaduno/*` and, for `@vaduno/stripe`, a `stripe`
+*peer* dependency you supply. CI asserts this on every push: a published package
+gaining any third-party runtime dependency fails the build, because an
+installing user receiving no third-party code is what makes this supply chain
+auditable by reading it.
 
 Open advisories therefore live entirely in dev tooling and in `apps/dashboard`,
 which is **not published to npm**:
@@ -316,6 +319,13 @@ which is **not published to npm**:
   nothing in the published packages links against `sharp`.
 - `vite` / `esbuild` — dev-server advisories reachable only when a dev server is
   running and a hostile page is open in the same browser. Neither ships.
+- `postcss` (GHSA-fxqj-rqcc-2cmp, sourceMappingURL reads arbitrary `.map` files
+  when `from` is unset) — a transitive of the dashboard's Tailwind/Next
+  toolchain, exercised only at build time on a developer's own machine. Note
+  that the `overrides` entry pinning `postcss` in the root `package.json` does
+  **not** currently take effect: npm records no `overrides` in the lockfile for
+  this workspace layout, so treat that entry as intent rather than enforcement,
+  and verify the resolved version before relying on it.
 
 If an advisory ever lands in a published package's runtime dependency graph,
 that is a genuine security issue for this project — report it privately.

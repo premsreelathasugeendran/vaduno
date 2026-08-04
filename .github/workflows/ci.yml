@@ -167,12 +167,12 @@ jobs:
           VADUNO_SESSION_SECRET: ci-build-only-not-a-real-secret-0123456789
 
   # Enforces the property the whole project rests on: the published packages
-  # have NO third-party runtime dependencies. `--omit=dev` scopes this to what
-  # an installing user actually gets, so a dev-only advisory in the dashboard's
-  # toolchain cannot turn this red — but the day someone adds a runtime
-  # dependency with a known vulnerability, it does.
+  # have NO third-party runtime dependencies, so an installing user receives no
+  # third-party code and no advisory can reach them through @vaduno/*. The
+  # assertion is the gate; the audit beside it is informational, because it
+  # necessarily includes the private dashboard's toolchain.
   supply-chain:
-    name: no vulnerable runtime dependencies
+    name: published packages ship no third-party code
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -181,21 +181,19 @@ jobs:
           node-version: "20"
           cache: npm
       - run: npm ci
-      # Scoped per published package, NOT run at the workspace root. A root
-      # audit traverses apps/dashboard — private, never published — so a
-      # vulnerable transitive of Next would fail this job while no installing
-      # user is exposed to it. That false positive is how a supply-chain gate
-      # gets muted. These seven are exactly what npm serves.
-      - name: Audit what users actually install
-        run: |
-          for p in guard transparency revocation x402 stripe postgres agent; do
-            echo "--- @vaduno/$p ---"
-            npm audit --omit=dev --audit-level=low -w "@vaduno/$p"
-          done
-      # A published package gaining ANY third-party runtime dependency is a
-      # design change, not a routine bump — zero-dependency is a stated
-      # property of @vaduno/guard and the reason its supply chain is auditable
-      # by reading it. Fail loudly so the decision is deliberate.
+      # THE GATE. Every published package declares zero third-party runtime
+      # dependencies, so an installing user receives no third-party code at
+      # all and no advisory can reach them through these packages. That makes
+      # this assertion both necessary and sufficient, and it is why it runs
+      # BEFORE the audit below.
+      #
+      # An earlier version of this job ran `npm audit -w @vaduno/<pkg>` per
+      # package and treated a clean result as proof. It is not: `-w` does not
+      # scope an audit to that workspace's dependency tree — it audits the
+      # whole lockfile and merely runs from the workspace directory. It
+      # reported a postcss advisory against @vaduno/guard, a package with no
+      # dependencies whatsoever. A gate that answers a question you did not
+      # ask is worse than no gate, because its green tick is believed.
       - name: Published packages declare no third-party runtime deps
         run: |
           node -e '
@@ -212,7 +210,18 @@ jobs:
             }
             if (bad.length) {
               console.error("::error::third-party runtime dependency added: " + bad.join(", "));
+              console.error("::error::this is a design change, not a routine bump — zero-dependency is a stated property of @vaduno/guard and the reason its supply chain is auditable by reading it");
               process.exit(1);
             }
             console.log("all published packages: zero third-party runtime deps");
           '
+
+      # VISIBILITY, NOT A GATE. This necessarily includes apps/dashboard —
+      # private, never published — whose Next toolchain is where every
+      # third-party dependency in this repo lives. A new advisory there is
+      # worth seeing on every run, and worth fixing, but it does not reach a
+      # single installing user, so it must not redden master and train
+      # everyone to ignore this job.
+      - name: Advisories in the repo's own toolchain (informational)
+        continue-on-error: true
+        run: npm audit --audit-level=moderate
