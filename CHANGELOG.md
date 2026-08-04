@@ -6,7 +6,7 @@ This project is pre-1.0. Under semver, 0.x minor bumps may break the API. Two
 have, and each was breaking because the fix for a real security bug required it.
 See [`SECURITY.md`](SECURITY.md) for what is and isn't guaranteed.
 
-## Unreleased
+## 0.4.0 — 2026-08-04
 
 ### Fixed
 
