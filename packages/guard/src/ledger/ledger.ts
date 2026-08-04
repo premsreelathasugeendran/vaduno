@@ -20,7 +20,8 @@ export type LedgerEntryType =
   | "execution_result"
   | "policy_updated"
   | "guard_frozen"
-  | "guard_unfrozen";
+  | "guard_unfrozen"
+  | "risk_scored";
 
 export interface LedgerEntry {
   seq: number;

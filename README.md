@@ -208,6 +208,12 @@ reserve(windows, amount)  →  execute  →  commit
 
 Writing your own limiter is expected, and there's an oracle for it: [`spend-limiter-conformance.ts`](packages/guard/test/spend-limiter-conformance.ts) runs 23 cases against **two independent handles on one backing store**. A deliberately naive check-then-act implementation passes all 19 sequential cases and fails exactly the 4 concurrent ones — which is precisely how this class of bug reaches production.
 
+## Risk scorecard: deterministic step-up routing and auto-freeze
+
+Opt-in (`risk: new RiskScorecard({...})` on the guard): eight deterministic, ledger-derived signals — first-seen merchant, amount above the merchant/global typical, declared out-of-hours windows, execution bursts, deny streaks, first use of a mandate, approach to the day cap — score every intent that passes policy. Elevated scores route to your existing `approvalHandler` (`RISK_STEPUP`); high scores deny (`RISK_DENY`) *before* any budget or mandate use is touched, and an approval can never override a deny; an `autoFreeze` threshold additionally stops the process until a manual `unfreeze()`. The merge is tighten-only, so risk can never loosen a policy decision, and every assessment is recorded in the ledger with a head anchor that makes it reproducible bit-for-bit *given the same scorecard config and policy* — the entry carries the config's hash, not the config itself, and the policy is not ledgered.
+
+This is the routing analogue of 3DS2 risk-based authentication (frictionless / challenge) and of the signals behind Visa Advanced Authorization / Mastercard Decision Intelligence — **mechanism only**: those network scores aggregate network-scale data and real 3DS2 carries an issuer liability shift, while this scorecard sees one deployment's ledger and confers no liability property of any kind. Deterministic and replayable is the trade, and it is deliberate. Details and the honest boundary: [`@vaduno/guard` README](packages/guard/README.md) and [SECURITY.md](SECURITY.md).
+
 ## Ledger stores
 
 | Store | Use |
@@ -322,6 +328,7 @@ An allow **reserves budget immediately** — if it merely returned an opinion, t
 - ✅ **Revocation registry** (`@vaduno/revocation`) — targeted kill switch + W3C Bitstring Status Lists
 - ✅ **Witness cosigning** — C2SP checkpoints + cosignatures; independent witnesses attest the log never forked
 - ✅ **Agent framework hooks** (`@vaduno/agent`) — decide-only tool-approval binding; SDK adapter not yet run against a live session
+- ✅ **Deterministic risk scorecard** — ledger-derived tiers, step-up routing through the approval branch, auto-freeze; reproducible bit-for-bit from the ledger given the same scorecard config and policy
 - **Consent-evidence dossiers** — exportable dispute/representment packets built on the audit trail
 - **UPI adapter** — ready for NPCI delegated-payment APIs the day they open
 

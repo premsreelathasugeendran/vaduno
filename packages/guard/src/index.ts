@@ -8,6 +8,25 @@ export type {
 } from "./guard.js";
 export { evaluatePolicy, merchantMatches, policyWindows } from "./policy/engine.js";
 export {
+  RiskScorecard,
+  RiskConfigError,
+  RiskUnscorableError,
+  applyRiskTier,
+  anchoredPrefix,
+  RISK_SIGNAL_KEYS,
+} from "./risk/scorecard.js";
+export type {
+  RiskAnchor,
+  RiskAssessInput,
+  RiskAssessment,
+  RiskFiredSignal,
+  RiskScorecardConfig,
+  RiskSignalKey,
+  RiskSignalsConfig,
+  RiskTier,
+  UtcMinuteWindow,
+} from "./risk/scorecard.js";
+export {
   AuditLedger,
   GENESIS_HASH,
 } from "./ledger/ledger.js";

@@ -105,6 +105,44 @@ velocity: {
 - **Set `merchant.url` consistently, or one merchant gets two budgets.** Merchant identity is derived as the URL host when a URL is present and the merchant id otherwise, and the two forms are deliberately disjoint so an attacker cannot craft an id that collides with a host. The honest-integrator cost is that the *same* merchant sent sometimes with a URL and sometimes without counts as two separate per-merchant budgets.
 - **An empty `maxTransactions: []` enforces nothing** — it produces no windows and is identical to omitting the field. It is not an error and it is not a limit of zero; if you mean "no transactions", the policy already has better tools.
 
+## Deterministic risk scorecard: tiers, step-up routing, auto-freeze
+
+The routing analogue of 3DS2 risk-based authentication (frictionless → allow unchanged; challenge → your existing `approvalHandler`) and of the *signals* behind Visa Advanced Authorization / Mastercard Decision Intelligence — computed deterministically at **one deployment** from its own ledger, and reproducible from it bit-for-bit. Deliberately not black-box ML: every fired signal names its rule. **Mechanism-only comparison:** real 3DS2 carries an issuer liability shift; Vaduno's scorecard shifts liability to no one — it only routes this deployment's payment to allow / step-up / deny.
+
+```ts
+import { RiskScorecard } from "@vaduno/guard";
+
+const guard = new VadunoGuard({
+  policy,
+  ledger,
+  approvalHandler, // answers step-ups; it can never override a risk deny
+  risk: new RiskScorecard({
+    lookbackMs: 30 * 86_400_000,
+    stepUpAt: 5,                  // score >= 5  → require_approval (RISK_STEPUP)
+    denyAt: 10,                   // score >= 10 → deny (RISK_DENY)
+    autoFreeze: { atScore: 15 },  // deny AND freeze this process; manual unfreeze only
+    signals: {
+      FIRST_SEEN_MERCHANT: { weight: 3 },
+      AMOUNT_ABOVE_MERCHANT_TYPICAL: { weight: 3, multiplierBps: 30_000, minHistory: 5 },
+      AMOUNT_ABOVE_GLOBAL_TYPICAL: { weight: 2, multiplierBps: 50_000, minHistory: 10 },
+      OUT_OF_HOURS: { weight: 2, allowedWindowsUtc: [{ startMinute: 540, endMinute: 1020 }] },
+      VELOCITY_BURST: { weight: 2, maxCount: 10, windowMs: 3_600_000 },
+      DENY_STREAK: { weight: 4, minDenies: 3, windowMs: 3_600_000 },
+      FIRST_USE_OF_MANDATE: { weight: 2 },
+      CAP_APPROACH: { weight: 2, thresholdBps: 8_000 },
+    },
+  }),
+});
+```
+
+- **Eight deterministic signals, integer/BigInt math over the ledger.** First-seen merchant, amount above the merchant/global lower-median, declared out-of-hours windows (never learned), execution bursts, deny streaks, first use of a mandate, approach to the day cap. No model in the loop.
+- **Tighten-only, by construction.** Low = the policy decision unchanged; elevated = `require_approval` through the *existing* approval branch; high = deny, and the approval handler is never invoked. An assessment can raise a decision's strictness, never lower it — risk is defense-in-depth, not an allow authority.
+- **A risk deny burns nothing.** Both risk denials land *before* the budget reservation and any mandate consumption.
+- **Scored twice on the way to money.** A preliminary pass outside the mutex and, for intents still headed for execution, a final re-evaluation inside the critical section (concurrent intents move the signals); risk that rises in between without an approval denies `RISK_STEPUP_UNAPPROVED`.
+- **Reproducible from the ledger.** Every assessment is hard-appended as a `risk_scored` entry carrying a ledger-head anchor; `anchoredPrefix()` + `RiskScorecard.assess()` re-derive it bit-for-bit.
+- **Fail closed at every seam.** Invalid config throws at construction with *every* violation listed (a typo'd signal key does not silently no-op); an unscorable intent denies `RISK_UNSCORABLE`; an unreadable history source denies; a scorer bug denies; no `risk` option = the pipeline is unchanged.
+- **Honest boundary.** The scorer sees one deployment's ledger, never network-scale data. Merchant identity authority remains the allowlist, and `autoFreeze` uses the per-process local freeze — the cross-process `FreezeStore` is separate wiring. See [SECURITY.md](https://github.com/premsreelathasugeendran/vaduno/blob/master/SECURITY.md).
+
 ## Design principles
 
 1. **Fail closed.** No approval handler? Approval-needing intents are denied. Internal error? Denied and audited. Unknown mandate? Denied.

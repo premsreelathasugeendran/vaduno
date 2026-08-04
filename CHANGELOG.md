@@ -38,6 +38,40 @@ See [`SECURITY.md`](SECURITY.md) for what is and isn't guaranteed.
   states the NORMATIVE key-separation requirement: keys behind a signer are
   minted for Vaduno and hold no other signing authority (blockchain wallet
   keys are explicitly prohibited).
+- **Deterministic risk scorecard: ledger-derived tiers, step-up routing,
+  auto-freeze.** Opt-in via `risk: new RiskScorecard({...})` on the guard.
+  Eight deterministic signals (integer/BigInt math over the ledger, no model,
+  nothing learned): `FIRST_SEEN_MERCHANT`, `AMOUNT_ABOVE_MERCHANT_TYPICAL`
+  and `AMOUNT_ABOVE_GLOBAL_TYPICAL` (lower-median × multiplierBps,
+  minHistory-gated), `OUT_OF_HOURS` (config-declared half-open UTC windows),
+  `VELOCITY_BURST`, `DENY_STREAK`, `FIRST_USE_OF_MANDATE` (joined from
+  `mandate_consumed` entries — `execution_result` rows carry no mandateId),
+  and `CAP_APPROACH` (thresholdBps of `perDayMinor`; configured without a
+  perDayMinor is a `RISK_UNSCORABLE` deny, not a skip). Score ≥ `stepUpAt`
+  routes `require_approval` through the EXISTING approval branch
+  (`RISK_STEPUP` + the fired signals in the reasons); score ≥ `denyAt` denies
+  (`RISK_DENY`) and the approval handler is never invoked — approval answers
+  a step-up, it never overrides a deny. Both risk denials are ordered BEFORE
+  `limiter.reserve()` and `mandates.consumeOnce()`, so a risk deny never
+  burns budget or a mandate use. Intents get a preliminary pass outside the
+  mutex and, when still headed for execution, a final re-evaluation inside
+  the critical section — risk that rises in between without an approval
+  denies `RISK_STEPUP_UNAPPROVED`. Every assessment is hard-appended as a
+  `risk_scored` ledger entry (one additive `LedgerEntryType`) carrying a
+  ledger-head ANCHOR; `anchoredPrefix()` + `RiskScorecard.assess()` replay
+  it bit-for-bit, including under concurrent traffic. `autoFreeze.atScore`
+  (validated ≥ `denyAt`) denies the triggering intent and then freezes via
+  the existing per-process `freeze()`, whose signature gains an optional
+  structured `details.autoFreeze: {intentId, score, atScore}` recorded on
+  the `guard_frozen` entry. The merge is monotone tighten-only
+  (allow < require_approval < deny) and the assessment is agentId-invariant;
+  constructor-time validation throws listing EVERY violation, including
+  unknown signal keys. No `risk` option configured = the pipeline is
+  unchanged. Mechanism-only analogue of 3DS2 risk-based authentication
+  routing and Visa Advanced Authorization / Mastercard Decision Intelligence
+  signals — single-deployment, deterministic, and conferring no liability
+  property of any kind (see SECURITY.md Known Limits item 9 for the honest
+  boundary).
 
 - **Merchant-scoped, multi-window velocity controls.**
   `velocity.maxTransactions` now also accepts an ARRAY of count limits (burst

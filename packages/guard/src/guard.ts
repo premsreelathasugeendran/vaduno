@@ -1,5 +1,11 @@
 import { evaluatePolicy, policyWindows } from "./policy/engine.js";
 import { MemorySpendLimiter, merchantKeyOf } from "./enforce/spend-limiter.js";
+import {
+  applyRiskTier,
+  RiskUnscorableError,
+  type RiskAssessment,
+  type RiskScorecard,
+} from "./risk/scorecard.js";
 import type { AuditLedger, LedgerEntry } from "./ledger/ledger.js";
 import type { MandateManager } from "./mandate/mandate.js";
 import type {
@@ -67,6 +73,23 @@ export interface VadunoGuardOptions {
    * — a check that throws denies the payment.
    */
   revocationCheck?: RevocationCheck;
+  /**
+   * Deterministic risk scorecard (see `RiskScorecard`). When configured,
+   * every intent that passes policy is scored from the ledger TWICE — a
+   * preliminary pass outside the mutex, and a final pass inside the critical
+   * section (signals move as concurrent intents commit) — and each
+   * assessment is hard-appended as a `risk_scored` ledger entry before it is
+   * acted on. The tier can only TIGHTEN the policy decision: low changes
+   * nothing; elevated routes through the EXISTING approval branch
+   * (RISK_STEPUP; no handler configured = NO_APPROVAL_HANDLER deny); high
+   * denies (RISK_DENY) and the approval handler is NEVER invoked — approval
+   * answers a step-up, it never overrides a deny. Both risk denials happen
+   * BEFORE `limiter.reserve()` and `mandates.consumeOnce()`, so a risk deny
+   * never burns budget or a mandate use. When this option is absent the
+   * pipeline is unchanged. Risk is defense-in-depth, never an allow
+   * authority: no assessment can loosen a policy outcome.
+   */
+  risk?: RiskScorecard;
   /** Injectable clock for tests. */
   now?: () => Date;
 }
@@ -118,6 +141,8 @@ export class VadunoGuard {
   private readonly requireMandate: boolean;
   private readonly approvalHandler: ApprovalHandler | undefined;
   private readonly revocationCheck: RevocationCheck | undefined;
+  /** Deterministic risk scorecard, or undefined = pipeline unchanged. */
+  private readonly risk: RiskScorecard | undefined;
   private readonly now: () => Date;
   private readonly history: SpendHistory;
   /** Authoritative atomic budget gate. See VadunoGuardOptions.limiter. */
@@ -177,6 +202,7 @@ export class VadunoGuard {
     this.requireHydration = opts.requireHydration ?? false;
     this.approvalHandler = opts.approvalHandler;
     this.revocationCheck = opts.revocationCheck;
+    this.risk = opts.risk;
     this.now = opts.now ?? (() => new Date());
     this.usingInMemoryHistory = opts.history === undefined;
     this.history = opts.history ?? this.inMemoryHistory();
@@ -700,11 +726,24 @@ export class VadunoGuard {
    * safe direction) and isFreezeDegraded() reports that the freeze would not
    * survive a restart. Throwing away the local freeze on a failed write
    * would fail OPEN.
+   *
+   * `details.autoFreeze` (additive, optional) is how the risk scorecard's
+   * auto-freeze records WHICH intent and score pulled the switch: the
+   * structured `{intentId, score, atScore}` rides on the guard_frozen ledger
+   * record so the evidence names the trigger, not just a reason string.
+   * Everything else — synchronous flag flip, epoch stamp, lock-free
+   * best-effort append — is identical for both callers.
    */
-  async freeze(reason: string): Promise<void> {
+  async freeze(
+    reason: string,
+    details?: { autoFreeze?: { intentId: string; score: number; atScore: number } },
+  ): Promise<void> {
     this.frozen = { reason };
     this.freezeEpoch += 1;
-    const write = this.ledger.append("guard_frozen", { reason });
+    const write = this.ledger.append("guard_frozen", {
+      reason,
+      ...(details?.autoFreeze !== undefined ? { autoFreeze: details.autoFreeze } : {}),
+    });
     this.freezeWrites = write.then(
       () => undefined,
       () => undefined,
@@ -878,26 +917,46 @@ export class VadunoGuard {
         return { status: "denied", intentId: safe.id, policyResult: prelim };
       }
 
+      // DETERMINISTIC RISK, PRELIMINARY pass — outside the mutex, like the
+      // policy prelim, so a step-up approval can never stall other payments.
+      // Skipped when the policy already denied: risk only TIGHTENS, and
+      // there is nothing tighter than a deny. A high tier denies RIGHT HERE,
+      // before the approval branch below can run — approval answers a
+      // step-up; it must never be offered a chance to override a deny.
+      let prelimStance = prelim;
+      if (this.risk) {
+        const scored = await this.scoreRisk(safe, refs, "prelim");
+        if (scored.kind === "unscorable") {
+          return await this.denyRiskUnscorable(safe, refs, scored.message);
+        }
+        if (scored.assessment.tier === "high") {
+          return await this.denyRiskHigh(safe, refs, prelim, scored.assessment);
+        }
+        // low = unchanged; elevated = require_approval through the EXISTING
+        // approval branch, reasons carrying RISK_STEPUP + the fired signals.
+        prelimStance = applyRiskTier(prelim, scored.assessment);
+      }
+
       let approved = false;
-      if (prelim.decision === "require_approval") {
+      if (prelimStance.decision === "require_approval") {
         if (!this.approvalHandler) {
           const denied = withExtraReason(
-            prelim,
+            prelimStance,
             "NO_APPROVAL_HANDLER",
             "approval required but no approvalHandler configured (fail closed)",
           );
           await this.ledger.append("policy_decision", { policyResult: denied }, refs);
           return { status: "denied", intentId: safe.id, policyResult: denied };
         }
-        await this.ledger.append("approval_requested", { reasons: prelim.reasons }, refs);
+        await this.ledger.append("approval_requested", { reasons: prelimStance.reasons }, refs);
         const response = await this.approvalHandler({
           intent: safe,
-          policyResult: prelim,
+          policyResult: prelimStance,
           requestedAt: this.now().toISOString(),
         });
         await this.ledger.append("approval_resolved", { response }, refs);
         if (!response.approved) {
-          return { status: "approval_rejected", intentId: safe.id, policyResult: prelim };
+          return { status: "approval_rejected", intentId: safe.id, policyResult: prelimStance };
         }
         approved = true;
       }
@@ -948,7 +1007,41 @@ export class VadunoGuard {
       await this.ledger.append("policy_decision", { policyResult: denied }, refs);
       return { status: "denied", intentId: intent.id, policyResult: denied };
     }
-    await this.ledger.append("policy_decision", { policyResult: finalResult }, refs);
+
+    // DETERMINISTIC RISK, FINAL pass — RE-EVALUATED here inside the critical
+    // section, not reused from the prelim, because every signal is
+    // ledger-derived and concurrent intents commit entries between the
+    // prelim and this point: the score that was low outside the mutex may
+    // not be low anymore. Ordered BEFORE limiter.reserve() and
+    // mandates.consumeOnce() below — a risk deny must never burn budget or
+    // a mandate use.
+    let finalStance = finalResult;
+    if (this.risk) {
+      const scored = await this.scoreRisk(intent, refs, "final");
+      if (scored.kind === "unscorable") {
+        return await this.denyRiskUnscorable(intent, refs, scored.message);
+      }
+      if (scored.assessment.tier === "high") {
+        // Deny even if a human already approved a step-up: approval answers
+        // a step-up, it never overrides a deny.
+        return await this.denyRiskHigh(intent, refs, finalResult, scored.assessment);
+      }
+      finalStance = applyRiskTier(finalResult, scored.assessment);
+      if (finalStance.decision === "require_approval" && !approved) {
+        // Risk ROSE between the prelim and this re-evaluation into the
+        // step-up tier, and no approval is held. Mirrors
+        // APPROVAL_REQUIRED_AFTER_POLICY_CHANGE: fail closed rather than
+        // execute a step-up nobody answered.
+        const denied = withExtraReason(
+          finalStance,
+          "RISK_STEPUP_UNAPPROVED",
+          "risk reached the step-up tier after the preliminary evaluation; no approval was obtained (fail closed)",
+        );
+        await this.ledger.append("policy_decision", { policyResult: denied }, refs);
+        return { status: "denied", intentId: intent.id, policyResult: denied };
+      }
+    }
+    await this.ledger.append("policy_decision", { policyResult: finalStance }, refs);
 
     // Revocation gate: checked HERE — inside the critical section, after any
     // human approval — so a kill switch pulled while an approval was pending
@@ -1183,7 +1276,7 @@ export class VadunoGuard {
       return {
         status: "authorized",
         intentId: intent.id,
-        policyResult: finalResult,
+        policyResult: finalStance,
         ...(consumedMandateId ? { mandateId: consumedMandateId } : {}),
       } as GuardResult<T>;
     }
@@ -1224,7 +1317,7 @@ export class VadunoGuard {
           error: message,
         });
       }
-      return { status: "failed", intentId: intent.id, policyResult: finalResult, error: message };
+      return { status: "failed", intentId: intent.id, policyResult: finalStance, error: message };
     }
 
     // The charge happened. Settle the reservation into committed spend FIRST —
@@ -1260,8 +1353,98 @@ export class VadunoGuard {
       auditDegraded = true;
     }
     return auditDegraded
-      ? { status: "executed", intentId: intent.id, policyResult: finalResult, value, auditDegraded: true }
-      : { status: "executed", intentId: intent.id, policyResult: finalResult, value };
+      ? { status: "executed", intentId: intent.id, policyResult: finalStance, value, auditDegraded: true }
+      : { status: "executed", intentId: intent.id, policyResult: finalStance, value };
+  }
+
+  /**
+   * One risk pass: read the ledger, score, hard-append the evidence.
+   *
+   * Fail-closed map, exhaustively:
+   *  - the HISTORY SOURCE (ledger.all) throws → "unscorable", which the
+   *    callers turn into a RISK_UNSCORABLE deny with the approval handler,
+   *    the limiter and the mandate registry all untouched;
+   *  - the scorer raises RiskUnscorableError (config incoherent for the
+   *    active policy, unusable inputs) → same RISK_UNSCORABLE deny;
+   *  - any OTHER scorer error is a bug, and a bug is not a pass: it is
+   *    rethrown into the pipeline's outer catch, which denies
+   *    GUARD_INTERNAL_ERROR — still before any budget or mandate use;
+   *  - the risk_scored append is HARD: an assessment that cannot be recorded
+   *    must not be acted on, so a failed append throws into the same
+   *    GUARD_INTERNAL_ERROR deny.
+   */
+  private async scoreRisk(
+    intent: PaymentIntent,
+    refs: { intentId: string; agentId: string },
+    phase: "prelim" | "final",
+  ): Promise<
+    | { kind: "scored"; assessment: RiskAssessment }
+    | { kind: "unscorable"; message: string }
+  > {
+    let entries: LedgerEntry[];
+    try {
+      entries = await this.ledger.all();
+    } catch (err) {
+      return {
+        kind: "unscorable",
+        message: `risk history source failed: ${errMsg(err)} (fail closed)`,
+      };
+    }
+    let assessment: RiskAssessment;
+    try {
+      assessment = this.risk!.assess({
+        intent,
+        policy: this.policy,
+        entries,
+        nowMs: this.now().getTime(),
+      });
+    } catch (err) {
+      if (err instanceof RiskUnscorableError) {
+        return { kind: "unscorable", message: errMsg(err) };
+      }
+      throw err;
+    }
+    await this.ledger.append("risk_scored", { phase, assessment }, refs);
+    return { kind: "scored", assessment };
+  }
+
+  /** "Cannot score" is a DENY, never a skip: zero is the most permissive score. */
+  private async denyRiskUnscorable<T>(
+    intent: PaymentIntent,
+    refs: { intentId: string; agentId: string },
+    message: string,
+  ): Promise<GuardResult<T>> {
+    const denied = internalDeny(this.policy, "RISK_UNSCORABLE", message);
+    await this.ledger.append("policy_decision", { policyResult: denied }, refs);
+    return { status: "denied", intentId: intent.id, policyResult: denied };
+  }
+
+  /**
+   * High-tier deny (RISK_DENY), plus the auto-freeze when the score reaches
+   * `autoFreeze.atScore`. The freeze happens BEFORE the deny is appended:
+   * freeze() flips its flag synchronously, so even if the append below throws
+   * (GUARD_INTERNAL_ERROR deny), the stop is already in force — fail closed.
+   * Auto-freeze inherits the local freeze's PER-PROCESS scope (peers keep
+   * serving until each is frozen; see SECURITY.md) and is lifted by manual
+   * unfreeze() only. Skipped if the guard is already frozen — the operator's
+   * standing reason must not be overwritten by a racing assessment.
+   */
+  private async denyRiskHigh<T>(
+    intent: PaymentIntent,
+    refs: { intentId: string; agentId: string },
+    base: PolicyResult,
+    assessment: RiskAssessment,
+  ): Promise<GuardResult<T>> {
+    const atScore = this.risk!.autoFreezeAtScore;
+    if (atScore !== null && assessment.score >= atScore && !this.frozen) {
+      await this.freeze(
+        `auto-freeze: risk score ${assessment.score} >= ${atScore}`,
+        { autoFreeze: { intentId: intent.id, score: assessment.score, atScore } },
+      );
+    }
+    const denied = applyRiskTier(base, assessment);
+    await this.ledger.append("policy_decision", { policyResult: denied }, refs);
+    return { status: "denied", intentId: intent.id, policyResult: denied };
   }
 
   private async denyAudited<T>(

@@ -37,6 +37,7 @@ does **not** yet cover — so you can decide whether it fits your threat model.
 | Emergency stop | `freeze()` flips its deny flag synchronously and takes no lock, so it is safe to call — and await — from anywhere, including inside an executor or `revocationCheck`. The flag is re-checked inside the critical section: at entry and again at a last exit before the final `execution_started` audit write, on both the `execute()` and `authorize()` paths. A freeze landing before that last exit denies the payment (a mandate use already consumed by it stays burned: over-hold, never overspend); one landing after it — a blind window of that one audit write plus a scheduler tick — cannot stop that payment, and money already handed to the rail (or an authorization already handed back to the caller) is never recalled: recalling in-flight money would require the control over funds Vaduno must never hold. A freeze whose `guard_frozen` write fails stays enforced locally and flags `isFreezeDegraded()` — it would not survive a restart. The LOCAL flag is per-process; for a freeze every process observes, wire a shared `FreezeStore` via `createFreezeCheck` — see Known Limits item 2 for exactly what each half covers |
 | An operator freeze must stop OTHER live processes, not just the one it was issued in | A shared `FreezeStore` (one global row `{epoch, frozen, reason, by, at}` — `MemoryFreezeStore`/`FileFreezeStore` in `@vaduno/revocation`, `PostgresFreezeStore` in `@vaduno/postgres`) consulted on every authorization via `createFreezeCheck(store)` on the `revocationCheck` seam — inside the critical section, after human approval, immediately before the budget reservation. Freezing the store denies every wired process's VERY NEXT authorization; no push, no poll loop, no restart. `unfreeze(expectedEpoch)` is a compare-and-set: every freeze bumps a monotonic epoch, and a stale fence is refused without changing anything, so an operator cannot lift a re-freeze they never saw. Fail closed, loudly: an UNREACHABLE freeze store denies EVERY payment on every wired guard (`FREEZE_CHECK_FAILED`) — a deliberate total stop, which makes the store a hard availability dependency for all payments (see Known Limits item 2). A freeze only denies NEW authorizations: it does not recall in-flight money, and it deliberately does not gate `settle()` — settle records an outcome that already happened, and blocking it would destroy the record of real money rather than prevent any |
 | Compromised agent must be cut off mid-flight | `@vaduno/revocation`: revoking a mandate or an entire agent is checked inside the critical section **after** human approval, so a kill switch pulled while an approval is pending still wins. An unreachable registry denies (`REVOCATION_CHECK_FAILED`) — an outage never reads as "not revoked" |
+| In-policy but anomalous spend from a compromised agent (odd hours, novel merchants, amount spikes, policy-probing deny streaks) | Opt-in deterministic risk scorecard (`risk: new RiskScorecard(...)`): eight ledger-derived signals score every intent that passes policy — a preliminary pass outside the mutex and, for intents still headed for execution, a final re-evaluation inside the critical section (concurrent commits move the signals). Elevated scores route to the human approval branch (`RISK_STEPUP`); high scores deny (`RISK_DENY`) **before** any budget reservation or mandate consumption, and an approval can never override the deny; an `autoFreeze` threshold additionally stops the process (manual `unfreeze()` only, per-process scope — see Known Limits item 9). The merge is tighten-only (allow < require_approval < deny), so risk can never loosen a policy decision; unscorable = `RISK_UNSCORABLE` deny; every assessment is a hard `risk_scored` ledger entry carrying a head anchor that makes it reproducible bit-for-bit **given the same scorecard config and policy** (the entry records the config's hash, not the config; the policy is not ledgered) |
 | Un-revoking by tampering with a published status list | Status lists are Ed25519-signed with `validUntil` freshness and a monotonic version floor; a forged bitstring, a stale list, or a replayed pre-revocation snapshot all fail closed |
 
 Every attempt — allowed, denied, approved, failed — is recorded. Denials and
@@ -228,6 +229,47 @@ These are documented, not hidden. Some are scope choices; some are on the roadma
    `createQueuedApprovalHandler` + an `ApprovalStore` let a separate UI
    (e.g. the dashboard) list and resolve pending approvals; on timeout the
    handler fails closed (rejects).
+9. **The risk scorecard sees ONE deployment's ledger, never network-scale
+   data.** Visa Advanced Authorization and Mastercard Decision Intelligence
+   score against signals aggregated across an entire card network; this
+   scorecard scores against exactly what this deployment's ledger recorded.
+   That is the deliberate trade for determinism and bit-for-bit
+   reproducibility, not an oversight — and it means the scorecard cannot know
+   what it never saw. The 3DS2 comparison is MECHANISM-ONLY: real 3DS2
+   risk-based authentication carries an issuer LIABILITY SHIFT, and nothing
+   here confers any liability property to anyone. What holds structurally:
+   - **Merchant identity authority remains the allowlist.** The
+     merchant-keyed signals (`FIRST_SEEN_MERCHANT`,
+     `AMOUNT_ABOVE_MERCHANT_TYPICAL`) key on `merchantKeyOf()` over
+     attacker-controlled fields, so merchant rotation mints "unfamiliar"
+     merchants — which RAISES the unfamiliarity signal and gates off the
+     typical-amount baseline. That asymmetry is safe only because risk is a
+     TIGHTENING: weights are validated positive, the merge is tighten-only,
+     and no signal combination can turn a policy deny (or the allowlist)
+     into an allow. Risk is defense-in-depth, NEVER an allow authority.
+   - **One documented score suppression:** `intent.mandateId` is
+     attacker-controlled, and omitting it suppresses exactly
+     `FIRST_USE_OF_MANDATE`'s weight when the guard does not
+     `requireMandate` (with `requireMandate: true` a mandate-less intent is
+     denied before risk runs). The field-invariance property test excludes
+     mandateId for precisely this reason.
+   - **`DENY_STREAK` counts the scorecard's own denials, so it
+     self-amplifies.** The streak is every `policy_decision` deny in the
+     window, including `RISK_DENY`, `RISK_UNSCORABLE` and
+     `RISK_STEPUP_UNAPPROVED` — so a high score makes the next score higher.
+     Tighten-only, never an allow, but combined with `autoFreeze` a run of
+     ordinary unrelated denials (a stale merchant allowlist, a currency
+     mismatch) can cascade into freezing the process. Tune `minDenies`
+     against your deployment's normal denial rate, not against the attack.
+   - **`autoFreeze` inherits the LOCAL freeze's per-process scope** (item 2):
+     it denies the triggering intent, then flips this process's freeze flag —
+     it does not stop a live peer, and it deliberately does not write the
+     cross-process `FreezeStore` (which stays separate, operator-wired via
+     `createFreezeCheck`). Manual `unfreeze()` is the only way back.
+   - **No score is learned.** Out-of-hours windows are config-declared, the
+     baselines are medians over the ledger, and the same intent scored over
+     the same anchored prefix at the same clock reading yields the same
+     assessment, always.
 
 ## x402 rail adapter (`@vaduno/x402`)
 
