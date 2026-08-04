@@ -8,7 +8,76 @@ See [`SECURITY.md`](SECURITY.md) for what is and isn't guaranteed.
 
 ## Unreleased
 
+### Fixed
+
+- **Archival evidence verification no longer fails by default
+  (`@vaduno/transparency`).** `verifyCosignatures`/`checkCosignatureQuorum`
+  defaulted `maxAgeSeconds` to 24h AND rejected `Infinity` via an isFinite
+  guard, so an `EvidenceBundle` verified months or years later — the entire
+  point of the evidence layer — failed `QUORUM_NOT_MET` with default
+  options, and "unbounded age" was not even expressible. Evidence
+  verification is now TEMPORAL-PRECEDENCE-based: no staleness bound by
+  default (a witness attestation "seen no later than T" does not decay),
+  the future-skew rejection retained, `maxAgeSeconds` an opt-in LIVENESS
+  bound with `Infinity` as the explicit spelling of "unbounded" (NaN /
+  negative bounds and non-finite skew still verify nothing — fail closed).
+  A years-old cosignature verifying under default options is pinned as an
+  acceptance test.
+- **`rawEd25519PublicKey` refuses non-Ed25519 keys
+  (`@vaduno/transparency`).** It extracted "the last 32 bytes of the SPKI
+  DER", which is correct only for Ed25519's fixed 44-byte SPKI — handed any
+  other key (an ML-DSA-44 key, an RSA key) it silently returned garbage,
+  from which a plausible-looking but wrong key id would be minted. It now
+  requires `asymmetricKeyType === "ed25519"`.
+
 ### Added
+
+- **Post-quantum readiness for the evidence layer — hybrid, additive, and
+  probed at runtime.** The hash chain and RFC 9162 Merkle tree are SHA-256
+  and already PQ-adequate (Grover halves the bits; 128-bit preimage
+  resistance remains); the SIGNATURES are the exposed surface, and NIST IR
+  8547 sunsets ECC for new use in 2030 (disallowed 2035) while audit
+  evidence signed today will still be verified after that. What shipped:
+  - **Hybrid (v2) mandates (`@vaduno/guard`):** `issueHybrid()` signs the
+    same `vaduno-mandate/v2`-tagged payload with BOTH Ed25519 and ML-DSA-44
+    (FIPS 204); verification enforces exact structural bounds pre-crypto
+    (algs suite fixed, `kids` keys equal to `algs` with `^[0-9a-f]{16}$`
+    shape, signatures checked on DECODED length — Node's base64 decoder
+    skips invalid chars, so encoded-length checks check nothing), looks
+    keys up by **(algorithm, kid)** so a truncated-hash kid collision
+    cannot cross families, and refuses a present-but-invalid half wherever
+    it can be verified. v1 is FROZEN: its vectors are byte-identical and v1
+    mandates verify forever. New verification policy `requireAlgs` —
+    honestly documented as THE only post-CRQC defense, because an attacker
+    who can forge Ed25519 mints a fresh v1 under any registered kid rather
+    than stripping a v2 (the attack and the remedy are both tests).
+  - **ML-DSA-44 (0x06) witness cosignatures (`@vaduno/transparency`):** per
+    C2SP tlog-cosignature, signing the spec's BINARY subtree struct
+    (`"subtree/v1\n\0"` label, length-prefixed name/origin, u64 timestamp /
+    start=0 / end, raw root) — a different structure from the 0x04 text
+    payload, built by a separate builder, with the coverage asymmetry
+    documented (0x06 covers tree state, not extension lines) and a
+    dedicated `rawMlDsa44PublicKey` SPKI parser (the Ed25519 last-32-bytes
+    shortcut would mint garbage key ids). `assessCheckpointAnchor` labels
+    anchor strength (`witnessed-pq` / `witnessed` / `unwitnessed`) with
+    `witnessedAt` computed ONLY from cosignatures at least as strong as the
+    reported label — a backdated forged classical cosignature cannot move a
+    PQ-witnessed time (attack-tested).
+  - **Runtime capability probe (`@vaduno/guard`):** `mlDsa44Available()` /
+    `nativeMlDsa44Ops()` ask `node:crypto` directly — ML-DSA needs Node >=
+    24.7 built against OpenSSL >= 3.5, and a version string cannot decide
+    that. Signing without support throws typed `PqUnavailableError` naming
+    the real requirement; verification degrades honestly (v2 rests on its
+    classical signature unless `requireAlgs` refuses; unverifiable 0x06
+    lines are ignored, and no label ever upgrades on unverified material).
+  - New ADDITIVE vectors `spec/vectors/mandate-v2.json` and
+    `spec/vectors/cosign-mldsa44-payload.json`; every existing vector file
+    is untouched. Docs: `docs/SECURITY-MODEL.md` gains a "post-quantum
+    posture" section stating exactly what holds (never "quantum-safe" —
+    the release gate now rejects that phrase in package READMEs); the
+    downgrade residual, the kid-truncation residual, the witnessing
+    asymmetry and the hybrid-vs-pure policy split are stated rather than
+    papered over. Zero new runtime dependencies.
 
 - **Pluggable non-exportable signing: `Ed25519Signer` + `checkedSign`
   (`@vaduno/guard`).** Vaduno's evidence keys — mandate, tree-head,

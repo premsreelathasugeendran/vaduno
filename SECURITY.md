@@ -39,6 +39,8 @@ does **not** yet cover — so you can decide whether it fits your threat model.
 | Compromised agent must be cut off mid-flight | `@vaduno/revocation`: revoking a mandate or an entire agent is checked inside the critical section **after** human approval, so a kill switch pulled while an approval is pending still wins. An unreachable registry denies (`REVOCATION_CHECK_FAILED`) — an outage never reads as "not revoked" |
 | In-policy but anomalous spend from a compromised agent (odd hours, novel merchants, amount spikes, policy-probing deny streaks) | Opt-in deterministic risk scorecard (`risk: new RiskScorecard(...)`): eight ledger-derived signals score every intent that passes policy — a preliminary pass outside the mutex and, for intents still headed for execution, a final re-evaluation inside the critical section (concurrent commits move the signals). Elevated scores route to the human approval branch (`RISK_STEPUP`); high scores deny (`RISK_DENY`) **before** any budget reservation or mandate consumption, and an approval can never override the deny; an `autoFreeze` threshold additionally stops the process (manual `unfreeze()` only, per-process scope — see Known Limits item 9). The merge is tighten-only (allow < require_approval < deny), so risk can never loosen a policy decision; unscorable = `RISK_UNSCORABLE` deny; every assessment is a hard `risk_scored` ledger entry carrying a head anchor that makes it reproducible bit-for-bit **given the same scorecard config and policy** (the entry records the config's hash, not the config; the policy is not ledgered) |
 | Un-revoking by tampering with a published status list | Status lists are Ed25519-signed with `validUntil` freshness and a monotonic version floor; a forged bitstring, a stale list, or a replayed pre-revocation snapshot all fail closed |
+| Archival evidence rejected for being old | Cosignature verification is temporal-precedence-based: NO staleness bound by default (a witness attestation "seen no later than T" does not decay), future-skew rejection retained; `maxAgeSeconds` is an opt-in liveness check and `Infinity` spells "unbounded" explicitly |
+| A future adversary who can forge Ed25519 ("2026" signatures verified after ECC's 2030/2035 NIST sunset) | Hybrid (v2) mandates carry an ML-DSA-44 (FIPS 204) signature alongside Ed25519 over the same payload, and the transparency log accepts C2SP 0x06 ML-DSA-44 witness cosignatures, where the runtime supports them (runtime probe: Node >= 24.7 built against OpenSSL >= 3.5). **The classical signatures remain exposed post-CRQC unless the verifier sets `requireAlgs: ["ML-DSA-44"]`** — absent that, an attacker mints a fresh v1 under any registered Ed25519 kid; both the attack and the remedy are pinned as tests. `assessCheckpointAnchor` labels checkpoint anchoring (`witnessed-pq` only from verified 0x06 quorums, `witnessedAt` scoped to that strength so a backdated forged classical cosignature cannot move it). See `docs/SECURITY-MODEL.md`, post-quantum posture |
 
 Every attempt — allowed, denied, approved, failed — is recorded. Denials and
 failures are first-class evidence, not dropped.
@@ -270,6 +272,22 @@ These are documented, not hidden. Some are scope choices; some are on the roadma
      baselines are medians over the ledger, and the same intent scored over
      the same anchored prefix at the same clock reading yields the same
      assessment, always.
+
+10. **Post-quantum readiness is partial, and the words are chosen
+    precisely.** The hash chain and Merkle tree are SHA-256 and remain
+    adequate against a quantum adversary (Grover halves the bits; 128-bit
+    preimage resistance remains). The signatures are the exposed surface:
+    hybrid v2 mandates and 0x06 witness cosignatures add ML-DSA-44 alongside
+    Ed25519 **where the runtime supports it** — this machine class (Node <
+    24.7 or OpenSSL < 3.5) cannot sign or verify ML-DSA at all, and the
+    runtime probe (`mlDsa44Available()`), never a version string, decides.
+    Ed25519 signatures remain forgeable by a future CRQC unless verifiers
+    set `requireAlgs`; a v2 verified where ML-DSA cannot be checked rests on
+    its classical signature (v1-equivalent standing). Key ids are 64-bit
+    truncated hashes: lookup binds (algorithm, kid) so collisions cannot
+    cross families, but the within-family truncation residual exists
+    (~2^32 birthday between attacker-chosen keys). Nothing here is called
+    "quantum-safe"; the release gate rejects that phrase.
 
 ## x402 rail adapter (`@vaduno/x402`)
 

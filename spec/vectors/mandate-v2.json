@@ -1,0 +1,58 @@
+{
+  "description": "HYBRID (v2) mandate signing preimage: MANDATE_V2_DOMAIN followed by canonicalJson of every field except `signatures`. Both the Ed25519 and the ML-DSA-44 signature cover these same bytes. v1 (mandate.json) is FROZEN and unchanged by this addition.",
+  "domain": "vaduno-mandate/v2\n",
+  "formatVersion": 2,
+  "algs": [
+    "Ed25519",
+    "ML-DSA-44"
+  ],
+  "signatureBytes": {
+    "Ed25519": 64,
+    "ML-DSA-44": 2420
+  },
+  "testKeys": {
+    "ed25519": {
+      "privateKeyPem": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIH1uW7T2rXGMnU8YQ0S1kAVLKKvbxmc8s0dnKQGVU3rM\n-----END PRIVATE KEY-----\n",
+      "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAsmOOlhhZHCeSTlzk3LZyK5K8ac7O/v+JkeLS1MtjT8Q=\n-----END PUBLIC KEY-----\n"
+    },
+    "mlDsa44": {
+      "note": "SYNTACTIC FIXTURE, not a functional key: raw = first 1312 bytes of SHA-256('vaduno-vector-mldsa44-key' || uint8(blockIndex)) blocks, wrapped in the fixed id-ml-dsa-44 SPKI header. Usable for kid derivation on any runtime.",
+      "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMIIFMjALBglghkgBZQMEAxEDggUhALvmc/nhoNX4uAH0bP85Gkc8bGQGuWB0AIC1\nNa5v9RjTSFtku32bnCUov86sj2sn2QDGgkPlyFu4vuXbKIenmR7o4Fw1+kBMEW4F\n0l4wc3KsXdTln2ONwS7gt0OvMWlMvGPOKWlbWG7pYWuG+MVvE8iXK2L0B51qfi+1\n30sAoKkmgfxutlOZ7bqvkiqHNeBqGZdwfSVNMsq/Aem+kZ0VcOz3H7Shc8+nbggJ\nayb8hJTOtbt4YsRuQ4L52hd73JNOqbHcxsD44byqxhts/5Ku4CDF3WgbkM2rOGIt\nteU0430IR2ION5MwoIM57sP72lFU5104dR0WTIOx+yuY5llCD8dPz1qe1GO7vyB6\nPs9I+7odz6zxafdwA/UsrQXWztYSDsieztmf52yo9GvX/iGt7dfhd4mnHcUlk5nx\n+rgAnDYo7qPVFByhlNQwLiWgKl1Il63L1N5V3H+lPbAJao1DZBMj02H/xtBC6yFO\nA0tCAgNSmzRVOfh0mBZUdjL+JcFtnEjRqCoG7IdZHBJV411YGhdC3FY6YGtROXF2\n1iq7fix8F6FQ5Tdt1tMB3VQQMKyQWoAg6cLETry67uv1jcglvgtFCDbSRHBLJn0v\nmBtjrtAo7UvLo4latun178whC6uvua25T0Xg4XID8d+SCGIQLKb+cTQ8qzSyph56\nsRzpXvZd5lpJ7jX4cbJhpTIHcRj8nYleMrcSvQBoKE72CFyfD7cZVM+9UbLJ32f5\nyLQhy4yGOgm97s3Cm67uocvSemQOrqTEnpnYtdcPFIQ0vBBrQNq3E/9TFuP11Yi8\nVcq/vximXrtvjwPWzkuMsdU8u6DOFIv6+2b3HkPO/Ed7EZjLWSi+kcy9oOBLEbPu\nryjl7mGHE2IA2TGM6IdrfCnujK6gZrd8C9mbcJStaecP9TEJiCLrpaTWDLEkuc9W\nLt0F+tSQOYcdSoJxSMNuDNKR6Qk5tiJOQoLITZWYlI+XK9XtWpouRDWQ9s+ZokWL\nDWbqrlXkVcOA6OVhfthRF/PIqyM2jIbQjjq//oPXIUE1c9n77GQEEmMKVH9yIWQz\nL2K7nT/SEunFmwTFEWD6slmy2w5NiYE4c0S/e/W4pzSlRoty+khb75Zx8h7pHLXy\nk1idS0wnBOqh/I4Ra6GTS851P5KvIsJSh3bHkPhp8kIlEB3RTmjSTraGBW0EMYJe\nEjc9pA4Hj4z3YdEBsRVpRP10BM7HpcHZpxMU9AzuJkoDwhrpeEiSbVmxYWSdwOML\nFwiCku2tZuDPlOznivcdB/W3VgOYIlgktG4r9RvUmYrb6cl0miSimjgKap5LxhEy\nGHECdAdbz/nH/Ati7n/YCi06BWYfJ0IGuLi3XN8ZgIuRFh1/ANtkZm/azcbjrApu\n6/y8I7DDbGvZe+oLDOS4bWbn1lysxkJWsNwEUd+eLbd45KgX3Qq4VBv0zvccc/Lu\nxV5uyWnzcgPrLizJh8bL0pSUsyW7eigU1dKooW0YCV5HKH5uUwLej5t0LnKUVwIz\nOfyJufk2eGVZSvyPGtHKEch6QV0Gvw1xi2ApLIgAbnDVWItHUctMvWGzzKnl6FhG\npNspe47Ot5gLUMNDvbAowAWFvk/dICQ52qpGjN/2YmUnOqzHKnahV+sjD3vmQJ8E\nlE0pwyBPhAlRzKzT1N+y2q+rBD4J9qaGW2Bk1UNpgTJBJGtUpUquuS9neaPqvxuT\niKLmgiTY3CAAJPygjZM1eVdtKAoT5gH9PypDw+8BMQYjsQQ2iFo=\n-----END PUBLIC KEY-----\n",
+      "rawSha256": "2d636de611e0d730e2e87f73f6c093134b02d051a07697205c5cf4c117f8cc00"
+    }
+  },
+  "keyIdDerivation": "both families: first 8 bytes of SHA-256('vaduno-mandate-key/v1\\n' || SPKI DER), hex — verifiers MUST look keys up by (algorithm, kid); the 64-bit id alone is truncated and collidable",
+  "expectedKids": {
+    "Ed25519": "97fcde84d4cc2622",
+    "ML-DSA-44": "c531f2e6f7af63ff"
+  },
+  "unsigned": {
+    "v": 2,
+    "algs": [
+      "Ed25519",
+      "ML-DSA-44"
+    ],
+    "kids": {
+      "Ed25519": "97fcde84d4cc2622",
+      "ML-DSA-44": "c531f2e6f7af63ff"
+    },
+    "id": "22222222-3333-4444-5555-666666666666",
+    "issuer": "human@example.com",
+    "agentId": "agent-1",
+    "constraints": {
+      "maxAmountMinor": 10000,
+      "currency": "USD",
+      "merchants": [
+        "openai.com"
+      ],
+      "validFrom": "2026-01-01T00:00:00.000Z",
+      "expiresAt": "2026-12-31T23:59:59.000Z",
+      "maxUses": 1
+    },
+    "createdAt": "2026-01-01T00:00:00.000Z"
+  },
+  "preimage": "vaduno-mandate/v2\n{\"agentId\":\"agent-1\",\"algs\":[\"Ed25519\",\"ML-DSA-44\"],\"constraints\":{\"currency\":\"USD\",\"expiresAt\":\"2026-12-31T23:59:59.000Z\",\"maxAmountMinor\":10000,\"maxUses\":1,\"merchants\":[\"openai.com\"],\"validFrom\":\"2026-01-01T00:00:00.000Z\"},\"createdAt\":\"2026-01-01T00:00:00.000Z\",\"id\":\"22222222-3333-4444-5555-666666666666\",\"issuer\":\"human@example.com\",\"kids\":{\"Ed25519\":\"97fcde84d4cc2622\",\"ML-DSA-44\":\"c531f2e6f7af63ff\"},\"v\":2}",
+  "preimageSha256": "4b11c79761f6a10ec597c4f74c1f7a5a8db6843bb32ffc5ff889de9d75fcb6c2",
+  "ed25519Signature": "IJMntZ9KdFGF5CYIR4U5SK5I1nPaWaqYV1CTZCOyJgNS2I94BvLw+2B7x8BAqea0z06bheqB8/hNFy32hlm7Dw==",
+  "mlDsa44SignatureNote": "not pinned: FIPS 204 signing is hedged (randomized) by default. A conforming v2 mandate carries a base64 signature decoding to exactly 2420 bytes that verifies over the preimage under the kid-named ML-DSA-44 key."
+}

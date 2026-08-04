@@ -207,7 +207,7 @@ describe("tlog-cosignature v1", () => {
       [known("witness.example/a", witnessA)],
       { nowSeconds },
     );
-    expect(verified).toEqual([{ name: "witness.example/a", timestamp: NOW }]);
+    expect(verified).toEqual([{ name: "witness.example/a", timestamp: NOW, alg: "Ed25519" }]);
     // The log's own signature still verifies alongside the cosignature.
     expect(
       verifyNoteSignature(witnessed, { name: ORIGIN, publicKeyPem: log.publicKeyPem }),
@@ -250,7 +250,7 @@ describe("tlog-cosignature v1", () => {
       verifyCosignatures(attachCosignatures(note, [record]), [
         known("witness.example/a", witnessA),
       ], { nowSeconds }),
-    ).toEqual([{ name: "witness.example/a", timestamp: NOW }]);
+    ).toEqual([{ name: "witness.example/a", timestamp: NOW, alg: "Ed25519" }]);
   });
 
   it("a tampered timestamp in the blob does not verify", () => {
@@ -274,9 +274,38 @@ describe("tlog-cosignature v1", () => {
     ).toEqual([]);
   });
 
-  it("rejects stale and implausibly future-dated cosignatures", () => {
+  it("ARCHIVAL DEFAULT: a cosignature far older than 24h VERIFIES with default options", () => {
+    // This is the acceptance test for the archival semantics. Before the
+    // fix, maxAgeSeconds defaulted to 24h, so an EvidenceBundle verified
+    // months or years later — the entire point of the evidence layer —
+    // failed QUORUM_NOT_MET out of the box. Evidence verification is
+    // temporal-precedence-based: "witness saw this no later than T" does not
+    // decay. Only the future-skew rejection is retained by default.
     const note = freshNote();
-    const stale = cosignCheckpoint(note, {
+    const threeYears = 3 * 365 * 24 * 60 * 60;
+    const archival = cosignCheckpoint(note, {
+      name: "witness.example/a",
+      privateKeyPem: witnessA.privateKeyPem,
+      publicKeyPem: witnessA.publicKeyPem,
+      timestamp: NOW - threeYears,
+    });
+    const witnessed = attachCosignatures(note, [archival]);
+    const verified = verifyCosignatures(witnessed, [known("witness.example/a", witnessA)], {
+      nowSeconds, // DEFAULT bounds otherwise — no maxAgeSeconds
+    });
+    expect(verified.map((v) => v.name)).toEqual(["witness.example/a"]);
+    // Explicit Infinity is the spelled-out form of the same default.
+    expect(
+      verifyCosignatures(witnessed, [known("witness.example/a", witnessA)], {
+        nowSeconds,
+        maxAgeSeconds: Infinity,
+      }).map((v) => v.name),
+    ).toEqual(["witness.example/a"]);
+  });
+
+  it("freshness is OPT-IN (liveness), and the future-skew rejection stays on by default", () => {
+    const note = freshNote();
+    const old = cosignCheckpoint(note, {
       name: "witness.example/a",
       privateKeyPem: witnessA.privateKeyPem,
       publicKeyPem: witnessA.publicKeyPem,
@@ -288,20 +317,43 @@ describe("tlog-cosignature v1", () => {
       publicKeyPem: witnessB.publicKeyPem,
       timestamp: NOW + 10_000, // way beyond skew
     });
-    const witnessed = attachCosignatures(note, [stale, future]);
-    const verified = verifyCosignatures(
+    const witnessed = attachCosignatures(note, [old, future]);
+    // A LIVENESS caller opts into a staleness bound and rejects the old one.
+    const fresh = verifyCosignatures(
+      witnessed,
+      [known("witness.example/a", witnessA), known("witness.example/b", witnessB)],
+      { nowSeconds, maxAgeSeconds: 24 * 60 * 60 },
+    );
+    expect(fresh).toEqual([]);
+    // The future-dated one is rejected even under ARCHIVAL defaults: a
+    // timestamp ahead of the verifier's clock is implausible at any age.
+    const archival = verifyCosignatures(
       witnessed,
       [known("witness.example/a", witnessA), known("witness.example/b", witnessB)],
       { nowSeconds },
     );
-    expect(verified).toEqual([]);
-    // Widening maxAge admits the stale one — the bound is the policy, not the crypto.
-    const relaxed = verifyCosignatures(
-      witnessed,
-      [known("witness.example/a", witnessA)],
-      { nowSeconds, maxAgeSeconds: 100_000 },
-    );
-    expect(relaxed.map((v) => v.name)).toEqual(["witness.example/a"]);
+    expect(archival.map((v) => v.name)).toEqual(["witness.example/a"]);
+  });
+
+  it("nonsense bounds fail closed: NaN or negative maxAge, non-finite skew verify NOTHING", () => {
+    const note = freshNote();
+    const record = cosignCheckpoint(note, {
+      name: "witness.example/a",
+      privateKeyPem: witnessA.privateKeyPem,
+      publicKeyPem: witnessA.publicKeyPem,
+      timestamp: NOW,
+    });
+    const witnessed = attachCosignatures(note, [record]);
+    const w = [known("witness.example/a", witnessA)];
+    expect(verifyCosignatures(witnessed, w, { nowSeconds, maxAgeSeconds: NaN })).toEqual([]);
+    expect(verifyCosignatures(witnessed, w, { nowSeconds, maxAgeSeconds: -1 })).toEqual([]);
+    // Infinite skew would disable the ONE temporal check archival keeps.
+    expect(
+      verifyCosignatures(witnessed, w, { nowSeconds, maxClockSkewSeconds: Infinity }),
+    ).toEqual([]);
+    expect(
+      verifyCosignatures(witnessed, w, { nowSeconds, maxClockSkewSeconds: -5 }),
+    ).toEqual([]);
   });
 
   it("ignores a cosignature whose name matches but key does not", () => {

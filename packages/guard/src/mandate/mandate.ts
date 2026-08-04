@@ -10,8 +10,24 @@ import {
   checkedSign,
   LocalKeySigner,
   SignerError,
+  SignerVerificationError,
   type Ed25519Signer,
 } from "./signer.js";
+import {
+  MLDSA44_ALG,
+  MLDSA44_SIGNATURE_BYTES,
+  mlDsa44KeyId,
+  nativeMlDsa44Ops,
+  PqUnavailableError,
+  type MlDsa44Ops,
+} from "./pq.js";
+import {
+  checkMandateV2Structure,
+  mandateV2Payload,
+  MANDATE_V2_ALGS,
+  MANDATE_V2_FORMAT_VERSION,
+  type MandateV2,
+} from "./hybrid.js";
 import { canonicalJson, sha256Hex } from "../ledger/hash.js";
 import type { AuditLedger } from "../ledger/ledger.js";
 import type { PaymentIntent } from "../types.js";
@@ -135,6 +151,8 @@ export interface MandateCheck {
     | "SIGNATURE_INVALID"
     | "KEY_UNKNOWN"
     | "ALG_UNSUPPORTED"
+    | "ALG_REQUIREMENT_NOT_MET"
+    | "MALFORMED"
     | "VERSION_UNSUPPORTED"
     | "NOT_YET_VALID"
     | "EXPIRED"
@@ -180,8 +198,21 @@ export function generateMandateKeyPair(): MandateKeyPair {
   };
 }
 
+/**
+ * Every mandate format this build understands. v1 is FROZEN (single Ed25519
+ * signature); v2 is the hybrid format (Ed25519 + ML-DSA-44 over the same
+ * v2-tagged payload). Both flow through the same states, ledger records,
+ * consume-once registry and constraint checks — only signature verification
+ * dispatches on the version.
+ */
+export type AnyMandate = Mandate | MandateV2;
+
+function isMandateV2(m: AnyMandate): m is MandateV2 {
+  return (m as { v?: unknown }).v === MANDATE_V2_FORMAT_VERSION;
+}
+
 interface MandateState {
-  mandate: Mandate;
+  mandate: AnyMandate;
   uses: number;
   revoked: boolean;
 }
@@ -207,14 +238,28 @@ interface MandateState {
 export class MandateManager {
   private readonly publicKey: KeyObject;
   /**
-   * Every public key this manager will verify against, by key id.
+   * Every Ed25519 public key this manager will verify against, by key id.
    *
    * A map rather than a single key because that is what makes ROTATION
    * possible without a flag-day: publish the new key, accept both while
    * mandates signed by the old one are still inside their validity window,
    * then drop the old. Also what allows several ISSUERS at once.
+   *
+   * PER-ALGORITHM ON PURPOSE (ML-DSA keys live in `mlDsa44VerifyKeys`): a
+   * mandate key id is a 64-bit TRUNCATED SHA-256, and truncated hashes of
+   * distinct inputs can collide (~2^32 birthday work between attacker-chosen
+   * keys, ~2^64 for a targeted second id). Looking keys up by
+   * (algorithm, kid) means a collision can never cross algorithm families —
+   * an id colliding across families still resolves to the right family's
+   * key or to nothing. The within-family residual remains and is stated in
+   * docs/SECURITY-MODEL.md.
    */
   private readonly verifyKeys = new Map<string, KeyObject>();
+  /** ML-DSA-44 verify keys by key id — PEM, not KeyObject, because a runtime
+   * without native ML-DSA cannot parse the SPKI yet must still register and
+   * name these keys (verification then follows the documented degraded
+   * path in `checkStateV2`). */
+  private readonly mlDsa44VerifyKeys = new Map<string, string>();
   /** Key id of the signing key, so issued mandates can name it. */
   private readonly signingKeyId: string;
   /**
@@ -230,6 +275,19 @@ export class MandateManager {
   private readonly signTimeoutMs: number | undefined;
   private readonly states = new Map<string, MandateState>();
   private readonly consumeStore: ConsumeStore;
+  /** ML-DSA-44 ops from the runtime probe (or a test double); null = this
+   * runtime cannot sign or verify ML-DSA. */
+  private readonly pq: MlDsa44Ops | null;
+  /** ML-DSA-44 signing key + its id, when hybrid issuance is configured. */
+  private readonly mlDsa44Signing: { privateKeyPem: string; publicKeyPem: string; kid: string } | null;
+  /**
+   * Algorithms every accepted mandate must carry AND have VERIFIED here.
+   * Default [] — which, stated honestly, means a post-CRQC forger of any
+   * registered Ed25519 key is not resisted: they mint a fresh v1 mandate
+   * under that kid. `requireAlgs: ["ML-DSA-44"]` is the enforcement switch
+   * (see docs/SECURITY-MODEL.md for the migration path).
+   */
+  private readonly requireAlgs: readonly string[];
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(
@@ -245,10 +303,38 @@ export class MandateManager {
       signer?: Ed25519Signer;
       /** Extra public keys to ACCEPT but never sign with — rotation overlap. */
       additionalPublicKeyPems?: string[];
+      /**
+       * ML-DSA-44 verify key for the HYBRID (v2) format; also the key
+       * `issueHybrid` names when `mlDsa44PrivateKeyPem` is present.
+       * Registering it needs no native ML-DSA; verifying against it does.
+       */
+      mlDsa44PublicKeyPem?: string;
+      /** ML-DSA-44 signing key. Requires native ML-DSA (runtime probe) and
+       * `mlDsa44PublicKeyPem`; construction fails otherwise — never at first
+       * issue, where a half-configured manager would already be trusted. */
+      mlDsa44PrivateKeyPem?: string;
+      /** Extra ML-DSA-44 verify keys — rotation overlap / second issuers. */
+      additionalMlDsa44PublicKeyPems?: string[];
     },
     private readonly ledger?: AuditLedger,
     private readonly now: () => Date = () => new Date(),
-    opts: { consumeStore?: ConsumeStore; signTimeoutMs?: number } = {},
+    opts: {
+      consumeStore?: ConsumeStore;
+      signTimeoutMs?: number;
+      /**
+       * Verification policy: algorithms every accepted mandate must carry
+       * and have VERIFIED by this manager. `["ML-DSA-44"]` refuses v1
+       * outright and refuses v2 wherever its ML-DSA half cannot be verified
+       * (no runtime support, unheld key, bad signature) — fail closed.
+       */
+      requireAlgs?: string[];
+      /**
+       * ML-DSA-44 capability override. Defaults to the runtime probe
+       * (`nativeMlDsa44Ops()`); tests may pass a deterministic fake, or
+       * `null` to exercise the no-PQ degraded path on any machine.
+       */
+      pq?: MlDsa44Ops | null;
+    } = {},
   ) {
     // Misconfiguration fails HERE, at construction, before any authority
     // exists — never at first issue, where a half-configured manager would
@@ -318,6 +404,48 @@ export class MandateManager {
     }
     this.signTimeoutMs = opts.signTimeoutMs;
     this.consumeStore = opts.consumeStore ?? new MemoryConsumeStore();
+
+    // ---- Hybrid (v2) configuration. All misconfiguration fails HERE. ----
+    this.pq = opts.pq !== undefined ? opts.pq : nativeMlDsa44Ops();
+    const requireAlgs = opts.requireAlgs ?? [];
+    for (const alg of requireAlgs) {
+      if (alg !== MANDATE_ALG && alg !== MLDSA44_ALG) {
+        // A typo here would otherwise silently deny every mandate forever —
+        // fail-closed, but as a misconfiguration it must fail LOUDLY instead.
+        throw new SignerError(
+          `requireAlgs contains "${String(alg)}"; this build implements ${MANDATE_ALG} and ${MLDSA44_ALG}`,
+        );
+      }
+    }
+    this.requireAlgs = [...requireAlgs];
+    // Verify keys register on ANY runtime (kid derivation is pure parsing);
+    // whether they can be USED is checkStateV2's per-check decision.
+    for (const pem of [
+      ...(keys.mlDsa44PublicKeyPem ? [keys.mlDsa44PublicKeyPem] : []),
+      ...(keys.additionalMlDsa44PublicKeyPems ?? []),
+    ]) {
+      this.mlDsa44VerifyKeys.set(mlDsa44KeyId(pem), pem);
+    }
+    if (keys.mlDsa44PrivateKeyPem !== undefined) {
+      if (keys.mlDsa44PublicKeyPem === undefined) {
+        throw new SignerError(
+          "mlDsa44PrivateKeyPem needs mlDsa44PublicKeyPem — issued hybrid mandates must name a declared verify key",
+        );
+      }
+      if (this.pq === null) {
+        // Signing requires the capability NOW. Deferring this to issueHybrid
+        // would let a manager be constructed as a hybrid issuer on a runtime
+        // that can never be one.
+        throw new PqUnavailableError();
+      }
+      this.mlDsa44Signing = {
+        privateKeyPem: keys.mlDsa44PrivateKeyPem,
+        publicKeyPem: keys.mlDsa44PublicKeyPem,
+        kid: mlDsa44KeyId(keys.mlDsa44PublicKeyPem),
+      };
+    } else {
+      this.mlDsa44Signing = null;
+    }
   }
 
   /**
@@ -336,7 +464,7 @@ export class MandateManager {
     for (const e of entries) {
       const data = e.data as Record<string, unknown>;
       if (e.type === "mandate_issued") {
-        const mandate = data.mandate as Mandate | undefined;
+        const mandate = data.mandate as AnyMandate | undefined;
         if (mandate && !this.states.has(mandate.id)) {
           this.states.set(mandate.id, { mandate, uses: 0, revoked: false });
         }
@@ -445,11 +573,97 @@ export class MandateManager {
     return mandate;
   }
 
-  /** Register a mandate issued elsewhere (signature is checked on use). */
-  register(mandate: Mandate): void {
+  /** Register a mandate issued elsewhere (signatures are checked on use). */
+  register(mandate: AnyMandate): void {
     if (!this.states.has(mandate.id)) {
       this.states.set(mandate.id, { mandate, uses: 0, revoked: false });
     }
+  }
+
+  /**
+   * Issue a HYBRID (v2) mandate: Ed25519 and ML-DSA-44 signatures over the
+   * same `vaduno-mandate/v2` payload. Requires both signing keys and native
+   * ML-DSA (the constructor already refused a hybrid-signing config on a
+   * runtime without it — `PqUnavailableError` names the real requirement:
+   * Node >= 24.7 built against OpenSSL >= 3.5, per the runtime probe).
+   *
+   * Same ordering guarantee as `issue()`: build unsigned -> sign BOTH ->
+   * verify BOTH against the declared keys -> only then record. A failure in
+   * either half aborts the whole issuance; nothing partially-signed ever
+   * reaches states or the ledger.
+   */
+  async issueHybrid(params: {
+    issuer: string;
+    agentId: string;
+    constraints: MandateConstraints;
+  }): Promise<MandateV2> {
+    if (!this.signer) {
+      throw new Error(
+        "MandateManager was constructed without a private key or signer; cannot issue",
+      );
+    }
+    if (!this.mlDsa44Signing) {
+      throw new Error(
+        "MandateManager was constructed without mlDsa44PrivateKeyPem; cannot issue hybrid (v2) mandates",
+      );
+    }
+    if (this.pq === null) {
+      throw new PqUnavailableError();
+    }
+    if (
+      Number.isNaN(parseMs(params.constraints.validFrom)) ||
+      Number.isNaN(parseMs(params.constraints.expiresAt))
+    ) {
+      throw new Error(
+        "mandate constraints validFrom/expiresAt must be parseable timestamps",
+      );
+    }
+    const unsigned: Omit<MandateV2, "signatures"> = {
+      v: MANDATE_V2_FORMAT_VERSION,
+      algs: [...MANDATE_V2_ALGS],
+      kids: {
+        [MANDATE_ALG]: this.signingKeyId,
+        [MLDSA44_ALG]: this.mlDsa44Signing.kid,
+      },
+      id: randomUUID(),
+      issuer: params.issuer,
+      agentId: params.agentId,
+      constraints: params.constraints,
+      createdAt: this.now().toISOString(),
+    };
+    const payload = mandateV2Payload(unsigned);
+    const edSignature = await checkedSign(
+      this.signer,
+      payload,
+      this.signTimeoutMs !== undefined ? { timeoutMs: this.signTimeoutMs } : {},
+    );
+    const pqSignature = this.pq.sign(payload, this.mlDsa44Signing.privateKeyPem);
+    if (pqSignature.length !== MLDSA44_SIGNATURE_BYTES) {
+      throw new SignerError(
+        `ML-DSA-44 signer returned ${pqSignature.length} bytes; expected ${MLDSA44_SIGNATURE_BYTES}`,
+      );
+    }
+    // checkedSign's discipline, applied to the PQ half: never emit a
+    // signature that does not verify against the key the mandate names.
+    if (!this.pq.verify(payload, this.mlDsa44Signing.publicKeyPem, pqSignature)) {
+      throw new SignerVerificationError(
+        "ML-DSA-44 signature does not verify against the declared public key — refusing to emit it",
+      );
+    }
+    const mandate: MandateV2 = {
+      ...unsigned,
+      signatures: {
+        [MANDATE_ALG]: edSignature.toString("base64"),
+        [MLDSA44_ALG]: pqSignature.toString("base64"),
+      },
+    };
+    this.states.set(mandate.id, { mandate, uses: 0, revoked: false });
+    await this.ledger?.append(
+      "mandate_issued",
+      { mandateId: mandate.id, issuer: mandate.issuer, mandate },
+      { agentId: mandate.agentId },
+    );
+    return mandate;
   }
 
   async revoke(mandateId: string, reason?: string): Promise<void> {
@@ -483,6 +697,20 @@ export class MandateManager {
   ): MandateCheck {
     const { mandate } = state;
     const uses = usesOverride ?? state.uses;
+    // Version dispatch: v1 and v2 differ ONLY in how their signatures are
+    // verified; everything downstream (revocation, time, uses, constraints)
+    // is shared. An unrecognised version is refused, never guessed at.
+    if (isMandateV2(mandate)) return this.checkStateV2(state, mandate, intent, uses);
+    return this.checkStateV1(state, mandate, intent, uses);
+  }
+
+  /** v1: the frozen single-Ed25519 format. */
+  private checkStateV1(
+    state: MandateState,
+    mandate: Mandate,
+    intent: PaymentIntent,
+    uses: number,
+  ): MandateCheck {
     const { signature, ...unsigned } = mandate;
 
     // Refuse a format or algorithm this build does not implement, rather than
@@ -492,7 +720,7 @@ export class MandateManager {
       return {
         ok: false,
         code: "VERSION_UNSUPPORTED",
-        message: `mandate format v${String(unsigned.v)} is not supported (this build issues and accepts v${MANDATE_FORMAT_VERSION})`,
+        message: `mandate format v${String(unsigned.v)} is not supported (this build issues and accepts v${MANDATE_FORMAT_VERSION} and v${MANDATE_V2_FORMAT_VERSION})`,
       };
     }
     if (unsigned.alg !== MANDATE_ALG) {
@@ -502,10 +730,25 @@ export class MandateManager {
         message: `mandate signature algorithm "${String(unsigned.alg)}" is not supported (expected ${MANDATE_ALG})`,
       };
     }
+    // Policy gate, pre-crypto: a v1 mandate can only ever prove Ed25519, so a
+    // requirement for anything more is undecidable-in-its-favor — refuse now.
+    // This is THE anti-downgrade control: with requireAlgs ["ML-DSA-44"], a
+    // post-CRQC attacker minting a fresh v1 under a recovered Ed25519 key is
+    // refused here regardless of how perfect the forged signature is.
+    const missingV1 = this.requireAlgs.filter((a) => a !== MANDATE_ALG);
+    if (missingV1.length > 0) {
+      return {
+        ok: false,
+        code: "ALG_REQUIREMENT_NOT_MET",
+        message: `policy requires verified ${missingV1.join(", ")}; a v1 mandate carries only ${MANDATE_ALG}`,
+      };
+    }
 
     // Pick the key the mandate NAMES, not whichever key we happen to hold.
     // Trying every key would make a rotation window silently accept a mandate
     // whose kid claims one key and whose signature was made by another.
+    // Lookup is (algorithm, kid): this map holds ONLY Ed25519 keys, so a
+    // truncated-hash kid collision with an ML-DSA key cannot cross families.
     const key = this.verifyKeys.get(unsigned.kid);
     if (!key) {
       return {
@@ -536,6 +779,112 @@ export class MandateManager {
         message: "mandate signature does not verify against issuer public key",
       };
     }
+    return this.checkStateShared(state, mandate, intent, uses);
+  }
+
+  /**
+   * v2: the hybrid format. Both signatures cover the same v2-tagged payload.
+   *
+   * Where each half can be verified it MUST verify — a present-but-invalid
+   * signature is tamper evidence, never ignorable. The ML-DSA half is
+   * unverifiable-here in exactly two cases, and the behavior is fixed:
+   *
+   *  - the runtime has no native ML-DSA (probe negative), or
+   *  - this verifier holds no ML-DSA key under the kid the mandate names.
+   *
+   * In both, the mandate is accepted RESTING ON ITS CLASSICAL SIGNATURE —
+   * the same standing as a v1 mandate, so no NEW exposure is created —
+   * UNLESS policy requires ML-DSA-44, in which case it is refused (fail
+   * closed). This cannot be used as a downgrade: without requireAlgs the
+   * attacker was never forced past Ed25519 anyway (they could mint v1); with
+   * requireAlgs every unverifiable path above is a refusal.
+   */
+  private checkStateV2(
+    state: MandateState,
+    mandate: MandateV2,
+    intent: PaymentIntent,
+    uses: number,
+  ): MandateCheck {
+    const { signatures, ...unsigned } = mandate;
+    // Structural bounds BEFORE any crypto: exact algs suite, kids keys ==
+    // algs with 16-hex shape, signatures keys == algs with exact DECODED
+    // lengths. See checkMandateV2Structure for why each bound exists.
+    const structure = checkMandateV2Structure(mandate);
+    if (!structure.ok) {
+      return { ok: false, code: "MALFORMED", message: `malformed v2 mandate: ${structure.message}` };
+    }
+
+    const edKey = this.verifyKeys.get(mandate.kids[MANDATE_ALG]!);
+    if (!edKey) {
+      return {
+        ok: false,
+        code: "KEY_UNKNOWN",
+        message: `mandate names ${MANDATE_ALG} key ${String(mandate.kids[MANDATE_ALG])}, which this verifier does not hold`,
+      };
+    }
+    let payload: Buffer;
+    let edValid: boolean;
+    try {
+      payload = mandateV2Payload(unsigned);
+      edValid = edVerify(
+        null,
+        payload,
+        edKey,
+        Buffer.from(signatures[MANDATE_ALG]!, "base64"),
+      );
+    } catch {
+      edValid = false;
+      payload = Buffer.alloc(0);
+    }
+    if (!edValid) {
+      return {
+        ok: false,
+        code: "SIGNATURE_INVALID",
+        message: `mandate ${MANDATE_ALG} signature does not verify against issuer public key`,
+      };
+    }
+
+    const pqRequired = this.requireAlgs.includes(MLDSA44_ALG);
+    if (this.pq === null) {
+      if (pqRequired) {
+        return {
+          ok: false,
+          code: "ALG_REQUIREMENT_NOT_MET",
+          message:
+            `policy requires verified ${MLDSA44_ALG} but this runtime's node:crypto has no native ML-DSA ` +
+            "(runtime probe negative — needs Node >= 24.7 built against OpenSSL >= 3.5)",
+        };
+      }
+      // Accepted resting on the classical signature — documented above.
+    } else {
+      const pqPem = this.mlDsa44VerifyKeys.get(mandate.kids[MLDSA44_ALG]!);
+      if (pqPem === undefined) {
+        if (pqRequired) {
+          return {
+            ok: false,
+            code: "KEY_UNKNOWN",
+            message: `mandate names ${MLDSA44_ALG} key ${String(mandate.kids[MLDSA44_ALG])}, which this verifier does not hold`,
+          };
+        }
+        // No PQ trust anchor for this kid: resting on classical, as above.
+      } else if (!this.pq.verify(payload, pqPem, Buffer.from(signatures[MLDSA44_ALG]!, "base64"))) {
+        return {
+          ok: false,
+          code: "SIGNATURE_INVALID",
+          message: `mandate ${MLDSA44_ALG} signature does not verify against issuer public key`,
+        };
+      }
+    }
+    return this.checkStateShared(state, mandate, intent, uses);
+  }
+
+  /** Everything downstream of signature verification — shared by v1 and v2. */
+  private checkStateShared(
+    state: MandateState,
+    mandate: AnyMandate,
+    intent: PaymentIntent,
+    uses: number,
+  ): MandateCheck {
     if (state.revoked) {
       return { ok: false, code: "REVOKED", message: "mandate was revoked" };
     }

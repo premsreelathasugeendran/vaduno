@@ -1,0 +1,13 @@
+{
+  "description": "C2SP tlog-cosignature ML-DSA-44 (key-id algorithm byte 0x06) signed payload: label[12]='subtree/v1\\n\\0' || opaque cosigner_name<1..255> || uint64 timestamp || opaque log_origin<1..255> || uint64 start (MUST be 0 for checkpoints) || uint64 end (= tree size) || raw 32-byte root hash. Length-prefixed fields carry a single length byte. NOTE the coverage asymmetry: this struct covers (origin, size, root) only — extension lines are covered by 0x04 text cosignatures, never by 0x06.",
+  "input": {
+    "cosignerName": "witness.example/a",
+    "timestamp": 1780000000,
+    "origin": "vaduno.example/ledger",
+    "treeSize": 42,
+    "rootHashHex": "abababababababababababababababababababababababababababababababab"
+  },
+  "payloadHex": "737562747265652f76310a00117769746e6573732e6578616d706c652f61000000006a18a50015766164756e6f2e6578616d706c652f6c65646765720000000000000000000000000000002aabababababababababababababababababababababababababababababababab",
+  "payloadSha256": "b236307b0529d129c9355cd371f3b4802b19e74857a9f68f99ed448cc999314e",
+  "signature": "keyID[4] = SHA-256(name || 0x0A || 0x06 || raw 1312-byte public key)[:4]; line blob = keyID || uint64BE timestamp || 2420-byte ML-DSA-44 signature"
+}

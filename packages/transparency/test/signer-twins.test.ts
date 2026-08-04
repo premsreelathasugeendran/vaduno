@@ -104,7 +104,7 @@ describe("byte-equality of the four twins", () => {
       [{ name: "witness-1", publicKeyPem: witnessKeys.publicKeyPem }],
       { nowSeconds: () => ts + 60 },
     );
-    expect(verified).toEqual([{ name: "witness-1", timestamp: ts }]);
+    expect(verified).toEqual([{ name: "witness-1", timestamp: ts, alg: "Ed25519" }]);
   });
 });
 

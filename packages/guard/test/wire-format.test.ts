@@ -13,7 +13,7 @@
  * a reason to regenerate the vectors until the test passes.
  */
 import { readFileSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, createPublicKey, verify as cryptoVerify } from "node:crypto";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -23,6 +23,12 @@ import {
   mandateContextHash,
   mandateKeyId,
 } from "../src/mandate/mandate.js";
+import {
+  MANDATE_V2_ALGS,
+  MANDATE_V2_DOMAIN,
+  checkMandateV2Structure,
+} from "../src/mandate/hybrid.js";
+import { MLDSA44_SIGNATURE_BYTES, mlDsa44KeyId } from "../src/mandate/pq.js";
 import { intentDigest } from "../src/enforce/consume-store.js";
 import type { PaymentIntent } from "../src/types.js";
 
@@ -97,6 +103,68 @@ describe("mandate signing preimage matches the committed vector", () => {
   it("the kid is INSIDE the preimage, so relabelling changes the bytes", () => {
     const relabelled = { ...v.unsigned, kid: "0000000000000000" };
     expect(MANDATE_DOMAIN + canonicalJson(relabelled)).not.toBe(v.preimage);
+  });
+});
+
+describe("HYBRID (v2) mandate preimage matches the committed vector — and v1 stays frozen", () => {
+  const v = load<{
+    domain: string;
+    algs: string[];
+    signatureBytes: Record<string, number>;
+    testKeys: {
+      ed25519: { publicKeyPem: string };
+      mlDsa44: { publicKeyPem: string };
+    };
+    expectedKids: Record<string, string>;
+    unsigned: Record<string, unknown>;
+    preimage: string;
+    preimageSha256: string;
+    ed25519Signature: string;
+  }>("mandate-v2.json");
+
+  it("the v2 domain tag is new, versioned, and distinct from v1's", () => {
+    expect(MANDATE_V2_DOMAIN).toBe(v.domain);
+    expect(MANDATE_V2_DOMAIN).toBe("vaduno-mandate/v2\n");
+    expect(MANDATE_V2_DOMAIN).not.toBe(MANDATE_DOMAIN);
+  });
+
+  it("both kids derive from the committed keys — Ed25519 via mandateKeyId, ML-DSA-44 via mlDsa44KeyId", () => {
+    expect(mandateKeyId(v.testKeys.ed25519.publicKeyPem)).toBe(v.expectedKids["Ed25519"]);
+    expect(mlDsa44KeyId(v.testKeys.mlDsa44.publicKeyPem)).toBe(v.expectedKids["ML-DSA-44"]);
+  });
+
+  it("the preimage bytes reproduce, and both signatures cover THESE bytes", () => {
+    expect(MANDATE_V2_DOMAIN + canonicalJson(v.unsigned)).toBe(v.preimage);
+    expect(sha256Hex(v.preimage)).toBe(v.preimageSha256);
+    // Ed25519 is deterministic, so the vector pins its exact signature.
+    expect(
+      cryptoVerify(
+        null,
+        Buffer.from(v.preimage, "utf8"),
+        createPublicKey(v.testKeys.ed25519.publicKeyPem),
+        Buffer.from(v.ed25519Signature, "base64"),
+      ),
+    ).toBe(true);
+    // ML-DSA-44 signing is hedged (randomized) per FIPS 204, so the vector
+    // pins the exact DECODED length instead of signature bytes.
+    expect(v.signatureBytes["ML-DSA-44"]).toBe(MLDSA44_SIGNATURE_BYTES);
+    expect(v.signatureBytes["Ed25519"]).toBe(64);
+  });
+
+  it("the structural gate accepts the vector's shape", () => {
+    const withSigs = {
+      ...(v.unsigned as object),
+      signatures: {
+        Ed25519: v.ed25519Signature,
+        "ML-DSA-44": Buffer.alloc(MLDSA44_SIGNATURE_BYTES).toString("base64"),
+      },
+    } as never;
+    expect(checkMandateV2Structure(withSigs).ok).toBe(true);
+  });
+
+  it("the algs suite is pinned exactly", () => {
+    expect(v.algs).toEqual(["Ed25519", "ML-DSA-44"]);
+    expect([...MANDATE_V2_ALGS]).toEqual(v.algs);
   });
 });
 

@@ -62,11 +62,12 @@ const README_CLAIM_TRAPS = [
     // packages/guard/src/mandate/mandate.ts holds an Ed25519 private key when
     // it ISSUES. The honest claim is "no keys TO FUNDS": no custody, no PANs,
     // no wallet or bank credentials.
-    re: /never holds[^.\n]*\bkeys\b(?![^.\n]*\bto funds\b)[^.\n]*/i,
+    // "keys TO funds" and "keys FOR funds" are equally precise; both qualify.
+    re: /never holds[^.\n]*\bkeys\b(?![^.\n]*\b(to|for) funds\b)[^.\n]*/i,
     why: 'unqualified "never holds keys" — a mandate-issuing key IS held; say "keys to funds"',
   },
   {
-    re: /\bno keys\b(?![^.\n]*\bto funds\b)/i,
+    re: /\bno keys\b(?![^.\n]*\b(to|for) funds\b)/i,
     why: 'unqualified "no keys" — say "no keys to funds"',
   },
   {
@@ -75,7 +76,35 @@ const README_CLAIM_TRAPS = [
     re: /test[- ]mode[- ]only/i,
     why: '"test-mode-only" implies it ran against Stripe test mode; it has never run against Stripe at all',
   },
+  {
+    // The precise, allowed claims: the hash/Merkle layers are PQ-adequate
+    // today; hybrid v2 adds ML-DSA-44 ALONGSIDE Ed25519 where the runtime
+    // supports it; classical signatures remain exposed post-CRQC unless
+    // requireAlgs is set. "Quantum-safe/-proof/-resistant" states none of
+    // those qualifiers and is therefore never allowed, in any package README.
+    re: /\bquantum[- ]?(safe|proof|resistant)\b/i,
+    why: 'unqualified "quantum-safe/-proof/-resistant" — say exactly what holds: hash/Merkle layers PQ-adequate, hybrid ML-DSA-44 alongside Ed25519 where the runtime supports it, classical signatures exposed post-CRQC unless requireAlgs is set',
+  },
 ];
+
+/**
+ * Blank out double-quoted spans before running the claim traps.
+ *
+ * A security doc has to be able to NAME a forbidden phrase in order to forbid
+ * it — `Nothing here is "quantum-safe"`, or an FAQ quoting a skeptic's
+ * imprecise objection before correcting it. Those are the opposite of the
+ * defect the traps exist to catch, and a gate that cannot tell them apart
+ * pushes authors toward vaguer docs to appease it.
+ *
+ * The rule is deliberately mechanical rather than clever: a phrase in quotes
+ * is being DISCUSSED, a phrase outside them is being ASSERTED. It does mean an
+ * author could evade a trap by quoting a real claim — accepted, because the
+ * traps are a safety net against forgetting, not an adversary model. The
+ * author is not the attacker here.
+ */
+function withoutQuotedSpans(text) {
+  return text.replace(/"[^"\n]*"/g, (m) => " ".repeat(m.length));
+}
 
 let failures = 0;
 let warnings = 0;
@@ -129,7 +158,7 @@ for (const name of PACKAGES) {
   // nothing was diffing them. So the load-bearing claims are asserted here.
   const readmePath = join(dir, "README.md");
   if (existsSync(readmePath)) {
-    const readme = readFileSync(readmePath, "utf8");
+    const readme = withoutQuotedSpans(readFileSync(readmePath, "utf8"));
     for (const { re, why } of README_CLAIM_TRAPS) {
       const m = readme.match(re);
       if (m) fail(pkg.name, `README: ${why} — found ${JSON.stringify(m[0].trim().slice(0, 72))}`);
@@ -163,6 +192,38 @@ for (const name of PACKAGES) {
   if (!has("LICENSE")) fail(pkg.name, "tarball has no LICENSE");
   if (!files.some((f) => f.endsWith(".d.ts"))) fail(pkg.name, "tarball has no type declarations");
   console.log(`  ${files.length} files, ${(meta.unpackedSize / 1024).toFixed(1)} kB unpacked`);
+}
+
+/**
+ * The claim traps above run per PACKAGE README, because those are the npm
+ * landing pages. But the docs asserted the gate "rejects that phrase" without
+ * qualification, while the root README, SECURITY.md and docs/ went unscanned —
+ * the gate's scope was narrower than the claim made for it, which is the exact
+ * defect class the traps exist to catch, turned on the gate itself.
+ *
+ * Rather than narrow the sentence, widen the gate: these files carry the same
+ * claims to the same readers.
+ */
+{
+  const extraDocs = [
+    join(root, "README.md"),
+    join(root, "SECURITY.md"),
+    join(root, "CONTRIBUTING.md"),
+    ...(existsSync(join(root, "docs"))
+      ? readdirSync(join(root, "docs"))
+          .filter((f) => f.endsWith(".md"))
+          .map((f) => join(root, "docs", f))
+      : []),
+  ];
+  for (const p of extraDocs) {
+    if (!existsSync(p)) continue;
+    const text = withoutQuotedSpans(readFileSync(p, "utf8"));
+    const rel = p.slice(root.length + 1).replace(/\\/g, "/");
+    for (const { re, why } of README_CLAIM_TRAPS) {
+      const m = text.match(re);
+      if (m) fail(rel, `${why} — found ${JSON.stringify(m[0].trim().slice(0, 72))}`);
+    }
+  }
 }
 
 /**

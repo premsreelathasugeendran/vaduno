@@ -67,6 +67,28 @@ export {
   MANDATE_FORMAT_VERSION,
   MANDATE_ALG,
 } from "./mandate/mandate.js";
+export type { AnyMandate } from "./mandate/mandate.js";
+export {
+  MLDSA44_ALG,
+  MLDSA44_PUBLIC_KEY_BYTES,
+  MLDSA44_SIGNATURE_BYTES,
+  PqUnavailableError,
+  generateMlDsa44KeyPair,
+  mlDsa44Available,
+  mlDsa44KeyId,
+  mlDsa44SpkiFromRawPublicKey,
+  nativeMlDsa44Ops,
+  rawMlDsa44PublicKey,
+} from "./mandate/pq.js";
+export type { MlDsa44KeyPair, MlDsa44Ops } from "./mandate/pq.js";
+export {
+  MANDATE_V2_ALGS,
+  MANDATE_V2_DOMAIN,
+  MANDATE_V2_FORMAT_VERSION,
+  checkMandateV2Structure,
+  mandateV2Payload,
+} from "./mandate/hybrid.js";
+export type { MandateV2, StructureCheck } from "./mandate/hybrid.js";
 export {
   LocalKeySigner,
   checkedSign,

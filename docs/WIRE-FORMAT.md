@@ -14,9 +14,12 @@ asserts the implementation reproduces them. A diff in those files is a wire
 format change: it breaks every existing signature and must bump the relevant
 domain tag's version.
 
-Status: **v1 of every structure below.** No second implementation exists yet. If
-you are writing one, the vectors are the contract — and disagreements are bugs
-worth [reporting](https://github.com/premsreelathasugeendran/vaduno/issues).
+Status: **v1 of every structure below is FROZEN**, and one structure has an
+ADDITIVE v2: the hybrid mandate (§3b), which coexists with v1 rather than
+replacing it — every v1 vector is byte-identical to the day it was committed.
+No second implementation exists yet. If you are writing one, the vectors are
+the contract — and disagreements are bugs worth
+[reporting](https://github.com/premsreelathasugeendran/vaduno/issues).
 
 ---
 
@@ -76,8 +79,9 @@ Vectors: [`canonical-json.json`](../spec/vectors/canonical-json.json),
 Every signed structure is prefixed with a versioned, newline-terminated tag.
 
 ```
-vaduno-mandate/v1\n            mandate signing payload
-vaduno-mandate-key/v1\n        mandate key id derivation
+vaduno-mandate/v1\n            mandate signing payload (v1, frozen)
+vaduno-mandate/v2\n            HYBRID mandate signing payload (v2 — §3b)
+vaduno-mandate-key/v1\n        mandate key id derivation (both algorithms)
 vaduno-mandate-ctx/v1\n        mandate context binding
 vaduno-consume-digest/v1\n     consume-once intent digest
 vaduno-ledger-entry/v1\n       transparency log leaf
@@ -139,6 +143,55 @@ the signature; that attack is a test.
 
 Vector: [`mandate.json`](../spec/vectors/mandate.json) — includes a fixed test
 key pair, so a second implementation can verify a real signature.
+
+### 3b. Hybrid (v2) mandate — post-quantum readiness, additive
+
+**Preimage:** `"vaduno-mandate/v2\n" + canonicalJson(mandate minus signatures)`
+**Signatures:** BOTH Ed25519 (64 bytes) and ML-DSA-44 (FIPS 204, 2420 bytes),
+base64, each over the SAME preimage. Where a verifier can check a signature it
+MUST verify — a present-but-invalid half is refused, never ignored.
+
+```jsonc
+{
+  "v": 2,
+  "algs": ["Ed25519", "ML-DSA-44"],   // exactly this suite, in this order
+  "kids": { "Ed25519": "…16 hex…", "ML-DSA-44": "…16 hex…" },
+  "id": "uuid",
+  "issuer": "human@example.com",
+  "agentId": "agent-1",
+  "constraints": { "…": "…" },        // same shape as v1
+  "createdAt": "2026-01-01T00:00:00.000Z",
+  "signatures": { "Ed25519": "base64", "ML-DSA-44": "base64" }
+}
+```
+
+**Pre-crypto structural bounds (MALFORMED before any signature check):**
+
+| Bound | Why |
+|---|---|
+| `algs` equals the suite above exactly, in order | order is part of the signed canonical form |
+| `kids` keys equal `algs` EXACTLY; each kid matches `^[0-9a-f]{16}$` | kids is signed, but an issuer-side bug must not ship a bloated or unresolvable kids object |
+| `signatures` keys equal `algs` exactly | no extra, no missing |
+| each signature must DECODE to exactly 64 / 2420 bytes | Node's base64 decoder silently skips invalid characters — an encoded-string length check is NOT a signature length check |
+
+**Key lookup is (algorithm, kid).** Both families derive the id the same way
+(first 8 bytes of `SHA-256("vaduno-mandate-key/v1\n" || SPKI DER)`, hex) — and
+because that is a 64-bit TRUNCATED hash, distinct keys can collide (~2^32
+birthday / ~2^64 targeted). Binding the algorithm at lookup keeps a collision
+from crossing families; the within-family residual is stated in
+`docs/SECURITY-MODEL.md`.
+
+**Verification policy:** absent runtime ML-DSA support (see the probe in
+`SECURITY-MODEL.md`) or a held key for the named ML-DSA kid, a v2 mandate is
+accepted resting on its classical signature — v1-equivalent standing — unless
+the verifier sets `requireAlgs: ["ML-DSA-44"]`, which makes every
+unverifiable-PQ case a refusal. `requireAlgs` is the only post-CRQC defense;
+see the downgrade section of `SECURITY-MODEL.md`.
+
+Vector: [`mandate-v2.json`](../spec/vectors/mandate-v2.json) — pins the
+preimage, both kid derivations, and the (deterministic) Ed25519 signature.
+The ML-DSA-44 signature bytes are not pinned because FIPS 204 signing is
+hedged (randomized); the vector pins its exact decoded length instead.
 
 ### Context binding
 
@@ -202,6 +255,41 @@ signed-note format with `tlog-cosignature` witnesses — so a real Go or Sigsum
 witness can cosign. That interop is the reason the format is not homegrown.
 
 Vector: [`merkle.json`](../spec/vectors/merkle.json)
+
+### ML-DSA-44 (0x06) witness cosignatures
+
+Two cosignature types per C2SP `tlog-cosignature`, distinguished by the
+key-id algorithm byte:
+
+| Type | Key id | Signed payload |
+|---|---|---|
+| `0x04` (Ed25519) | `SHA-256(name \|\| 0x0A \|\| 0x04 \|\| raw 32-byte key)[:4]` | TEXT: `"cosignature/v1\n" + "time T\n" + note body` |
+| `0x06` (ML-DSA-44) | `SHA-256(name \|\| 0x0A \|\| 0x06 \|\| raw 1312-byte key)[:4]` | BINARY struct below — **not** the 0x04 text with a different algorithm |
+
+```
+struct {
+  u8     label[12] = "subtree/v1\n\0";
+  opaque cosigner_name<1..255>;     // 1-byte length prefix
+  uint64 timestamp;                 // big-endian POSIX seconds
+  opaque log_origin<1..255>;        // 1-byte length prefix
+  uint64 start;                     // MUST be 0 for checkpoints
+  uint64 end;                       // = tree size
+  u8     hash[32];                  // RAW root hash
+}
+```
+
+The signature line blob is `keyID[4] || uint64BE timestamp || signature[2420]`,
+same layout as 0x04. The raw ML-DSA-44 public key comes from an actual SPKI
+parse (`rawMlDsa44PublicKey`) — the Ed25519 "last 32 bytes of the DER"
+shortcut would silently produce a garbage key id for an ML-DSA key, and
+`rawEd25519PublicKey` now refuses non-Ed25519 keys for the same reason.
+
+**Coverage asymmetry, part of the contract:** the 0x06 struct covers
+(origin, size, root) only; 0x04 covers the full note body including extension
+lines. A PQ-witnessed claim therefore attests tree state, not extension
+lines. See `docs/SECURITY-MODEL.md` (post-quantum posture).
+
+Vector: [`cosign-mldsa44-payload.json`](../spec/vectors/cosign-mldsa44-payload.json)
 
 ---
 

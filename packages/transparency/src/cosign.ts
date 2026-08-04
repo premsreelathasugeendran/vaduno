@@ -4,9 +4,18 @@ import {
   sign as edSign,
   verify as edVerify,
 } from "node:crypto";
-import { checkedSign, type Ed25519Signer } from "@vaduno/guard";
+import {
+  checkedSign,
+  MLDSA44_SIGNATURE_BYTES,
+  nativeMlDsa44Ops,
+  PqUnavailableError,
+  rawMlDsa44PublicKey,
+  type Ed25519Signer,
+  type MlDsa44Ops,
+} from "@vaduno/guard";
 import {
   SIG_TYPE_COSIGNATURE_V1,
+  SIG_TYPE_COSIGNATURE_MLDSA44,
   CheckpointError,
   keyId,
   parseNote,
@@ -153,6 +162,130 @@ export async function cosignCheckpointWith(
   return { name: opts.name, line: signatureLine(opts.name, id, blob), timestamp };
 }
 
+/**
+ * The exact bytes an ML-DSA-44 (0x06) cosignature signs — per C2SP
+ * tlog-cosignature this is a BINARY STRUCTURE, not a variant of the 0x04
+ * text payload, which is why it is a separate builder and not a branch
+ * inside `cosignaturePayload`:
+ *
+ *   struct {
+ *     u8     label[12] = "subtree/v1\n\0";
+ *     opaque cosigner_name<1..255>;      // 1-byte length prefix
+ *     uint64 timestamp;                  // big-endian POSIX seconds
+ *     opaque log_origin<1..255>;         // 1-byte length prefix
+ *     uint64 start;                      // MUST be 0 for checkpoints
+ *     uint64 end;                        // = tree size
+ *     u8     hash[32];                   // RAW root hash, not base64
+ *   }
+ *
+ * WITNESSING ASYMMETRY, stated rather than hidden: this struct covers the
+ * checkpoint's (origin, size, root) — it does NOT cover extension lines,
+ * while the 0x04 text payload signs the FULL note body including them. A
+ * "witnessed-pq" verdict therefore attests TREE STATE only; equivocation
+ * hidden in extension lines is witnessed only classically. (Vaduno's own
+ * checkpoints carry no extension lines, and checkpointBody documents them
+ * as NOT RECOMMENDED — but third-party notes may differ, so the limit is
+ * part of the contract.)
+ */
+export function mlDsa44CosignaturePayload(opts: {
+  cosignerName: string;
+  /** POSIX seconds, uint64 big-endian. */
+  timestamp: number;
+  origin: string;
+  treeSize: number;
+  /** Root hash as 64 lowercase hex chars; encoded RAW (32 bytes). */
+  rootHash: string;
+}): Buffer {
+  const label = Buffer.from("subtree/v1\n\0", "latin1");
+  if (label.length !== 12) throw new CheckpointError("internal: bad subtree label");
+  const name = Buffer.from(opts.cosignerName, "utf8");
+  if (name.length < 1 || name.length > 255) {
+    throw new CheckpointError("cosigner name must be 1..255 bytes");
+  }
+  const origin = Buffer.from(opts.origin, "utf8");
+  if (origin.length < 1 || origin.length > 255) {
+    throw new CheckpointError("log origin must be 1..255 bytes");
+  }
+  if (!Number.isSafeInteger(opts.treeSize) || opts.treeSize < 0) {
+    throw new CheckpointError(`invalid tree size: ${opts.treeSize}`);
+  }
+  if (!Number.isSafeInteger(opts.timestamp) || opts.timestamp < 0) {
+    throw new CheckpointError(`invalid cosignature timestamp: ${opts.timestamp}`);
+  }
+  if (!/^[0-9a-f]{64}$/.test(opts.rootHash)) {
+    throw new CheckpointError("rootHash must be 64 lowercase hex chars (32-byte SHA-256)");
+  }
+  const u64 = (v: number): Buffer => {
+    const b = Buffer.alloc(8);
+    b.writeBigUInt64BE(BigInt(v));
+    return b;
+  };
+  return Buffer.concat([
+    label,
+    Buffer.from([name.length]),
+    name,
+    u64(opts.timestamp),
+    Buffer.from([origin.length]),
+    origin,
+    u64(0), // start: MUST be 0 for checkpoints (whole-tree subtree)
+    u64(opts.treeSize), // end
+    Buffer.from(opts.rootHash, "hex"),
+  ]);
+}
+
+/**
+ * Produce an ML-DSA-44 (0x06) witness cosignature for a checkpoint note.
+ * Raw cryptographic step, like `cosignCheckpoint` — consistency checking is
+ * the witness protocol's job (witness.ts): run `witnessCosign` first for the
+ * refuse-inconsistent-history decision, then call this with the same note to
+ * add the PQ line.
+ *
+ * SIGNING REQUIRES the runtime capability: with no native ML-DSA (and no
+ * injected ops) this throws a typed `PqUnavailableError` — it never silently
+ * falls back to a classical signature. The signature is verified against the
+ * declared public key before a line is emitted (checkedSign's discipline).
+ */
+export function cosignCheckpointMlDsa44(
+  note: string | ParsedNote,
+  opts: {
+    name: string;
+    privateKeyPem: string;
+    publicKeyPem: string;
+    /** POSIX seconds; defaults to now. */
+    timestamp?: number;
+    /** Capability override for tests; defaults to the runtime probe. */
+    pq?: MlDsa44Ops | null;
+  },
+): CosignatureRecord {
+  const pq = opts.pq !== undefined ? opts.pq : nativeMlDsa44Ops();
+  if (pq === null) throw new PqUnavailableError();
+  const parsed = typeof note === "string" ? parseNote(note) : note;
+  const timestamp = opts.timestamp ?? Math.floor(Date.now() / 1000);
+  const payload = mlDsa44CosignaturePayload({
+    cosignerName: opts.name,
+    timestamp,
+    origin: parsed.checkpoint.origin,
+    treeSize: parsed.checkpoint.treeSize,
+    rootHash: parsed.checkpoint.rootHash,
+  });
+  const sig = pq.sign(payload, opts.privateKeyPem);
+  if (
+    sig.length !== MLDSA44_SIGNATURE_BYTES ||
+    !pq.verify(payload, opts.publicKeyPem, sig)
+  ) {
+    throw new CheckpointError(
+      "ML-DSA-44 cosignature does not verify against the declared public key — refusing to emit it",
+    );
+  }
+  const id = keyId(
+    opts.name,
+    SIG_TYPE_COSIGNATURE_MLDSA44,
+    rawMlDsa44PublicKey(opts.publicKeyPem),
+  );
+  const blob = Buffer.concat([encodeTimestamp(timestamp), sig]);
+  return { name: opts.name, line: signatureLine(opts.name, id, blob), timestamp };
+}
+
 /** Append cosignature lines to a note. */
 export function attachCosignatures(
   note: string,
@@ -171,29 +304,69 @@ export function attachCosignatures(
 export interface KnownWitness {
   /** Must match the name on the signature line exactly. */
   name: string;
-  publicKeyPem: string;
+  /** Ed25519 cosigning key (0x04 lines). Optional only when an ML-DSA-44 key
+   * is given — a witness must have at least one usable key. */
+  publicKeyPem?: string;
+  /** ML-DSA-44 cosigning key (0x06 lines). The SAME witness may hold both;
+   * they count as ONE party toward any quorum. */
+  mlDsa44PublicKeyPem?: string;
 }
+
+/** Which signature type a verified cosignature came from. */
+export type CosignatureAlg = "Ed25519" | "ML-DSA-44";
 
 export interface VerifiedCosignature {
   name: string;
   timestamp: number;
+  alg: CosignatureAlg;
 }
 
+/**
+ * ARCHIVAL SEMANTICS — read this before passing bounds.
+ *
+ * Evidence verification is TEMPORAL-PRECEDENCE-based, not freshness-based.
+ * A cosignature attests "this witness saw this checkpoint no later than T";
+ * that statement does not decay. An EvidenceBundle or dispute packet is
+ * verified months or years after the fact — that is the entire point of the
+ * evidence layer — so BY DEFAULT there is NO staleness bound: only the
+ * future-skew rejection applies (a timestamp ahead of the verifier's clock is
+ * implausible at any age, and accepting it would let a cosignature claim a
+ * witness time that has not happened yet).
+ *
+ * Freshness is a LIVENESS property and is opt-in: pass `maxAgeSeconds` when
+ * you are deciding whether a log is still alive and publishing (an operator
+ * who stops publishing can otherwise serve one old, validly-cosigned
+ * checkpoint forever). Do not pass it when verifying archival evidence.
+ */
 export interface CosignatureVerifyOptions {
   /**
-   * Reject cosignatures timestamped further ahead than this (seconds). A
-   * witness clock slightly ahead is normal; a wildly future timestamp would
-   * let a cosignature look fresh long after it should have expired.
+   * Reject cosignatures timestamped further ahead of the verifier's clock
+   * than this (seconds). Default 300. Must be finite and >= 0 — an infinite
+   * skew would disable the one temporal check archival verification keeps,
+   * so it fails closed instead.
    */
   maxClockSkewSeconds?: number;
   /**
-   * Reject cosignatures older than this (seconds). Freshness is the point of
-   * a timestamped cosignature: without it, an operator who simply stops
-   * publishing can keep serving one old, validly-cosigned checkpoint forever.
+   * OPT-IN liveness bound: reject cosignatures older than this (seconds).
+   * Default `Infinity` — unbounded age, the archival semantics above.
+   * `Infinity` is the explicit way to spell "unbounded"; NaN or a negative
+   * value fails closed (verifies nothing).
    */
   maxAgeSeconds?: number;
   /** Injectable clock (POSIX seconds). */
   nowSeconds?: () => number;
+  /**
+   * ML-DSA-44 capability. Defaults to the runtime probe
+   * (`nativeMlDsa44Ops()`). On a runtime without native ML-DSA, 0x06
+   * cosignatures are IGNORED (they simply do not appear in the result and
+   * the note rests on its 0x04 cosignatures) rather than fatal — the
+   * signed-note spec ignores unusable signatures, and a fatal treatment
+   * would let one byzantine witness's garbage line veto everyone's quorum.
+   * This cannot upgrade anything: labels and witness times computed from
+   * cosignatures (`assessCheckpointAnchor`) only ever count what VERIFIED.
+   * Tests may pass a deterministic fake, or `null` to force the no-PQ path.
+   */
+  pq?: MlDsa44Ops | null;
 }
 
 /**
@@ -213,11 +386,25 @@ export interface LogBinding {
   logKeyName?: string;
 }
 
-function verifyOneCosignature(
+interface TimeBounds {
+  now: number;
+  skew: number;
+  maxAge: number;
+}
+
+/** Timestamp acceptance shared by both cosignature types. */
+function timestampAcceptable(timestamp: number, bounds: TimeBounds): boolean {
+  if (timestamp > bounds.now + bounds.skew) return false; // implausibly future
+  if (timestamp < bounds.now - bounds.maxAge) return false; // stale (opt-in bound)
+  return true;
+}
+
+function verifyOneEd25519Cosignature(
   parsed: ParsedNote,
   witness: KnownWitness,
-  bounds: { now: number; skew: number; maxAge: number },
+  bounds: TimeBounds,
 ): VerifiedCosignature | null {
+  if (witness.publicKeyPem === undefined) return null;
   let expectedId: string;
   let key;
   try {
@@ -237,8 +424,7 @@ function verifyOneCosignature(
     const tsRaw = sig.signature.readBigUInt64BE(0);
     if (tsRaw > BigInt(Number.MAX_SAFE_INTEGER)) continue;
     const timestamp = Number(tsRaw);
-    if (timestamp > bounds.now + bounds.skew) continue; // implausibly future
-    if (timestamp < bounds.now - bounds.maxAge) continue; // stale
+    if (!timestampAcceptable(timestamp, bounds)) continue;
     const raw = sig.signature.subarray(TIMESTAMP_BYTES);
     let ok = false;
     try {
@@ -246,19 +432,70 @@ function verifyOneCosignature(
     } catch {
       ok = false;
     }
-    if (ok) return { name: witness.name, timestamp };
+    if (ok) return { name: witness.name, timestamp, alg: "Ed25519" };
+  }
+  return null;
+}
+
+function verifyOneMlDsa44Cosignature(
+  parsed: ParsedNote,
+  witness: KnownWitness,
+  bounds: TimeBounds,
+  pq: MlDsa44Ops,
+): VerifiedCosignature | null {
+  if (witness.mlDsa44PublicKeyPem === undefined) return null;
+  let expectedId: string;
+  try {
+    expectedId = keyId(
+      witness.name,
+      SIG_TYPE_COSIGNATURE_MLDSA44,
+      rawMlDsa44PublicKey(witness.mlDsa44PublicKeyPem),
+    );
+  } catch {
+    return null;
+  }
+  for (const sig of parsed.signatures) {
+    if (sig.name !== witness.name || sig.keyId !== expectedId) continue;
+    if (sig.signature.length !== TIMESTAMP_BYTES + MLDSA44_SIGNATURE_BYTES) continue;
+    const tsRaw = sig.signature.readBigUInt64BE(0);
+    if (tsRaw > BigInt(Number.MAX_SAFE_INTEGER)) continue;
+    const timestamp = Number(tsRaw);
+    if (!timestampAcceptable(timestamp, bounds)) continue;
+    const raw = sig.signature.subarray(TIMESTAMP_BYTES);
+    let payload: Buffer;
+    try {
+      payload = mlDsa44CosignaturePayload({
+        cosignerName: witness.name,
+        timestamp,
+        origin: parsed.checkpoint.origin,
+        treeSize: parsed.checkpoint.treeSize,
+        rootHash: parsed.checkpoint.rootHash,
+      });
+    } catch {
+      continue;
+    }
+    if (pq.verify(payload, witness.mlDsa44PublicKeyPem, raw)) {
+      return { name: witness.name, timestamp, alg: "ML-DSA-44" };
+    }
   }
   return null;
 }
 
 /**
  * Verify which of `witnesses` cosigned this checkpoint. Fails closed: an
- * unparseable note, a stale or future-dated cosignature, a wrong-length blob,
- * or a bad signature simply does not appear in the result.
+ * unparseable note, a future-dated cosignature, a cosignature older than an
+ * OPT-IN `maxAgeSeconds` bound, a wrong-length blob, or a bad signature
+ * simply does not appear in the result. By default age is UNBOUNDED — see
+ * `CosignatureVerifyOptions` for the archival semantics.
  *
- * Returns at most ONE entry per witness NAME. Note that `.length >= k` is
- * still not a safe quorum test — use `checkCosignatureQuorum`, which counts
- * distinct KEYS and binds the checkpoint to your log.
+ * Returns at most one entry per witness NAME per ALGORITHM (a witness
+ * holding both key types can contribute one 0x04 and one 0x06 entry — still
+ * ONE party for quorum purposes). 0x06 entries appear only when the runtime
+ * (or an injected `opts.pq`) can verify ML-DSA-44; otherwise they are
+ * ignored and the note rests on its Ed25519 cosignatures.
+ *
+ * `.length >= k` is NOT a safe quorum test — use `checkCosignatureQuorum`,
+ * which counts distinct PARTIES and binds the checkpoint to your log.
  */
 export function verifyCosignatures(
   note: string,
@@ -272,23 +509,33 @@ export function verifyCosignatures(
     return [];
   }
   const rawNow = opts.nowSeconds ? opts.nowSeconds() : Math.floor(Date.now() / 1000);
-  // A broken clock must not silently disable the freshness checks.
+  // A broken clock must not silently disable the future-skew check.
   if (!Number.isFinite(rawNow)) return [];
-  const bounds = {
+  const bounds: TimeBounds = {
     now: Math.floor(rawNow),
-    maxAge: opts.maxAgeSeconds ?? 24 * 60 * 60,
+    // Unbounded age is the ARCHIVAL default; Infinity is also the explicit
+    // spelling of "unbounded". NaN and negatives fail closed below.
+    maxAge: opts.maxAgeSeconds ?? Infinity,
     skew: opts.maxClockSkewSeconds ?? 300,
   };
-  if (!Number.isFinite(bounds.maxAge) || !Number.isFinite(bounds.skew)) return [];
+  // skew must be FINITE (an infinite skew would disable the one temporal
+  // check archival verification keeps); maxAge may be Infinity but must not
+  // be NaN or negative. Anything else verifies nothing.
+  if (!Number.isFinite(bounds.skew) || bounds.skew < 0) return [];
+  if (Number.isNaN(bounds.maxAge) || bounds.maxAge < 0) return [];
+
+  const pq = opts.pq !== undefined ? opts.pq : nativeMlDsa44Ops();
 
   const seen = new Set<string>();
   const verified: VerifiedCosignature[] = [];
   for (const witness of witnesses) {
     if (seen.has(witness.name)) continue;
-    const v = verifyOneCosignature(parsed, witness, bounds);
-    if (v) {
-      seen.add(witness.name);
-      verified.push(v);
+    seen.add(witness.name);
+    const ed = verifyOneEd25519Cosignature(parsed, witness, bounds);
+    if (ed) verified.push(ed);
+    if (pq !== null) {
+      const ml = verifyOneMlDsa44Cosignature(parsed, witness, bounds, pq);
+      if (ml) verified.push(ml);
     }
   }
   return verified;
@@ -317,13 +564,67 @@ export interface QuorumResult {
   message: string;
 }
 
-/** Stable identity of a witness's key material, for independence counting. */
-function keyFingerprint(publicKeyPem: string): string | null {
-  try {
-    return rawEd25519PublicKey(publicKeyPem).toString("hex");
-  } catch {
-    return null;
+/**
+ * Stable identities of a witness's key material, for independence counting.
+ * Family-prefixed so an Ed25519 key and an ML-DSA key can never alias each
+ * other by byte coincidence.
+ */
+function keyFingerprints(w: KnownWitness): string[] {
+  const fps: string[] = [];
+  if (w.publicKeyPem !== undefined) {
+    try {
+      fps.push("ed25519:" + rawEd25519PublicKey(w.publicKeyPem).toString("hex"));
+    } catch {
+      /* unusable key contributes nothing */
+    }
   }
+  if (w.mlDsa44PublicKeyPem !== undefined) {
+    try {
+      fps.push("ml-dsa-44:" + rawMlDsa44PublicKey(w.mlDsa44PublicKeyPem).toString("hex"));
+    } catch {
+      /* unusable key contributes nothing */
+    }
+  }
+  return fps;
+}
+
+/**
+ * Group witness NAMES into PARTIES by key material: names sharing ANY key
+ * (either family) are one party. A witness with no usable key belongs to no
+ * party and can never count toward a quorum.
+ */
+function groupParties(unique: Map<string, KnownWitness>): {
+  nameToParty: Map<string, number>;
+  partyCount: number;
+  duplicateKeys: string[];
+} {
+  const fpToParty = new Map<string, number>();
+  const nameToParty = new Map<string, number>();
+  const partyToNames = new Map<number, string[]>();
+  let nextParty = 0;
+  for (const w of unique.values()) {
+    const fps = keyFingerprints(w);
+    if (fps.length === 0) continue;
+    let party: number | undefined;
+    for (const fp of fps) {
+      const existing = fpToParty.get(fp);
+      if (existing !== undefined) {
+        party = existing;
+        break;
+      }
+    }
+    if (party === undefined) party = nextParty++;
+    for (const fp of fps) fpToParty.set(fp, party);
+    nameToParty.set(w.name, party);
+    const list = partyToNames.get(party);
+    if (list) list.push(w.name);
+    else partyToNames.set(party, [w.name]);
+  }
+  const duplicateKeys = [...partyToNames.values()]
+    .filter((ns) => ns.length > 1)
+    .flat()
+    .sort();
+  return { nameToParty, partyCount: partyToNames.size, duplicateKeys };
 }
 
 /**
@@ -337,9 +638,11 @@ function keyFingerprint(publicKeyPem: string): string | null {
  * Both are required arguments — this check fails closed by construction
  * rather than by remembering to opt in.
  *
- * Independence is counted by KEY, not by name: key IDs are name-derived, so a
- * single party holding one private key could otherwise mint valid cosignature
- * lines under k names and fill a quorum alone.
+ * Independence is counted by KEY MATERIAL, not by name: key IDs are
+ * name-derived, so a single party holding one private key could otherwise
+ * mint valid cosignature lines under k names and fill a quorum alone. A
+ * witness's Ed25519 and ML-DSA-44 keys count as ONE party, whichever (or
+ * both) of them cosigned.
  */
 export function checkCosignatureQuorum(
   note: string,
@@ -352,22 +655,7 @@ export function checkCosignatureQuorum(
   for (const w of witnesses) if (!unique.has(w.name)) unique.set(w.name, w);
   const names = [...unique.keys()];
 
-  // Group names by key material; each distinct key is one party.
-  const nameToKey = new Map<string, string>();
-  const keyToNames = new Map<string, string[]>();
-  for (const w of unique.values()) {
-    const fp = keyFingerprint(w.publicKeyPem);
-    if (fp === null) continue; // unusable key cannot count toward a quorum
-    nameToKey.set(w.name, fp);
-    const list = keyToNames.get(fp);
-    if (list) list.push(w.name);
-    else keyToNames.set(fp, [w.name]);
-  }
-  const duplicateKeys = [...keyToNames.values()]
-    .filter((ns) => ns.length > 1)
-    .flat()
-    .sort();
-  const distinctParties = keyToNames.size;
+  const { nameToParty, partyCount: distinctParties, duplicateKeys } = groupParties(unique);
   const fail = (message: string): QuorumResult => ({
     ok: false,
     required: k,
@@ -420,13 +708,13 @@ export function checkCosignatureQuorum(
 
   const verified = verifyCosignatures(note, [...unique.values()], opts);
   const seenNames = new Set(verified.map((v) => v.name));
-  const seenKeys = new Set<string>();
+  const seenParties = new Set<number>();
   for (const v of verified) {
-    const fp = nameToKey.get(v.name);
-    if (fp !== undefined) seenKeys.add(fp);
+    const party = nameToParty.get(v.name);
+    if (party !== undefined) seenParties.add(party);
   }
   const missing = names.filter((n) => !seenNames.has(n));
-  const ok = seenKeys.size >= k;
+  const ok = seenParties.size >= k;
   const dupeNote =
     duplicateKeys.length > 0
       ? ` — note: ${duplicateKeys.join(", ")} share a key and count as one party`
@@ -439,7 +727,95 @@ export function checkCosignatureQuorum(
     duplicateKeys,
     ...(ok ? { checkpoint: parsed.checkpoint } : {}),
     message: ok
-      ? `${seenKeys.size} of ${k} required independent witness cosignatures verified${dupeNote}`
-      : `only ${seenKeys.size} of ${k} required independent witness cosignatures verified (missing: ${missing.join(", ") || "none"})${dupeNote}`,
+      ? `${seenParties.size} of ${k} required independent witness cosignatures verified${dupeNote}`
+      : `only ${seenParties.size} of ${k} required independent witness cosignatures verified (missing: ${missing.join(", ") || "none"})${dupeNote}`,
   };
+}
+
+export type AnchorStrength = "unwitnessed" | "witnessed" | "witnessed-pq";
+
+/**
+ * How strongly a checkpoint is anchored, for ARCHIVAL evidence: which quorum
+ * it reaches and since WHEN it can be said to have been witnessed.
+ */
+export interface AnchorAssessment {
+  /**
+   * "witnessed-pq"  — a k-party quorum of VERIFIED ML-DSA-44 (0x06)
+   *                   cosignatures. Holds against a future adversary who can
+   *                   forge Ed25519 but not ML-DSA-44.
+   * "witnessed"     — a k-party quorum of verified cosignatures of any type,
+   *                   but not a PQ-only quorum. Post-CRQC, Ed25519
+   *                   cosignatures are forgeable, so this label's value
+   *                   decays with Ed25519 itself.
+   * "unwitnessed"   — no quorum at all.
+   *
+   * A verifier that CANNOT verify ML-DSA-44 (no native support, no injected
+   * ops) can never report "witnessed-pq" — unverifiable 0x06 lines are
+   * ignored, and honesty about that is the anti-downgrade property: nothing
+   * unverifiable ever upgrades a label.
+   */
+  strength: AnchorStrength;
+  /**
+   * Earliest timestamp among VERIFIED cosignatures AT LEAST AS STRONG as
+   * `strength` — for "witnessed-pq" that means 0x06 cosignatures ONLY.
+   *
+   * Never the earliest across all algorithms: a post-CRQC attacker who can
+   * forge Ed25519 could append a 0x04 line with an arbitrarily BACKDATED
+   * timestamp to a witnessed-pq note and silently move its claimed witness
+   * time earlier. Scoping the minimum to the reported strength closes that
+   * (the label-upgrade/witnessedAt-poisoning attack test pins it).
+   *
+   * Null when unwitnessed.
+   */
+  witnessedAt: number | null;
+  /** Quorum over cosignatures of ANY type (0x04 and 0x06). */
+  classical: QuorumResult;
+  /** Quorum over 0x06 cosignatures ONLY. Fails closed where ML-DSA-44
+   * cannot be verified. */
+  pq: QuorumResult;
+}
+
+/**
+ * Assess a checkpoint's witness anchoring at both strengths. Same required
+ * log binding as `checkCosignatureQuorum`; same archival time semantics as
+ * `verifyCosignatures` (unbounded age by default, future-skew still
+ * rejected).
+ *
+ * Remember the witnessing asymmetry (see `mlDsa44CosignaturePayload`): the
+ * PQ struct covers (origin, size, root) only, so "witnessed-pq" attests tree
+ * state; extension lines are witnessed only classically.
+ */
+export function assessCheckpointAnchor(
+  note: string,
+  witnesses: readonly KnownWitness[],
+  k: number,
+  binding: LogBinding,
+  opts: CosignatureVerifyOptions = {},
+): AnchorAssessment {
+  const classical = checkCosignatureQuorum(note, witnesses, k, binding, opts);
+  // The PQ quorum re-runs the same bound checks over PQ-only witness entries
+  // so its party counting, duplicate detection and unreachable-quorum guard
+  // all apply to the PQ key set alone.
+  const pqWitnesses = witnesses
+    .filter((w) => w.mlDsa44PublicKeyPem !== undefined)
+    .map((w) => {
+      const entry: KnownWitness = { name: w.name };
+      entry.mlDsa44PublicKeyPem = w.mlDsa44PublicKeyPem!;
+      return entry;
+    });
+  const pq = checkCosignatureQuorum(note, pqWitnesses, k, binding, opts);
+  const strength: AnchorStrength = pq.ok ? "witnessed-pq" : classical.ok ? "witnessed" : "unwitnessed";
+  let witnessedAt: number | null = null;
+  if (strength === "witnessed-pq") {
+    // 0x06 timestamps ONLY — see the field docs for the attack this blocks.
+    witnessedAt = pq.verified
+      .filter((v) => v.alg === "ML-DSA-44")
+      .reduce<number | null>((min, v) => (min === null || v.timestamp < min ? v.timestamp : min), null);
+  } else if (strength === "witnessed") {
+    witnessedAt = classical.verified.reduce<number | null>(
+      (min, v) => (min === null || v.timestamp < min ? v.timestamp : min),
+      null,
+    );
+  }
+  return { strength, witnessedAt, classical, pq };
 }

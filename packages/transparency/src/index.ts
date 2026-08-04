@@ -41,24 +41,31 @@ export {
   CheckpointError,
   SIG_TYPE_ED25519,
   SIG_TYPE_COSIGNATURE_V1,
+  SIG_TYPE_COSIGNATURE_MLDSA44,
   EMPTY_TREE_ROOT_HEX,
 } from "./checkpoint.js";
 export type { Checkpoint, ParsedNote, NoteSignature } from "./checkpoint.js";
 export {
   cosignCheckpoint,
   cosignCheckpointWith,
+  cosignCheckpointMlDsa44,
   cosignaturePayload,
+  mlDsa44CosignaturePayload,
   attachCosignatures,
   verifyCosignatures,
   checkCosignatureQuorum,
+  assessCheckpointAnchor,
 } from "./cosign.js";
 export type {
   CosignatureRecord,
+  CosignatureAlg,
   KnownWitness,
   VerifiedCosignature,
   QuorumResult,
   CosignatureVerifyOptions,
   LogBinding,
+  AnchorStrength,
+  AnchorAssessment,
 } from "./cosign.js";
 export { LedgerMirror, ledgerEntryLeaf } from "./mirror.js";
 export type {

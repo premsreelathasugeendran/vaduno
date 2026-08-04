@@ -27,11 +27,18 @@ import {
   mandateContextHash,
   mandateKeyId,
   MANDATE_DOMAIN,
+  MANDATE_V2_DOMAIN,
+  MANDATE_V2_ALGS,
+  MLDSA44_PUBLIC_KEY_BYTES,
+  MLDSA44_SIGNATURE_BYTES,
+  mlDsa44KeyId,
+  mlDsa44SpkiFromRawPublicKey,
   MandateManager,
   AuditLedger,
   MemoryLedgerStore,
   intentDigest,
 } from "../packages/guard/dist/index.js";
+import { mlDsa44CosignaturePayload } from "../packages/transparency/dist/index.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = join(root, "spec", "vectors");
@@ -222,6 +229,119 @@ write("domains.json", {
   note:
     "The ledger entry hash is deliberately UNTAGGED: it is an internal chain link, not a " +
     "signed assertion, and it is wrapped by the transparency leaf tag when published.",
+});
+
+// ── 9. Hybrid (v2) mandate signing — ADDITIVE, v1 vectors above unchanged ───
+// The ML-DSA-44 "test key" is a SYNTACTIC FIXTURE: 1312 deterministic bytes
+// wrapped in a real id-ml-dsa-44 SPKI, derived so any implementation can
+// reproduce it without native ML-DSA. It exists for kid derivation and
+// structure only — it is NOT a functional key, and the vector cannot pin
+// ML-DSA signature bytes anyway because FIPS 204 signing is hedged
+// (randomized) by default. What IS pinned: the exact preimage, its SHA-256,
+// both kid derivations, the Ed25519 signature (deterministic), and the exact
+// decoded signature lengths.
+import { sign as edSignRaw } from "node:crypto";
+const MLDSA_FIXTURE_SEED = "vaduno-vector-mldsa44-key";
+const mldsaFixtureRaw = (() => {
+  const blocks = [];
+  let produced = 0;
+  for (let i = 0; produced < MLDSA44_PUBLIC_KEY_BYTES; i++) {
+    const b = createHash("sha256").update(MLDSA_FIXTURE_SEED, "utf8").update(Buffer.from([i])).digest();
+    blocks.push(b);
+    produced += b.length;
+  }
+  return Buffer.concat(blocks).subarray(0, MLDSA44_PUBLIC_KEY_BYTES);
+})();
+const mldsaFixturePem = mlDsa44SpkiFromRawPublicKey(mldsaFixtureRaw);
+const unsignedMandateV2 = {
+  v: 2,
+  algs: [...MANDATE_V2_ALGS],
+  kids: {
+    Ed25519: mandateKeyId(TEST_KEYS.publicKeyPem),
+    "ML-DSA-44": mlDsa44KeyId(mldsaFixturePem),
+  },
+  id: "22222222-3333-4444-5555-666666666666",
+  issuer: "human@example.com",
+  agentId: "agent-1",
+  constraints: {
+    maxAmountMinor: 10000,
+    currency: "USD",
+    merchants: ["openai.com"],
+    validFrom: "2026-01-01T00:00:00.000Z",
+    expiresAt: "2026-12-31T23:59:59.000Z",
+    maxUses: 1,
+  },
+  createdAt: "2026-01-01T00:00:00.000Z",
+};
+const v2Preimage = MANDATE_V2_DOMAIN + canonicalJson(unsignedMandateV2);
+write("mandate-v2.json", {
+  description:
+    "HYBRID (v2) mandate signing preimage: MANDATE_V2_DOMAIN followed by canonicalJson of " +
+    "every field except `signatures`. Both the Ed25519 and the ML-DSA-44 signature cover " +
+    "these same bytes. v1 (mandate.json) is FROZEN and unchanged by this addition.",
+  domain: MANDATE_V2_DOMAIN,
+  formatVersion: 2,
+  algs: [...MANDATE_V2_ALGS],
+  signatureBytes: { Ed25519: 64, "ML-DSA-44": MLDSA44_SIGNATURE_BYTES },
+  testKeys: {
+    ed25519: TEST_KEYS,
+    mlDsa44: {
+      note:
+        "SYNTACTIC FIXTURE, not a functional key: raw = first 1312 bytes of " +
+        "SHA-256('" + MLDSA_FIXTURE_SEED + "' || uint8(blockIndex)) blocks, wrapped in the " +
+        "fixed id-ml-dsa-44 SPKI header. Usable for kid derivation on any runtime.",
+      publicKeyPem: mldsaFixturePem,
+      rawSha256: createHash("sha256").update(mldsaFixtureRaw).digest("hex"),
+    },
+  },
+  keyIdDerivation:
+    "both families: first 8 bytes of SHA-256('vaduno-mandate-key/v1\\n' || SPKI DER), hex — " +
+    "verifiers MUST look keys up by (algorithm, kid); the 64-bit id alone is truncated and " +
+    "collidable",
+  expectedKids: unsignedMandateV2.kids,
+  unsigned: unsignedMandateV2,
+  preimage: v2Preimage,
+  preimageSha256: sha256Hex(v2Preimage),
+  ed25519Signature: edSignRaw(
+    null,
+    Buffer.from(v2Preimage, "utf8"),
+    createPrivateKey(TEST_KEYS.privateKeyPem),
+  ).toString("base64"),
+  mlDsa44SignatureNote:
+    "not pinned: FIPS 204 signing is hedged (randomized) by default. A conforming v2 " +
+    "mandate carries a base64 signature decoding to exactly 2420 bytes that verifies over " +
+    "the preimage under the kid-named ML-DSA-44 key.",
+});
+
+// ── 10. C2SP tlog-cosignature 0x06 payload (ML-DSA-44) ──────────────────────
+// A BINARY struct, not the 0x04 text payload with a different algorithm.
+const cosignPayload = mlDsa44CosignaturePayload({
+  cosignerName: "witness.example/a",
+  timestamp: 1780000000,
+  origin: "vaduno.example/ledger",
+  treeSize: 42,
+  rootHash: "ab".repeat(32),
+});
+write("cosign-mldsa44-payload.json", {
+  description:
+    "C2SP tlog-cosignature ML-DSA-44 (key-id algorithm byte 0x06) signed payload: " +
+    "label[12]='subtree/v1\\n\\0' || opaque cosigner_name<1..255> || uint64 timestamp || " +
+    "opaque log_origin<1..255> || uint64 start (MUST be 0 for checkpoints) || uint64 end " +
+    "(= tree size) || raw 32-byte root hash. Length-prefixed fields carry a single length " +
+    "byte. NOTE the coverage asymmetry: this struct covers (origin, size, root) only — " +
+    "extension lines are covered by 0x04 text cosignatures, never by 0x06.",
+  input: {
+    cosignerName: "witness.example/a",
+    timestamp: 1780000000,
+    origin: "vaduno.example/ledger",
+    treeSize: 42,
+    rootHashHex: "ab".repeat(32),
+  },
+  payloadHex: cosignPayload.toString("hex"),
+  payloadSha256: createHash("sha256").update(cosignPayload).digest("hex"),
+  signature:
+    "keyID[4] = SHA-256(name || 0x0A || 0x06 || raw 1312-byte public key)[:4]; line blob = " +
+    "keyID || uint64BE timestamp || 2420-byte ML-DSA-44 signature",
 });
 
 console.log("\nvectors regenerated — a diff here is a WIRE FORMAT CHANGE");

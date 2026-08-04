@@ -139,6 +139,31 @@ message is `"cosignature/v1\n" + "time <seconds>\n" + <note body>`. The
 timestamp therefore travels **inside** the note — there is no side-channel to
 keep in sync.
 
+### ML-DSA-44 (0x06) cosignatures and anchor strength
+
+The C2SP spec defines a second cosignature type — key-id algorithm byte
+`0x06`, ML-DSA-44 (FIPS 204), 2420-byte signatures — and this package
+implements it (`cosignCheckpointMlDsa44`, verified by the same
+`verifyCosignatures`/`checkCosignatureQuorum`). Three things worth knowing
+before relying on it:
+
+- **The 0x06 payload is a different BINARY structure**, not the 0x04 text
+  payload with a new algorithm: `label[12]="subtree/v1\n\0" ||
+  name<1..255> || u64 timestamp || origin<1..255> || u64 start(=0) ||
+  u64 end(=size) || raw 32-byte root`. It covers (origin, size, root) ONLY —
+  extension lines are covered by 0x04, never 0x06 — so a PQ-witnessed claim
+  attests **tree state**, not extension lines.
+- **Signing needs runtime support** (`node:crypto` ML-DSA: Node ≥ 24.7 built
+  against OpenSSL ≥ 3.5; the runtime probe decides, and without it signing
+  throws a typed `PqUnavailableError`). Verifying without support IGNORES
+  0x06 lines — the note rests on its Ed25519 cosignatures, and nothing
+  unverifiable ever upgrades a claim.
+- **`assessCheckpointAnchor`** reports `witnessed-pq` only when a k-party
+  quorum of VERIFIED 0x06 cosignatures exists, and its `witnessedAt` counts
+  only cosignatures at least as strong as the reported label — so an
+  attacker who can forge Ed25519 (post-CRQC) cannot backdate a PQ-witnessed
+  checkpoint with a forged classical line.
+
 ## Honest limits (read `docs/SECURITY-MODEL.md`)
 
 - The log makes rewriting history **detectable and attributable**, not
@@ -157,11 +182,16 @@ keep in sync.
   a baseline to contradict. Persist `CosigningWitness` state durably, and
   serialize updates — a read-modify-write race lets one witness cosign two
   forks.
-- **Freshness is bounded, not proven.** `maxAgeSeconds` stops an operator
-  serving one ancient cosigned checkpoint forever, but a log that simply stops
-  publishing still just... stops. Monitor for growth separately.
+- **Evidence verification is ARCHIVAL by default; freshness is opt-in.**
+  A cosignature attests "this witness saw this no later than T" — that does
+  not decay, so by default there is NO staleness bound and a years-old
+  evidence bundle verifies (only implausibly future-dated cosignatures are
+  rejected, against your own clock). Pass `maxAgeSeconds` when you are
+  asking the LIVENESS question — it stops an operator serving one ancient
+  cosigned checkpoint forever, but a log that simply stops publishing still
+  just... stops. Monitor for growth separately.
 - Timestamps in signed heads are informational, not trusted time. Cosignature
-  timestamps *are* checked for staleness, but only against your own clock.
+  timestamp bounds are judged against your own clock.
 
 ## API surface
 
@@ -175,8 +205,10 @@ keep in sync.
 | `LedgerMirror` | Binds an `AuditLedger` to a tree: `sync` / `audit` / `proveEntry` |
 | `signCheckpoint`, `parseNote`, `verifyNoteSignature` | C2SP signed-note / tlog-checkpoint interop format |
 | `witnessCosign`, `CosigningWitness` | The witness protocol — refuses to cosign an inconsistent checkpoint; the class also serializes concurrent requests |
-| `cosignCheckpoint`, `attachCosignatures`, `verifyCosignatures` | tlog-cosignature v1 |
-| `checkCosignatureQuorum` | k-of-n witness policy — binds the log, counts distinct keys, fails closed |
+| `cosignCheckpoint`, `attachCosignatures`, `verifyCosignatures` | tlog-cosignature (0x04 Ed25519 and 0x06 ML-DSA-44) |
+| `cosignCheckpointMlDsa44`, `mlDsa44CosignaturePayload` | the 0x06 ML-DSA-44 cosignature and its BINARY signed struct |
+| `checkCosignatureQuorum` | k-of-n witness policy — binds the log, counts distinct parties (a witness's two key types are ONE party), fails closed |
+| `assessCheckpointAnchor` | anchor strength (`witnessed-pq` / `witnessed` / `unwitnessed`) + strength-scoped `witnessedAt` |
 
 Verified against the published Certificate Transparency test vectors and an
 independent implementation; proof round-trips are tested exhaustively for

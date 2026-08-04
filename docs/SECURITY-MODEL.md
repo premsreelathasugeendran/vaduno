@@ -149,6 +149,121 @@ licensing); no such adapter will be accepted.
     property this project has watched hold. Believe it exactly as much as you
     believe the schema in `supabase/schema.sql`, and no more.
 
+## Post-quantum posture (read the wording carefully — it is deliberate)
+
+Audit evidence is LONG-LIVED. A dispute bundle or transparency proof verified
+years from now must resist the adversary of THAT year forging "2026"
+signatures — the archival variant of harvest-now-decrypt-later. FIPS 204
+(ML-DSA) is final; NIST IR 8547 deprecates ECC/RSA signatures for new use in
+2030 and disallows them in 2035, so any Ed25519 signature emitted today is
+inside that window if it is verified after 2030.
+
+**What is already adequate and was NOT rebuilt:** the hash chain and the
+RFC 9162 Merkle tree are SHA-256. Grover's algorithm halves the security
+bits; 128-bit preimage resistance remains, which is adequate. The SIGNATURES
+are the quantum-exposed surface. (This is also the direction the CT/WebPKI
+world is taking: the answer to PQ signature sizes there is to replace
+signatures with Merkle hash paths — which is the architecture this project's
+evidence layer already has.)
+
+**What hybrid adds, precisely:** a v2 mandate carries an ML-DSA-44 signature
+ALONGSIDE Ed25519 over the same `vaduno-mandate/v2` payload, and the
+transparency log accepts ML-DSA-44 (0x06) witness cosignatures per C2SP
+tlog-cosignature, where the runtime supports them. The classical signatures
+remain exposed post-CRQC unless the verifier's policy requires the PQ
+algorithm (`requireAlgs`). Nothing here is "quantum-safe" and this project
+does not use that phrase; the release gate rejects it.
+
+1. **THE DOWNGRADE RESIDUAL, stated as an attack.** "There are no downgrade
+   rules to exploit" would be FALSE at the system level, so it is not
+   claimed. A post-CRQC attacker does not strip a v2 mandate's PQ signature —
+   they MINT A FRESH v1 mandate under any Ed25519 kid the verifier still
+   registers, because `requireAlgs` defaults to `[]` and v1 remains a
+   supported format. Issuing v2 mandates therefore protects NOTHING by
+   itself. The ONLY defenses are `requireAlgs: ["ML-DSA-44"]` (refuses every
+   v1 and every v2 whose ML-DSA half cannot be verified — fail closed) or
+   de-registering classical-only trust. Both the exposure and the remedy are
+   pinned by an attack test (`packages/guard/test/mandate-v2.test.ts`).
+   - **Migration guidance:** run hybrid issuance now; enforce per issuer as
+     each issuer's mandates go hybrid (a verifier that trusts several
+     issuers can hold separate managers per issuer, flipping `requireAlgs`
+     issuer by issuer); or pick and document a cutover date after which
+     verifiers set `requireAlgs` and v1 acceptance ends. The frozen v1
+     format itself never changes — what changes is whether your policy
+     still accepts it.
+   - **Why the AUDIT layer is less exposed than fresh authorizations:**
+     evidence ANCHORING. A mandate forged in 2035 claiming to be "v1 from
+     2026" has no 2026 inclusion in the transparency log and no pre-CRQC
+     witness cosignatures; `assessCheckpointAnchor` reports `witnessedAt`
+     from cosignatures at least as strong as the reported anchor strength.
+     Anchoring mitigates the audit layer; it does not authorize spend, and
+     it is not a substitute for `requireAlgs` on the authorization path.
+
+2. **Archival verification is temporal-precedence-based, not freshness-
+   based.** A cosignature attests "this witness saw this checkpoint no later
+   than T", and that statement does not decay. `verifyCosignatures` /
+   `checkCosignatureQuorum` therefore apply NO staleness bound by default —
+   an EvidenceBundle verified years later verifies. The future-skew
+   rejection stays on (a timestamp ahead of the verifier's clock is
+   implausible at any age). Freshness (`maxAgeSeconds`) is an opt-in
+   LIVENESS check for "is this log still publishing", not an evidence check;
+   `Infinity` is the explicit spelling of "unbounded".
+
+3. **witnessedAt is scoped to the reported strength.** For a
+   `witnessed-pq` checkpoint, `witnessedAt` is computed from VERIFIED 0x06
+   cosignatures ONLY — never "earliest across all algorithms". Otherwise a
+   post-CRQC attacker could append a validly-forged, BACKDATED Ed25519
+   cosignature and move the claimed witness time arbitrarily early. Pinned
+   by the label-upgrade attack test (`packages/transparency/test/anchor.test.ts`).
+
+4. **The 0x06 witnessing asymmetry, not hidden:** the C2SP ML-DSA-44
+   cosignature signs a binary struct covering (origin, tree size, root hash)
+   only, while the 0x04 text cosignature signs the FULL note body including
+   extension lines. `witnessed-pq` therefore attests TREE STATE; extension-
+   line equivocation is witnessed only classically. Vaduno's own checkpoints
+   carry no extension lines (and they are documented as NOT RECOMMENDED),
+   but third-party notes may differ.
+
+5. **Key ids are truncated hashes — collisions are a residual, not
+   impossible.** `mandateKeyId` / `mlDsa44KeyId` are 64-bit truncations of
+   SHA-256. Distinct keys can share an id: ~2^32 work birthday-collides two
+   attacker-chosen keys, ~2^64 grinds a targeted second preimage —
+   borderline feasible for a resourced attacker. What is enforced: verifiers
+   look keys up by **(algorithm, kid)**, so a collision can never cross
+   algorithm families (an id registered only under ML-DSA-44 does not
+   resolve for a v1 mandate, and vice versa — tested). The WITHIN-family
+   residual remains and is stated here instead of being papered over with
+   "cannot collide by construction", which was never true of a truncated
+   hash.
+
+6. **Unverifiable-here PQ signatures: the decided behavior.** On a runtime
+   without native ML-DSA (or for a kid the verifier holds no ML-DSA key
+   for), a v2 mandate is accepted RESTING ON ITS CLASSICAL SIGNATURE — the
+   same standing as a v1 mandate, so no new exposure — unless `requireAlgs`
+   demands ML-DSA-44, in which case it is refused. On the transparency
+   verify path, unverifiable 0x06 lines are IGNORED (per the signed-note
+   spec's treatment of unusable signatures; making them fatal would let one
+   byzantine witness's garbage line veto everyone's quorum) and the note
+   rests on its classical cosignatures. Neither treatment can be turned
+   into a downgrade: where an algorithm can be verified it MUST verify (a
+   present-but-invalid half is refused as tamper evidence), labels and
+   witness times only ever count what VERIFIED, and every "required but
+   unverifiable" case is a refusal.
+
+7. **Runtime capability is decided by a PROBE, never a version string.**
+   ML-DSA in `node:crypto` requires Node >= 24.7 **built against OpenSSL >=
+   3.5**; a Node binary linked to an older OpenSSL lacks it at ANY Node
+   version. `mlDsa44Available()` asks the crypto layer directly and is the
+   only authority. Absent support, SIGNING paths throw a typed
+   `PqUnavailableError` naming that requirement — they never silently fall
+   back to classical-only output.
+
+8. **Hybrid-vs-pure is a genuinely unsettled policy split.** NSA CNSA 2.0
+   says hybrid is not required; BSI and ANSSI mandate hybrid; the IETF is
+   standardizing composite signatures where BOTH must verify. This project
+   implements the hybrid/composite pattern (both halves must verify where
+   verifiable) and presents neither position as settled consensus.
+
 ## Threat model summary
 
 - **In scope:** compromised/prompt-injected agent, hostile merchant/server

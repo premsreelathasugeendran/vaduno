@@ -34,6 +34,12 @@ import { checkedSign, type Ed25519Signer } from "@vaduno/guard";
 export const SIG_TYPE_ED25519 = 0x01;
 /** Timestamped Ed25519 checkpoint cosignatures (tlog-cosignature v1). */
 export const SIG_TYPE_COSIGNATURE_V1 = 0x04;
+/**
+ * Timestamped ML-DSA-44 checkpoint cosignatures (tlog-cosignature, key-id
+ * algorithm byte 0x06). NOT an algorithm swap of 0x04: the signed payload is
+ * a different BINARY structure — see `mlDsa44CosignaturePayload` in cosign.ts.
+ */
+export const SIG_TYPE_COSIGNATURE_MLDSA44 = 0x06;
 
 /** Em dash + space begins every signature line. */
 const SIG_PREFIX = "— ";
@@ -109,14 +115,42 @@ export function keyId(name: string, sigType: number, publicKeyRaw: Buffer): stri
   return h.subarray(0, 4).toString("hex");
 }
 
-/** Extract the 32 raw Ed25519 public key bytes from a PEM/KeyObject. */
+/**
+ * Extract the 32 raw Ed25519 public key bytes from a PEM/KeyObject.
+ *
+ * REFUSES any other key type. The extraction is "last 32 bytes of the SPKI
+ * DER", which is correct ONLY because Ed25519's SPKI is a fixed 44-byte
+ * structure — applied to any other key it silently returns garbage, and a
+ * garbage key id would then be minted for it. ML-DSA-44 keys have their own
+ * extractor (`rawMlDsa44PublicKey`, from @vaduno/guard) that actually parses
+ * the SPKI.
+ */
 export function rawEd25519PublicKey(publicKeyPem: string | KeyObject): Buffer {
-  const key =
-    typeof publicKeyPem === "string" ? createPublicKey(publicKeyPem) : publicKeyPem;
+  let key: KeyObject;
+  if (typeof publicKeyPem === "string") {
+    try {
+      key = createPublicKey(publicKeyPem);
+    } catch (err) {
+      // A runtime whose node:crypto cannot parse the SPKI at all (e.g. an
+      // ML-DSA key on a pre-PQ OpenSSL) lands here; the answer is the same
+      // either way: this is not an Ed25519 key.
+      throw new CheckpointError(
+        `rawEd25519PublicKey requires an Ed25519 key (unparseable SPKI: ${err instanceof Error ? err.message : String(err)})`,
+      );
+    }
+  } else {
+    key = publicKeyPem;
+  }
+  if (key.asymmetricKeyType !== "ed25519") {
+    throw new CheckpointError(
+      `rawEd25519PublicKey requires an Ed25519 key (got ${String(key.asymmetricKeyType)}); ` +
+        "for ML-DSA-44 use rawMlDsa44PublicKey — the last-32-bytes extraction would be garbage",
+    );
+  }
   // SPKI DER for Ed25519 is a fixed 44-byte structure; the key is the last 32.
   const der = key.export({ type: "spki", format: "der" });
-  if (der.length < 32) {
-    throw new CheckpointError("public key DER is too short to contain an Ed25519 key");
+  if (der.length !== 44) {
+    throw new CheckpointError("Ed25519 SPKI DER must be exactly 44 bytes");
   }
   return Buffer.from(der.subarray(der.length - 32));
 }

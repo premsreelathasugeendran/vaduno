@@ -23,7 +23,7 @@ Vaduno puts a deterministic guard between your agent and the money:
 
 Read this before you put it anywhere near real money.
 
-- **Published this week. No known users. Never run in production.** The tests are thorough (613 across seven packages, including concurrency and adversarial cases) but tests are not production. npm reports a few hundred weekly downloads; that is registry mirrors, security scanners and the author's own CI — the curve is a single spike on publish day and flat afterwards, which is what "nobody depends on this yet" looks like.
+- **Published this week. No known users. Never run in production.** The tests are thorough (866 across seven packages, including concurrency and adversarial cases; 3 of them are capability-gated skips — two need native ML-DSA in node:crypto, one needs a live Postgres — and every skip says so rather than silently passing) but tests are not production. npm reports a few hundred weekly downloads; that is registry mirrors, security scanners and the author's own CI — the curve is a single spike on publish day and flat afterwards, which is what "nobody depends on this yet" looks like.
 - **The Stripe adapter has never run against Stripe.** Not even in test mode. It is verified against an in-process mock of the `issuing_authorization.request` webhook — the decision logic and the 1.3-second fail-closed deadline are exercised, the network path is not. Live Issuing needs a business entity and Stripe approval the author doesn't have. Treat it as a reference implementation, not a tested integration.
 - **The API will break.** It's 0.x; breaking changes land in minor and patch versions. **Every API change so far has come from a security finding**, not from taste — the atomic limiter, the `agentId` → `policy.id` scope rename, the replay semantics, and the burn-on-failure rule each exist because something was found to be wrong. More review is planned, so expect more.
 - **In-process, it can be routed around.** A library the agent's own process imports is a guardrail against a *confused* agent, not a *compromised runtime* — an injected agent holding a raw wallet key can simply not call it. The one configuration where it is genuinely non-bypassable today is **Stripe Issuing**, where the guard answers the card authorization itself and the network enforces the answer. Out-of-process and rail-side enforcement is what would make the rest of it as strong.
@@ -239,7 +239,7 @@ import { createX402Fetch, usdc } from "@vaduno/x402";
 const fetchWithPay = createX402Fetch({
   guard,                                   // your VadunoGuard
   agentId: "researcher-agent-1",
-  pay: (req) => myWallet.signX402(req),    // your signer — Vaduno never holds keys
+  pay: (req) => myWallet.signX402(req),    // your signer — Vaduno never holds keys to funds
   assets: [                                // bind spend to the REAL token, not a label
     { network: "base", asset: "0x833589...2913", symbol: "USDC", decimals: 6 },
   ],
@@ -288,6 +288,17 @@ Upgrade the hash chain to an [RFC 9162](https://www.rfc-editor.org/rfc/rfc9162) 
 
 On top of that, **witness cosigning** ([C2SP](https://github.com/C2SP/C2SP) `tlog-checkpoint` / `tlog-cosignature`) closes the one hole the log's own math cannot: an operator who signs *two* histories and shows a different one to each party. Independent witnesses refuse to cosign a checkpoint that contradicts one they already cosigned, so a fork can never reach a k-of-n quorum. Honest limit: this proves everyone sees the *same* log, not that the log is *complete* — and witnesses you run yourself count for nothing. See [packages/transparency](packages/transparency/README.md) and [docs/SECURITY-MODEL.md](docs/SECURITY-MODEL.md).
 
+## Post-quantum readiness (evidence layer)
+
+Audit evidence is long-lived: a dispute bundle verified in 2032 must resist a 2032 adversary forging "2026" signatures. NIST IR 8547 deprecates ECC/RSA signatures for new use in 2030 and disallows them in 2035 — every Ed25519 signature emitted today is inside that window if verified after 2030. What Vaduno does about it, stated exactly:
+
+- **The hash chain and RFC 9162 Merkle tree are already adequate** against a quantum adversary (SHA-256; Grover halves the bits, 128-bit preimage resistance remains). They were not rebuilt. The **signatures** are the exposed surface.
+- **Hybrid (v2) mandates** carry an ML-DSA-44 (FIPS 204) signature *alongside* Ed25519 over the same `vaduno-mandate/v2` payload; **0x06 witness cosignatures** (C2SP tlog-cosignature, ML-DSA-44) do the same for the transparency log — *where the runtime supports it*. ML-DSA in `node:crypto` needs Node ≥ 24.7 **built against OpenSSL ≥ 3.5**; a runtime probe (`mlDsa44Available()`), never a version string, decides, and signing without support fails with a typed `PqUnavailableError`.
+- **The classical signatures remain exposed post-CRQC unless you set `requireAlgs`.** An attacker who can forge Ed25519 doesn't strip a v2 mandate — they mint a fresh **v1** under any Ed25519 kid your verifier still registers. `new MandateManager(keys, ..., { requireAlgs: ["ML-DSA-44"] })` is the enforcement switch; both the attack and the remedy are pinned as tests.
+- **Archival verification works by default.** Cosignature verification applies no staleness bound (a witness attestation "seen no later than T" doesn't decay); freshness is an opt-in liveness check. `assessCheckpointAnchor` labels a checkpoint `witnessed-pq` only from *verified* ML-DSA-44 quorums, and its `witnessedAt` counts only cosignatures at least that strong — a backdated forged classical cosignature cannot move it.
+
+v1 mandates and all frozen wire vectors are untouched; v2 is additive. Precise claims, the downgrade residual, and the migration path: [`docs/SECURITY-MODEL.md`](docs/SECURITY-MODEL.md) (post-quantum posture) and [`docs/WIRE-FORMAT.md`](docs/WIRE-FORMAT.md).
+
 ## Agent framework hooks (`@vaduno/agent`)
 
 `guard.execute(intent, executor)` requires the guard to own the payment call, and **no agent framework works that way** — Claude Agent SDK `PreToolUse`, Vercel AI SDK `toolApproval`, OpenAI Agents `needsApproval`, LangChain `wrapToolCall` are all decide-only: they hand you a pending tool call, take an allow/deny, and run the tool themselves. So this binds to the two-phase `authorize()` / `settle()` path instead.
@@ -329,6 +340,7 @@ An allow **reserves budget immediately** — if it merely returned an opinion, t
 - ✅ **Witness cosigning** — C2SP checkpoints + cosignatures; independent witnesses attest the log never forked
 - ✅ **Agent framework hooks** (`@vaduno/agent`) — decide-only tool-approval binding; SDK adapter not yet run against a live session
 - ✅ **Deterministic risk scorecard** — ledger-derived tiers, step-up routing through the approval branch, auto-freeze; reproducible bit-for-bit from the ledger given the same scorecard config and policy
+- ✅ **Post-quantum readiness (evidence layer)** — hybrid v2 mandates (Ed25519 + ML-DSA-44), C2SP 0x06 witness cosignatures, archival verification semantics, `requireAlgs` enforcement; runtime-probed, additive, v1 frozen
 - **Consent-evidence dossiers** — exportable dispute/representment packets built on the audit trail
 - **UPI adapter** — ready for NPCI delegated-payment APIs the day they open
 
