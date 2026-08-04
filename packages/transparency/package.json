@@ -1,6 +1,6 @@
 {
   "name": "@vaduno/transparency",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "RFC 9162 (Certificate Transparency v2) Merkle transparency log for Vaduno's audit trail. Turns the hash-chained ledger into an append-only Merkle tree with signed tree heads, inclusion proofs (non-omission), and consistency proofs (append-only). Never holds funds or keys to funds.",
   "type": "module",
   "main": "./dist/index.js",
@@ -41,7 +41,7 @@
     "prepublishOnly": "npm run build && npm run test"
   },
   "dependencies": {
-    "@vaduno/guard": "^0.4.0"
+    "@vaduno/guard": "^0.5.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",

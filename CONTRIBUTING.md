@@ -19,7 +19,7 @@ you're unsure whether something qualifies, report it privately anyway.
 ```bash
 npm install
 npm run build
-npm run test        # 863 tests across seven packages (3 capability-gated skips)
+npm run test        # 975 tests across seven packages (3 capability-gated skips)
 ```
 
 Then run the scenarios — each is a story from the README, and they are the
