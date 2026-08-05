@@ -6,6 +6,46 @@ This project is pre-1.0. Under semver, 0.x minor bumps may break the API. Two
 have, and each was breaking because the fix for a real security bug required it.
 See [`SECURITY.md`](SECURITY.md) for what is and isn't guaranteed.
 
+## 0.6.0 — 2026-08-05
+
+### Fixed — a security defect found by running against a live host
+
+`@vaduno/agent` shipped through 0.5.0 having never run in a live session, and
+its README said so. Pointing a passive hook at a real Claude Code session found
+three mismatches. **Upgrade from 0.5.0 if you use the Claude Agent SDK binding.**
+
+- **A non-payment tool returned `permissionDecision: "allow"`, which
+  short-circuits the host's own permission evaluation.** Registered the obvious
+  way — a `*` matcher — the spend firewall auto-approved every OTHER tool in the
+  session: a security package that silently switched off the permission prompts
+  around it. It now returns `{}`, meaning no opinion, and the host's rules
+  decide. This is the reason to upgrade.
+- **A failed tool never reaches `postToolUse`.** It raises a separate failure
+  event carrying `error` and no `tool_response`, so the failure heuristic could
+  never fire and a failed payment was never settled — its authorization held
+  budget until the rolling window aged out. New `postToolUseFailure` handler;
+  register it alongside the other two. A user interrupt counts as a failure,
+  because an interrupt says nothing about whether the rail was reached.
+- **Correlation now prefers `tool_use_id`**, the host's own id, present on every
+  observed event. The input fingerprint remains as a fallback for hosts that
+  send none.
+
+Two tests in `@vaduno/agent` had asserted the first defect as correct — a suite
+cannot discover that its own premise is false. The harness that found it is in
+`examples/claude-code-hook`: a passive observer, and an enforcing hook that has
+denied a real tool call in a live session.
+
+### Changed
+
+- `ClaudeAgentBinding` gains `postToolUseFailure`, and `preToolUse` may now
+  return `{}` (no opinion) as well as a decision. Callers that only forwarded a
+  decision object should forward whatever it returns verbatim.
+
+### Note
+
+This proves the agent-side binding against a real host. No money moved and no
+payment rail was involved — that remains untested against anything live.
+
 ## 0.5.0 — 2026-08-04
 
 ### Fixed
