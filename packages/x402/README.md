@@ -70,7 +70,20 @@ Version routing is per-response, total, and single-carrier:
 
 These are the sharp edges of x402 specifically — read them before going live:
 
-- **`merchant.url` is the endpoint you actually contacted**, not the server's `resource` claim (per-requirement in v1, body-level `resource.url` in v2), so host allowlists bind where you really connect. A server claiming a different origin than the one reached is refused.
+- **`merchant.url` is the endpoint you actually contacted**, not the server's `resource` claim (per-requirement in v1, body-level `resource.url` in v2), so host allowlists bind where you really connect. A server claiming a different origin than the one reached is refused (`RESOURCE_ORIGIN_MISMATCH`) before `pay()` is called.
+
+  **This will refuse the official x402 reference endpoint, and that is not a bug.** Fetching
+  `https://x402.org/protected` returns a requirement whose `resource.url` is
+  `https://x402.vercel.app/protected` — the public domain fronts a Vercel deployment, and the
+  server reports the deployment URL. Verified live 2026-08-05: the refusal fires and `pay()` is
+  never reached.
+
+  The check stays strict by default because "the host I paid is the host I asked" is exactly the
+  property it exists to enforce, and a client cannot tell a friendly CDN alias from a hostile
+  redirection of funds. If you have independently satisfied yourself that an alias is legitimate,
+  set `requireResourceOriginMatch: false` and pin the recipient another way — an `id:<payTo>`
+  merchant pattern binds the address that actually receives the money, which is the thing you
+  care about.
 - **Money goes to `payTo`, decoupled from the request host.** A host allowlist does *not* constrain the recipient — pin it with an `id:<payTo>` pattern if that matters to you. In v2, `payTo` may be a **role constant** (e.g. `"merchant"`) resolved out of band. Values matching `^[a-z]{1,16}$` are refused by default (`PAYTO_ROLE_REFUSED`) because an unresolvable recipient cannot be allowlisted; opt in per role via `v2.allowPayToRoles`. **That is a shape heuristic, not a list of roles** — `MERCHANT`, `merchant1` and `merchant_wallet` do not match it and are treated as addresses. Pin the recipient with an `id:<payTo>` pattern if you need it constrained rather than merely sniffed.
 - **Pass the `assets` registry.** Without it, `currency` comes from the server's spoofable `extra.symbol`. With it, a token that isn't on your list is refused. v2 entries are keyed by CAIP-2 id and matched case-sensitively (asset case-insensitive only on `eip155:` EVM networks); an entry for v1's `"base"` does **not** trust `"eip155:8453"`.
 - **Redirects are never followed** (`redirect: "manual"`), on both versions. A 3xx could otherwise divert the probe — or the paid retry, leaking the `X-PAYMENT` / `PAYMENT-SIGNATURE` bearer — to another origin.
