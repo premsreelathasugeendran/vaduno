@@ -103,15 +103,33 @@ const sdk = bindClaudeAgentSdk(createSpendHooks({ guard, resolve }));
 // PostToolUse -> await sdk.postToolUse({ tool_name, tool_input, tool_response })
 ```
 
-> **Status, stated plainly: this binding has never been run against a live Claude
-> Agent SDK session.** Its hook payload shapes come from the documented contract,
-> not from observation. If they have drifted, the fix is a few lines in
-> [`claude-agent-sdk.ts`](src/claude-agent-sdk.ts) — the file is deliberately
-> thin and imports nothing from any SDK, so the unverified surface is small and
-> nowhere near the policy path. The decision logic it wraps is framework-free and
-> covered by tests that are checked against real guard behavior.
+> **Status: this binding HAS now run against a live Claude Code session**, and
+> doing so found three mismatches that a green test suite could never have
+> caught — because the tests and the code shared the same wrong assumption about
+> the host:
 >
-> If you run it against the real SDK, please open an issue either way.
+> 1. **A non-payment tool returned `permissionDecision: "allow"`**, which
+>    short-circuits the host's own permission evaluation. Registered with a `*`
+>    matcher, this spend firewall auto-approved every *other* tool in the
+>    session. It now returns `{}` — no opinion.
+> 2. **A failed tool never reaches `postToolUse`.** It raises a separate failure
+>    event carrying `error`, so the failure heuristic could never fire and a
+>    failed payment was never settled — its authorization held budget until the
+>    rolling window aged out. Register `postToolUseFailure` too.
+> 3. **Every event carries `tool_use_id`**, the host's own correlation id, which
+>    is stabler than fingerprinting the tool input.
+>
+> All three shipped in 0.5.0. Two tests in this package had faithfully asserted
+> the first one back as correct.
+>
+> The harness that found them is in
+> [`examples/claude-code-hook`](../../examples/claude-code-hook) — a passive
+> observer that records real payloads, and an enforcing hook that has
+> demonstrably **denied a real tool call in a live session**. Re-run the
+> observer when a host version changes; hook contracts drift.
+>
+> Still true: no *payment* has run live. This proves the agent-side binding
+> against a real host, not a payment against a real rail.
 
 Other frameworks (Vercel AI SDK `toolApproval`, OpenAI Agents `needsApproval`,
 LangChain `wrapToolCall`) have the same decide-only shape. Use `createSpendHooks`

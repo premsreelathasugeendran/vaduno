@@ -1,12 +1,15 @@
 /**
  * The Claude Agent SDK binding.
  *
- * SCOPE: these tests prove the TRANSLATION is right — that a deny becomes a
- * deny, that only authorized calls get settled, that a crash reads as deny.
- * They cannot prove the hook wire shape matches a live SDK, because nothing
- * here has run against one. That gap is stated in the source and the README
- * rather than papered over with a mock that would just assert my own guess
- * back at me.
+ * SCOPE: most of these prove the TRANSLATION is right — a deny becomes a deny,
+ * only authorized calls settle, a crash reads as deny. The final block is
+ * different: it pins shapes OBSERVED against a live Claude Code session.
+ *
+ * That distinction is the lesson of this file. Before the observation, two
+ * tests here asserted a non-payment tool returns "allow" — faithfully encoding
+ * a wrong assumption about the host and reporting it back as green. A suite
+ * cannot discover that its own premise is false; only contact with the real
+ * host can. See examples/claude-code-hook.
  */
 import { describe, expect, it } from "vitest";
 import {
@@ -56,16 +59,21 @@ function setup() {
   return { limiter, guard, hooks, sdk: bindClaudeAgentSdk(hooks) };
 }
 
-const decisionOf = (out: { hookSpecificOutput: { permissionDecision: string } }) =>
-  out.hookSpecificOutput.permissionDecision;
+const decisionOf = (out: unknown) =>
+  (out as { hookSpecificOutput?: { permissionDecision?: string } })?.hookSpecificOutput
+    ?.permissionDecision;
 
 const since = () => new Date(Date.now() - 86_400_000).toISOString();
 
 describe("PreToolUse translates the decision", () => {
-  it("allows a non-payment tool", async () => {
+  it("gives NO OPINION on a non-payment tool", async () => {
+    // This asserted "allow" until a live session showed that allow
+    // short-circuits the host's own permission evaluation — so the firewall
+    // was auto-approving every unrelated tool. The test was wrong in exactly
+    // the way the code was wrong.
     const { sdk } = setup();
     const out = await sdk.preToolUse({ tool_name: "read_file", tool_input: { p: "a" } });
-    expect(decisionOf(out)).toBe("allow");
+    expect(out).toEqual({});
   });
 
   it("allows a permitted spend and names the intent in the reason", async () => {
@@ -90,10 +98,15 @@ describe("PreToolUse translates the decision", () => {
     expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(/vaduno: [A-Z_]+/);
   });
 
-  it("tags the event name the SDK expects", async () => {
+  it("tags the event name the host expects, when it does have an opinion", async () => {
     const { sdk } = setup();
-    const out = await sdk.preToolUse({ tool_name: "read_file", tool_input: {} });
-    expect(out.hookSpecificOutput.hookEventName).toBe("PreToolUse");
+    const out = await sdk.preToolUse({
+      tool_name: "buy_credits",
+      tool_input: { id: "t-1", amountMinor: 900 },
+    });
+    expect((out as { hookSpecificOutput: { hookEventName: string } }).hookSpecificOutput.hookEventName).toBe(
+      "PreToolUse",
+    );
   });
 });
 
@@ -321,5 +334,108 @@ describe("the in-flight map", () => {
       tool_input: { id: "t-1", amountMinor: 100 },
     });
     expect(seen).toHaveLength(1);
+  });
+});
+
+describe("the contract OBSERVED against a live Claude Code session", () => {
+  // These payloads are not invented. They were captured by a passive hook in a
+  // real session (examples/claude-code-hook) and reduced to the fields this
+  // binding reads. Each test below pins a mismatch that shipped in 0.5.0.
+
+  it("a non-payment tool yields NO OPINION, never an allow", async () => {
+    // THE 0.5.0 BUG. `permissionDecision: "allow"` short-circuits the host's
+    // own permission evaluation, so a `*`-matcher registration made this spend
+    // firewall auto-approve every unrelated tool in the session — Bash, Write,
+    // everything. An empty object is the only safe answer for "not my business".
+    const { sdk } = setup();
+    const out = await sdk.preToolUse({
+      tool_name: "Bash",
+      tool_input: { command: "ls -la" },
+      tool_use_id: "toolu_01W7XaKA7CTj1wr4H1KBVkBh",
+    });
+    expect(out).toEqual({});
+    expect("hookSpecificOutput" in out).toBe(false);
+  });
+
+  it("a payment tool still decides, and names the intent", async () => {
+    const { sdk } = setup();
+    const out = await sdk.preToolUse({
+      tool_name: "buy_credits",
+      tool_input: { id: "t-1", amountMinor: 900 },
+      tool_use_id: "toolu_abc",
+    });
+    expect(decisionOf(out as never)).toBe("allow");
+  });
+
+  it("correlates on tool_use_id, so a re-serialized tool_input still settles", async () => {
+    // Every observed event carries the host's own correlation id. Using it
+    // removes the whole class of mismatch the input fingerprint had.
+    const { sdk, guard, limiter } = setup();
+    await sdk.preToolUse({
+      tool_name: "buy_credits",
+      tool_input: { id: "t-1", amountMinor: 1_000 },
+      tool_use_id: "toolu_same",
+    });
+    await sdk.postToolUse({
+      tool_name: "buy_credits",
+      // Deliberately NOT the same object shape — only the id matches.
+      tool_input: { totally: "different" },
+      tool_use_id: "toolu_same",
+      tool_response: { stdout: "ok", stderr: "", interrupted: false },
+    });
+    await guard.releaseSpend("t-1");
+    const t = await limiter.totalsSince(policy.id, since(), "USD");
+    expect(t.totalMinor).toBe(1_000);
+  });
+
+  it("SETTLES A FAILED TOOL from the separate failure event", async () => {
+    // Observed: a failed tool produces NO PostToolUse — it raises a distinct
+    // event carrying `error` and no `tool_response`. Before this handler
+    // existed the authorization was never settled and held budget until its
+    // window aged out.
+    const { sdk, limiter } = setup();
+    await sdk.preToolUse({
+      tool_name: "buy_credits",
+      tool_input: { id: "t-1", amountMinor: 1_000 },
+      tool_use_id: "toolu_fail",
+    });
+    await sdk.postToolUseFailure({
+      tool_name: "buy_credits",
+      tool_input: { id: "t-1", amountMinor: 1_000 },
+      tool_use_id: "toolu_fail",
+      error: "Exit code 9",
+    });
+    // Burn on failure: the rail may have charged before the tool died.
+    const t = await limiter.totalsSince(policy.id, since(), "USD");
+    expect(t.totalMinor).toBe(1_000);
+  });
+
+  it("treats a user INTERRUPT as a failure too — it says nothing about the rail", async () => {
+    const { sdk, limiter } = setup();
+    await sdk.preToolUse({
+      tool_name: "buy_credits",
+      tool_input: { id: "t-1", amountMinor: 1_000 },
+      tool_use_id: "toolu_int",
+    });
+    await sdk.postToolUseFailure({
+      tool_name: "buy_credits",
+      tool_input: { id: "t-1", amountMinor: 1_000 },
+      tool_use_id: "toolu_int",
+      is_interrupt: true,
+    });
+    const t = await limiter.totalsSince(policy.id, since(), "USD");
+    expect(t.totalMinor).toBe(1_000);
+  });
+
+  it("a failure for a tool we never authorized settles nothing", async () => {
+    const { sdk, limiter } = setup();
+    await sdk.postToolUseFailure({
+      tool_name: "Bash",
+      tool_input: { command: "false" },
+      tool_use_id: "toolu_unrelated",
+      error: "Exit code 1",
+    });
+    const t = await limiter.totalsSince(policy.id, since(), "USD");
+    expect(t.count).toBe(0);
   });
 });

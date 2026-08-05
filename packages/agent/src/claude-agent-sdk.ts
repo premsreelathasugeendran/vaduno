@@ -1,30 +1,64 @@
 import type { SpendDecision, SpendHooks, ToolCall } from "./hooks.js";
 
 /**
- * Binding for the Claude Agent SDK's `PreToolUse` / `PostToolUse` hooks.
+ * Binding for a Claude Agent SDK host's tool hooks.
  *
- * HONEST STATUS: the wire shapes below are taken from the documented hook
- * contract and have **not been run against a live Claude Agent SDK session**.
- * They are isolated in this file precisely so that if the contract has drifted,
- * the fix is a few lines here rather than anywhere near the policy path — and
- * so the untested surface is small enough to read in one sitting.
+ * STATUS: the shapes below were OBSERVED against a live Claude Code session —
+ * a passive hook recorded real `PreToolUse`, `PostToolUse` and tool-failure
+ * payloads, and this file was corrected against them. Through 0.5.0 it was
+ * written from documentation alone, and the drift that found was not cosmetic:
+ *
+ *   1. A non-payment tool returned `permissionDecision: "allow"`, which
+ *      short-circuits the host's own permission evaluation. Registered with a
+ *      `*` matcher, the spend firewall auto-approved every other tool in the
+ *      session. Now returns `{}` — no opinion.
+ *   2. A FAILED tool never reaches `postToolUse` at all; it raises a separate
+ *      failure event carrying `error`. The failure heuristic here could
+ *      therefore never fire, and a failed payment was never settled.
+ *   3. Every event carries `tool_use_id`, the host's own correlation id —
+ *      better than the input fingerprint this used to rely on.
+ *
+ * Those are exactly the kind of mismatch that a green test suite cannot catch,
+ * because the suite and the code shared one wrong assumption about the host.
+ * The observation harness lives in `examples/claude-code-hook`; re-run it when
+ * a host version changes.
  *
  * The decision itself comes from `createSpendHooks`, which is framework-free
- * and fully tested. Everything here is translation.
+ * and tested independently of any host. Everything here is translation.
  */
 
 /** Subset of the PreToolUse hook input this binding reads. */
 export interface PreToolUseInput {
   tool_name: string;
   tool_input: unknown;
+  /**
+   * The host's own correlation id, present on every hook event. OBSERVED live
+   * on Claude Code. Prefer it over matching on the tool input — see `callKey`.
+   */
+  tool_use_id?: string;
 }
 
 /** Subset of the PostToolUse hook input this binding reads. */
 export interface PostToolUseInput {
   tool_name: string;
   tool_input: unknown;
-  /** Present on success; absent or error-shaped on failure. */
+  tool_use_id?: string;
+  /** The tool's result. A FAILED tool does not arrive here at all. */
   tool_response?: unknown;
+}
+
+/**
+ * A tool that FAILED. Observed live: this is a SEPARATE event carrying `error`
+ * and NO `tool_response` — failures never reach PostToolUse.
+ */
+export interface PostToolUseFailureInput {
+  tool_name: string;
+  tool_input: unknown;
+  tool_use_id?: string;
+  /** e.g. "Exit code 9". */
+  error?: string;
+  /** True when the user interrupted rather than the tool erroring. */
+  is_interrupt?: boolean;
 }
 
 export interface PreToolUseOutput {
@@ -34,6 +68,9 @@ export interface PreToolUseOutput {
     permissionDecisionReason: string;
   };
 }
+
+/** No opinion: emit nothing and let the host's own permission rules decide. */
+export type PreToolUseNoOpinion = Record<string, never>;
 
 const allow = (reason: string): PreToolUseOutput => ({
   hookSpecificOutput: {
@@ -128,8 +165,15 @@ function stableStringify(value: unknown, seen: Set<unknown> = new Set()): string
 }
 
 export interface ClaudeAgentBinding {
-  preToolUse(input: PreToolUseInput): Promise<PreToolUseOutput>;
+  preToolUse(input: PreToolUseInput): Promise<PreToolUseOutput | PreToolUseNoOpinion>;
   postToolUse(input: PostToolUseInput): Promise<void>;
+  /**
+   * Register this on the host's tool-FAILURE event. Without it a failed
+   * payment tool is never settled and its authorization holds budget until the
+   * rolling window ages out — the safe direction, but not what the docs
+   * promise.
+   */
+  postToolUseFailure(input: PostToolUseFailureInput): Promise<void>;
 }
 
 export function bindClaudeAgentSdk(
@@ -154,24 +198,27 @@ export function bindClaudeAgentSdk(
       }
 
       if (decision.kind === "not-a-payment") {
-        // No opinion. Returning "allow" here would OVERRIDE other permission
-        // rules, so say nothing stronger than necessary.
-        return allow("vaduno: not a spending tool");
+        // NO OPINION — an empty object, not an "allow".
+        //
+        // This shipped as `allow(...)` through 0.5.0, with a comment saying
+        // that allow would override other permission rules and must be avoided
+        // — and then returning allow anyway. Observed live: a `permissionDecision`
+        // of "allow" SHORT-CIRCUITS the host's normal permission evaluation. So
+        // a `*`-matcher registration of this binding auto-approved every
+        // non-payment tool in the session: a spend firewall that silently
+        // switched off the permission prompts around it.
+        return {};
       }
       if (decision.kind === "deny") {
         return deny(`vaduno: ${decision.code} — ${decision.reason}`);
       }
 
-      inFlight.remember(
-        callKey(input.tool_name, input.tool_input),
-        decision.intentId,
-        decision.mandateId,
-      );
+      inFlight.remember(correlationKey(input), decision.intentId, decision.mandateId);
       return allow(`vaduno: authorized (intent ${decision.intentId})`);
     },
 
     async postToolUse(input) {
-      const pending = inFlight.take(callKey(input.tool_name, input.tool_input));
+      const pending = inFlight.take(correlationKey(input));
       // Nothing pending means this tool was never authorized by us — a
       // non-payment tool, or a call that PreToolUse denied. Settling it would
       // invent a payment that never happened.
@@ -184,7 +231,50 @@ export function bindClaudeAgentSdk(
         ...(pending.mandateId !== undefined ? { mandateId: pending.mandateId } : {}),
       });
     },
+
+    async postToolUseFailure(input) {
+      // Observed live: a failed tool NEVER reaches postToolUse. It arrives here
+      // instead, carrying `error` and no `tool_response`. Before this handler
+      // existed the authorization was simply never settled — it held budget
+      // until its rolling window aged out. Over-hold rather than overspend, so
+      // the safe direction, but not what the README promised.
+      const pending = inFlight.take(correlationKey(input));
+      if (!pending) return;
+
+      await hooks.settled(pending.intentId, {
+        // Burn on failure, deliberately: a tool that failed may still have
+        // moved money before it failed, and an interrupt says even less about
+        // whether the rail was reached. Freeing budget here is the one
+        // direction that could overspend.
+        ok: false,
+        error:
+          input.error ??
+          (input.is_interrupt ? "interrupted before completion" : "tool failed"),
+        ...(pending.mandateId !== undefined ? { mandateId: pending.mandateId } : {}),
+      });
+    },
   };
+}
+
+/**
+ * How a pending authorization is matched from one hook event to the next.
+ *
+ * OBSERVED live on Claude Code: every event — PreToolUse, PostToolUse and the
+ * failure event — carries `tool_use_id`, the host's own correlation id. That is
+ * strictly better than fingerprinting the tool input, which this binding used
+ * to do exclusively: it is stable, unique per call, and immune to a host that
+ * re-serializes `tool_input` between events.
+ *
+ * The input fingerprint stays as the fallback for hosts that send no id.
+ */
+function correlationKey(input: {
+  tool_name: string;
+  tool_input: unknown;
+  tool_use_id?: string;
+}): string {
+  return input.tool_use_id !== undefined
+    ? `id:${input.tool_use_id}`
+    : callKey(input.tool_name, input.tool_input);
 }
 
 /**

@@ -20,3 +20,10 @@ docs/research/
 packcheck/
 vad/
 .claude/worktrees/
+
+# Live-hook session artifacts (examples/claude-code-hook): captured payloads,
+# decision logs and the file-backed cap state. Evidence from one session, not
+# fixtures — regenerate by running the hook, never commit.
+examples/claude-code-hook/.state/
+examples/claude-code-hook/observed-payloads.jsonl
+examples/claude-code-hook/guard-hook.log
