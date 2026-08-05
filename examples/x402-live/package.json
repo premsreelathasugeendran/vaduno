@@ -1,0 +1,20 @@
+{
+  "name": "x402-live",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Settle a REAL x402 payment on Base Sepolia testnet through the Vaduno guard.",
+  "scripts": {
+    "keygen": "node keygen.mjs",
+    "start": "node pay.mjs"
+  },
+  "dependencies": {
+    "@vaduno/guard": "*",
+    "@vaduno/x402": "*"
+  },
+  "devDependencies": {
+    "@x402/core": "^2.21.0",
+    "@x402/evm": "^2.21.0",
+    "viem": "^2.21.0"
+  }
+}

@@ -27,3 +27,9 @@ vad/
 examples/claude-code-hook/.state/
 examples/claude-code-hook/observed-payloads.jsonl
 examples/claude-code-hook/guard-hook.log
+
+# Throwaway testnet wallet for examples/x402-live. Worthless faucet tokens on
+# one testnet, but a private key is a private key — never commit it.
+examples/x402-live/.wallet
+examples/x402-live/ledger.jsonl
+examples/x402-live/last-settlement.json
