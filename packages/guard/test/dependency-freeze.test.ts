@@ -18,6 +18,7 @@ const packagesDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 /** The complete, intended production-dependency surface. Internal-only. */
 const FROZEN_DEPENDENCIES: Record<string, string[]> = {
   "@vaduno/agent": ["@vaduno/guard"],
+  "@vaduno/cloudflare": ["@vaduno/guard"],
   "@vaduno/guard": [],
   "@vaduno/postgres": ["@vaduno/guard", "@vaduno/revocation"],
   "@vaduno/revocation": ["@vaduno/guard"],
@@ -30,6 +31,12 @@ const FROZEN_DEPENDENCIES: Record<string, string[]> = {
 const FROZEN_PEERS: Record<string, string[]> = {
   "@vaduno/postgres": ["pg"],
   "@vaduno/stripe": ["stripe"],
+  // viem is a PEER, not a dependency, on purpose: the guarded signer must
+  // hash with the consumer's own viem (hashTypedData/getTypesForEIP712Domain
+  // are the commitment gate's oracle), so a second smuggled copy — and any
+  // version skew between what they sign with and what we hash with — must be
+  // impossible. Every Agents-SDK x402 consumer already has viem installed.
+  "@vaduno/cloudflare": ["viem"],
 };
 
 interface Pkg {

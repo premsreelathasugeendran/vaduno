@@ -361,6 +361,7 @@ An allow **reserves budget immediately** — if it merely returned an opinion, t
 - ✅ **Revocation registry** (`@vaduno/revocation`) — targeted kill switch + W3C Bitstring Status Lists
 - ✅ **Witness cosigning** — C2SP checkpoints + cosignatures; independent witnesses attest the log never forked
 - ✅ **Agent framework hooks** (`@vaduno/agent`) — decide-only tool-approval binding; SDK adapter not yet run against a live session
+- ✅ **Cloudflare Agents SDK signer guard** (`@vaduno/cloudflare`) — policy inside `signTypedData` for the `withX402Client` path; a denied payment never has a signature. Ported from the adversarially-reviewed `examples/guarded-signer/` prototype, through which real Base Sepolia settlements were verified on-chain
 - ✅ **Deterministic risk scorecard** — ledger-derived tiers, step-up routing through the approval branch, auto-freeze; reproducible bit-for-bit from the ledger given the same scorecard config and policy
 - ✅ **Post-quantum readiness (evidence layer)** — hybrid v2 mandates (Ed25519 + ML-DSA-44), C2SP 0x06 witness cosignatures, archival verification semantics, `requireAlgs` enforcement; runtime-probed, additive, v1 frozen
 - **Consent-evidence dossiers** — exportable dispute/representment packets built on the audit trail

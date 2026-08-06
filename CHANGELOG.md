@@ -1,6 +1,43 @@
 # Changelog
 
-All seven packages are versioned together and released as a matched set.
+All packages are versioned together and released as a matched set.
+
+## Unreleased
+
+### Added — `@vaduno/cloudflare`: the guarded signer as a publishable package
+
+The `examples/guarded-signer/` prototype — five adversarial rounds, 20
+confirmed defects fixed, real Base Sepolia settlements verified on-chain — is
+now a workspace package, `@vaduno/cloudflare`, so a Cloudflare Agents SDK user
+can put the guard in the mandatory signing path with a one-line swap:
+
+```ts
+const client = withX402Client(mcpClient, {
+  account: guardedSigner({ account, guard, assets }),   // was: account
+});
+```
+
+- The port is faithful: snapshot-then-sign, commitment gating (explicit and
+  inferred domain), default-deny on shape, decimals scaling with round-up,
+  payer/expiry/spender/collector policing, audited local refusals, throwing
+  stubs for every raw-key capability, frozen wrapper with the real account
+  closure-held. Each property's test was first observed failing against a
+  deliberately broken build (two planted-defect batches, 11 + 8 targeted
+  failures) before being trusted.
+- Typechecked against the REAL upstream types: `ClientEvmSigner` from
+  `@x402/evm` and `withX402Client`'s option type from `agents` are
+  devDependencies, so upstream drift breaks this package's build instead of a
+  consumer's runtime. The auth-capture tests run the genuine
+  `AuthCaptureEvmScheme`, never an imitation.
+- `viem` is a peerDependency (the consumer's copy is used; no version skew
+  between what they sign with and what this package hashes with).
+  `@vaduno/guard` stays the only runtime dependency, itself
+  zero-runtime-dependency. No `node:` imports — refusal ids use Web Crypto —
+  so the module loads on Workers without `nodejs_compat`.
+- The asset registry takes the same `{ network, asset, symbol, decimals }`
+  shape as `@vaduno/x402`'s `AssetInfo` (CAIP-2 networks); non-`eip155`
+  entries are refused at construction rather than sitting in the registry as
+  no-ops.
 
 This project is pre-1.0. Under semver, 0.x minor bumps may break the API. Two
 have, and each was breaking because the fix for a real security bug required it.
