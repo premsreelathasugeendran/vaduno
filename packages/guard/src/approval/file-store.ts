@@ -46,10 +46,27 @@ export class FileApprovalStore implements ApprovalStore {
     try {
       const raw = await readFile(this.filePath, "utf8");
       const parsed = JSON.parse(raw) as Partial<FileShape>;
-      return { pending: parsed.pending ?? {}, decisions: parsed.decisions ?? {} };
+      // NULL-PROTOTYPE, load-bearing — the THIRD file store to need it, after
+      // FileSpendLimiter and FileConsumeStore (see FileSpendLimiter.load()
+      // for the measured divergence and the full argument). Both records are
+      // keyed on caller-controlled intentId: on a plain object (JSON.parse's
+      // output included) `decisions["__proto__"]` reads back Object.prototype
+      // — truthy — so enqueue() silently DROPPED that pending item and no
+      // human was ever shown it, while getDecision("toString") returned a
+      // FUNCTION with no `.approved`, which the queued handler records as
+      // "approval does not match this payment" — a false audit row about a
+      // human decision that never existed. The ApprovalStore conformance
+      // suite (test/approval-store-conformance.ts) now pins both
+      // implementations to Map semantics: an id is DATA here.
+      return {
+        pending: Object.assign(Object.create(null), parsed.pending),
+        decisions: Object.assign(Object.create(null), parsed.decisions),
+      };
     } catch (err: unknown) {
       const e = err as NodeJS.ErrnoException;
-      if (e.code === "ENOENT") return { pending: {}, decisions: {} };
+      if (e.code === "ENOENT") {
+        return { pending: Object.create(null), decisions: Object.create(null) };
+      }
       // A corrupt file fails closed (callers surface a denial) rather than
       // silently discarding the queue. Atomic writes make this unreachable
       // from our own writes.

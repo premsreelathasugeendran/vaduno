@@ -194,3 +194,121 @@ describe("network policy (chain constraint)", () => {
     expect(result.reasons.map((r) => r.code)).toContain("NETWORK_MISSING");
   });
 });
+
+/**
+ * The network id arrives in a 402 from an UNTRUSTED SELLER. A comparison that
+ * is merely textual (trim + lowercase) lets that seller spell the same chain a
+ * way the blocklist does not — "eip155:084532" for "eip155:84532" — and a
+ * block entry a counterparty can spell around is not a control. CAIP-2-shaped
+ * ids are therefore parsed structurally (namespace + reference, the eip155
+ * reference canonicalized numerically), and a colon-bearing id that does not
+ * parse is REFUSED, never passed through.
+ */
+describe("network ids from an untrusted counterparty are canonicalized", () => {
+  const BLOCK_BASE = { networks: { block: [BASE_SEPOLIA] } };
+
+  it("a leading-zero eip155 reference cannot evade the blocklist", async () => {
+    for (const spelling of ["eip155:084532", "eip155:0084532", "EIP155:084532"]) {
+      const result = await evaluatePolicy(
+        makeIntent({ network: spelling }),
+        makePolicy(BLOCK_BASE),
+        emptyHistory,
+      );
+      expect(result.decision).toBe("deny");
+      expect(result.reasons.map((r) => r.code)).toContain("NETWORK_BLOCKED");
+    }
+  });
+
+  it("a non-canonical spelling that does not even parse is refused, not passed through", async () => {
+    // Hex chain id, internal whitespace, empty reference, extra colon: none of
+    // these are CAIP-2, and under a block-only policy every one of them used
+    // to sail past the blocklist as "did not match, therefore not blocked".
+    for (const spelling of [
+      "eip155:0x14a34",
+      "eip155: 84532",
+      "eip155:",
+      "eip155:84532:extra",
+    ]) {
+      const result = await evaluatePolicy(
+        makeIntent({ network: spelling }),
+        makePolicy(BLOCK_BASE),
+        emptyHistory,
+      );
+      expect(result.decision).toBe("deny");
+      expect(result.reasons.map((r) => r.code)).toContain("NETWORK_UNPARSEABLE");
+    }
+  });
+
+  it("a policy entry that cannot be canonicalized poisons the whole constraint (fail closed)", async () => {
+    // An operator's hex-spelled block entry would otherwise silently never
+    // match anything — a blocklist with a hole it cannot see. Refuse loudly.
+    const result = await evaluatePolicy(
+      makeIntent({ network: BASE_SEPOLIA }),
+      makePolicy({ networks: { allow: [BASE_SEPOLIA], block: ["eip155:0x1"] } }),
+      emptyHistory,
+    );
+    expect(result.decision).toBe("deny");
+    expect(result.reasons.map((r) => r.code)).toContain("NETWORK_POLICY_INVALID");
+  });
+
+  it("a leading-zero entry ON THE POLICY side blocks the canonical spelling too", async () => {
+    const result = await evaluatePolicy(
+      makeIntent({ network: BASE_SEPOLIA }),
+      makePolicy({ networks: { block: ["eip155:084532"] } }),
+      emptyHistory,
+    );
+    expect(result.decision).toBe("deny");
+    expect(result.reasons.map((r) => r.code)).toContain("NETWORK_BLOCKED");
+  });
+
+  it("the ALLOW side stays fail-closed for every variant of a chain it does not list", async () => {
+    for (const spelling of [
+      "eip155:011155111", // leading-zero variant of a FORBIDDEN chain
+      "eip155:0x14a34", // hex variant of the allowed chain: unparseable, refused
+      "eip156:84532", // different namespace entirely
+      "eip155:845320", // different chain, shared prefix
+    ]) {
+      const result = await evaluatePolicy(
+        makeIntent({ network: spelling }),
+        makePolicy({ networks: { allow: [BASE_SEPOLIA] } }),
+        emptyHistory,
+      );
+      expect(result.decision).toBe("deny");
+    }
+  });
+
+  it("the allow side recognizes a leading-zero spelling of the SAME chain (canonical equality)", async () => {
+    const result = await evaluatePolicy(
+      makeIntent({ network: "eip155:084532" }),
+      makePolicy({ networks: { allow: [BASE_SEPOLIA] } }),
+      emptyHistory,
+    );
+    expect(result.decision).toBe("allow");
+  });
+
+  it("bare rail-native names (no colon) keep their trim+lowercase semantics", async () => {
+    const result = await evaluatePolicy(
+      makeIntent({ network: "  Base-Sepolia " }),
+      makePolicy({ networks: { allow: ["base-sepolia"] } }),
+      emptyHistory,
+    );
+    expect(result.decision).toBe("allow");
+  });
+
+  it("non-eip155 CAIP-2 ids compare structurally without numeric folding", async () => {
+    const blocked = await evaluatePolicy(
+      makeIntent({ network: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp" }),
+      makePolicy({ networks: { block: ["solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"] } }),
+      emptyHistory,
+    );
+    expect(blocked.decision).toBe("deny");
+    expect(blocked.reasons.map((r) => r.code)).toContain("NETWORK_BLOCKED");
+
+    const other = await evaluatePolicy(
+      makeIntent({ network: "solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z" }),
+      makePolicy({ networks: { allow: ["solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"] } }),
+      emptyHistory,
+    );
+    expect(other.decision).toBe("deny");
+  });
+});

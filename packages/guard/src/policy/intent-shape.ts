@@ -33,15 +33,61 @@
  * requirement that suspicious refusals leave evidence.
  *
  * VALUE SPACE relative to `canonicalJson`: everything this file PASSES,
- * canonicalJson accepts — any change to the accepted per-value space belongs
- * in both files. This file may additionally REFUSE structures canonicalJson
+ * canonicalJson accepts — AT THE NESTING DEPTH IT WILL ACTUALLY SIT, which
+ * for an intent is inside a ledger entry (see MAX_INTENT_DEPTH below) — and
+ * any change to the accepted per-value space belongs in both files. This
+ * file may additionally REFUSE structures canonicalJson-from-the-intent-root
  * would accept (a container over MAX_CONTAINER_ENTRIES, a walk over
- * MAX_WALK_NODES): that direction is fail-closed and exists precisely so the
- * ledger row stays bounded.
+ * MAX_WALK_NODES, nesting past MAX_INTENT_DEPTH): that direction is
+ * fail-closed and exists precisely so the ledger row is always writable and
+ * stays bounded.
  */
 
-/** Mirrors canonicalJson's MAX_DEPTH: deeper input is a problem, not a crash. */
-const MAX_DEPTH = 256;
+import { CANONICAL_MAX_DEPTH } from "../ledger/hash.js";
+
+/**
+ * Levels the LEDGER-ENTRY envelope adds above the intent. canonicalJson
+ * serializes the WHOLE entry, and the intent rides at `entry.data.intent` —
+ * two containers below the root the serializer measures from. The walker
+ * below starts at the INTENT root, so its limit must subtract these levels.
+ * intent-shape-depth.test.ts round-trips the deepest accepted intent through
+ * the real ledger; if the envelope ever deepens, that test fails instead of
+ * the zero-row window silently reopening.
+ */
+const ENTRY_ENVELOPE_DEPTH = 2;
+
+/**
+ * One level reserved for the sanitization MARKER: the marker REPLACES an
+ * over-deep value at that value's own depth (limit + 1), and the marker must
+ * itself serialize inside the entry — otherwise the "sanitized so the append
+ * always succeeds" copy is the very thing that cannot be appended, which is
+ * how every depth past the walker's old limit still wrote zero rows.
+ */
+const MARKER_DEPTH = 1;
+
+/**
+ * Maximum intent nesting depth: 253 (= 256 − 2 − 1). Deeper input is an
+ * "oversize" problem — denied INTENT_TOO_LARGE with the usual two rows.
+ *
+ * THE DEFECT THIS DERIVATION KILLS. The previous limit was a private
+ * MAX_DEPTH = 256 that "mirrored" canonicalJson's — but the two walkers
+ * measure from DIFFERENT roots. A well-formed, fully valid intent nested
+ * 255–256 deep passed inspection with zero problems, then threw inside
+ * entryHash() at entry depth 257+: AUDIT_WRITE_FAILED, ZERO ledger rows, no
+ * execution. And past 256 the walker's own sanitization marker landed too
+ * deep to serialize, so there was NO upper recovery bound — depth 263, 300,
+ * 1000 all wrote zero rows. Deriving the limit from the serializer's
+ * constant minus the envelope (and the marker's slot) makes the walker
+ * validate what canonicalJson will actually see.
+ *
+ * The trade, stated honestly: intents at depth 254 used to EXECUTE (their
+ * entries sat exactly at the serializer's limit) and are now refused
+ * INTENT_TOO_LARGE — one level of headroom exchanged for the guarantee that
+ * every refusal in this class leaves evidence. Nothing legitimate nests a
+ * payment intent 254 levels deep.
+ */
+export const MAX_INTENT_DEPTH =
+  CANONICAL_MAX_DEPTH - ENTRY_ENVELOPE_DEPTH - MARKER_DEPTH;
 
 /**
  * How many problem RECORDS are retained (with path + description). Everything
@@ -254,8 +300,13 @@ function walk(
       "oversize",
     );
   }
-  if (depth > MAX_DEPTH) {
-    return flag(state, path, `nesting exceeds max depth ${MAX_DEPTH}`, "oversize");
+  if (depth > MAX_INTENT_DEPTH) {
+    return flag(
+      state,
+      path,
+      `nesting exceeds max recordable depth ${MAX_INTENT_DEPTH}`,
+      "oversize",
+    );
   }
   if (v === null) return null;
 

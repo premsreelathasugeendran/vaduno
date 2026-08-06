@@ -969,6 +969,185 @@ const authCaptureRun = await (async () => {
 }
 
 // ===========================================================================
+// DEFECT 14 — the INFERRED-domain premise was false, and this file's own
+// principle was violated by the code that states it.
+//
+// `missingDomainCommitment` early-returned null whenever `types.EIP712Domain`
+// was not an array, on the belief that viem then commits to every domain field
+// that is PRESENT. It does not: `getTypesForEIP712Domain()` includes `chainId`
+// only when `typeof domain.chainId` is "number" or "bigint", and `asChainId`
+// deliberately accepts decimal STRINGS. So `chainId: "84532"` is present, is
+// read, is policed as `eip155:84532`, selects the (chainId, asset) registry row
+// that supplies the DECIMALS — and is not in the signed bytes at all. The same
+// signature is then valid on a chain whose registry row calls the token
+// 2-decimal, turning a policed $0.01 into a real $100.00.
+//
+// The wrapper's own evidence proved it and nothing consulted it: the ledger row
+// said committed.domain = [name, version, verifyingContract] while
+// intent.network said eip155:84532. The gate now reads that same derivation.
+// ===========================================================================
+{
+  const mk = (chainId, types) => ({
+    domain: { name: "USDC", version: "2", chainId, verifyingContract: USDC },
+    types,
+    primaryType: "TransferWithAuthorization",
+    message: { from: realAccount.address, to: SELLER, value: 10_000n, validAfter: 0n, validBefore: soon(), nonce: nonce32() },
+  });
+  const explicitDomain = [
+    { name: "name", type: "string" },
+    { name: "version", type: "string" },
+    { name: "chainId", type: "uint256" },
+    { name: "verifyingContract", type: "address" },
+  ];
+
+  // The bypass: a string chainId is not in the digest, measured against viem.
+  const strA = mk("84532", eip3009Types);
+  const strB = structuredClone(strA);
+  strB.domain.chainId = "1";
+  const chainIdUncommitted = hashTypedData(strA) === hashTypedData(strB);
+
+  const { guarded, calls } = rig({ counting: true });
+  const attacked = await guarded.signTypedData(strA).catch((e) => e);
+  let sameBytesElsewhere = false;
+  if (typeof attacked === "string") {
+    const asChain1 = structuredClone(strA);
+    asChain1.domain.chainId = "1";
+    const rec = await recoverTypedDataAddress({ ...asChain1, signature: attacked }).catch(() => "n/a");
+    sameBytesElsewhere = String(rec).toLowerCase() === realAccount.address.toLowerCase();
+  }
+
+  // ...and the shapes that ARE committed must keep signing.
+  const { guarded: gNum } = rig();
+  const num = await gNum.signTypedData(mk(CHAIN_ID, eip3009Types)).catch((e) => e);
+  const { guarded: gBig } = rig();
+  const big = await gBig.signTypedData(mk(BigInt(CHAIN_ID), eip3009Types)).catch((e) => e);
+  const { guarded: gExp } = rig();
+  const explicitStr = await gExp
+    .signTypedData(mk("84532", { EIP712Domain: explicitDomain, ...eip3009Types }))
+    .catch((e) => e);
+
+  const pass =
+    chainIdUncommitted &&
+    typeof attacked !== "string" &&
+    tag(attacked) === "TYPED_DATA_NOT_COMMITTED" &&
+    typeof num === "string" &&
+    typeof big === "string" &&
+    typeof explicitStr === "string";
+  check("D14", "an uncommitted INFERRED domain field is refused, not policed as if signed", pass,
+    `digest(chainId="84532")===digest(chainId="1") -> ${chainIdUncommitted}; ` +
+    `string chainId -> ${typeof attacked === "string" ? `SIGNED (valid on chain 1: ${sameBytesElsewhere}; guard policed ${calls.intents[0]?.network})` : tag(attacked)}; ` +
+    `number -> ${typeof num === "string" ? "signs" : tag(num)}; ` +
+    `bigint -> ${typeof big === "string" ? "signs" : tag(big)}; ` +
+    `string under an EXPLICIT EIP712Domain (which DOES commit it) -> ${typeof explicitStr === "string" ? "signs" : tag(explicitStr)}`);
+}
+{
+  // The gate and the record must be the SAME derivation, or a row could certify
+  // coverage the decision never required. Every signed row must list every
+  // domain field the guard relied on.
+  const { guarded, ledger } = rig();
+  await guarded.signTypedData({
+    domain: { name: "USDC", version: "2", chainId: CHAIN_ID, verifyingContract: USDC },
+    types: eip3009Types,
+    primaryType: "TransferWithAuthorization",
+    message: { from: realAccount.address, to: SELLER, value: 10_000n, validAfter: 0n, validBefore: soon(), nonce: nonce32() },
+  });
+  const recorded = (await ledger.all()).find((e) => e.type === "intent_received")?.data?.intent;
+  const dom = recorded?.metadata?.committed?.domain ?? [];
+  check("D14b", "a signed row's committed.domain covers every domain field the guard policed",
+    dom.includes("chainId") && dom.includes("verifyingContract"),
+    `committed.domain = ${JSON.stringify(dom)} while intent.network = ${recorded?.network}, asset = ${recorded?.metadata?.asset}`);
+}
+
+// ===========================================================================
+// DEFECT 15 — the committed-field walker SILENTLY TRUNCATED the record.
+//
+// `if (depth > 32 || Object.hasOwn(struct, name)) return;` dropped every struct
+// past depth 32 with no error and no truncation marker. With 40 distinct nested
+// structs viem hashes all 40 — they are all in the typehash string — while
+// committed.struct held 33; at 300 it held the same 33. Its own sibling
+// resolveStructRef THROWS on ARRAY_NESTING_LIMIT rather than drop, with a
+// comment saying an unresolved reference "would quietly omit a struct from the
+// record, which is the exact defect this function was written to fix".
+//
+// There is NO upper recovery bound to this: the check below spans 33 (the first
+// truncating depth) to 300, and every one of them must refuse rather than sign
+// a partial record.
+// ===========================================================================
+{
+  const chain = (depth) => {
+    const types = {
+      TransferWithAuthorization: [...eip3009Types.TransferWithAuthorization, { name: "extra", type: "S0" }],
+    };
+    for (let n = 0; n < depth; n += 1) {
+      types[`S${n}`] = n === depth - 1 ? [{ name: "leaf", type: "address" }] : [{ name: "next", type: `S${n + 1}` }];
+    }
+    const build = (n) => (n === depth - 1 ? { leaf: SELLER } : { next: build(n + 1) });
+    return {
+      domain: { name: "USDC", version: "2", chainId: CHAIN_ID, verifyingContract: USDC },
+      types,
+      primaryType: "TransferWithAuthorization",
+      message: {
+        from: realAccount.address, to: SELLER, value: 10_000n,
+        validAfter: 0n, validBefore: soon(), nonce: nonce32(), extra: build(0),
+      },
+    };
+  };
+
+  const truncated = [];
+  const outcomes = [];
+  for (const depth of [33, 40, 64, 128, 300]) {
+    const { guarded, ledger } = rig();
+    const r = await guarded.signTypedData(chain(depth)).catch((e) => e);
+    if (typeof r === "string") {
+      const rec = (await ledger.all()).find((e) => e.type === "intent_received")?.data?.intent;
+      const got = Object.keys(rec?.metadata?.committed?.struct ?? {}).length;
+      truncated.push(`${depth}: SIGNED with ${got}/${depth + 1} structs recorded`);
+    } else {
+      outcomes.push(`${depth}: ${tag(r)}`);
+    }
+  }
+
+  // The limit must not have become a blanket refusal: a shape INSIDE it still
+  // signs, with every struct recorded.
+  const { guarded: gOk, ledger: lOk } = rig();
+  const ok = await gOk.signTypedData(chain(31)).catch((e) => e);
+  const okStructs = Object.keys(
+    (await lOk.all()).find((e) => e.type === "intent_received")?.data?.intent?.metadata?.committed?.struct ?? {},
+  ).length;
+
+  const pass =
+    truncated.length === 0 &&
+    outcomes.every((o) => o.endsWith("COMMITMENT_RECORD_UNCOMPUTABLE")) &&
+    typeof ok === "string" &&
+    okStructs === 32;
+  check("D15", "a struct chain too deep to record REFUSES instead of recording a partial set — with no upper bound",
+    pass,
+    truncated.length
+      ? `TRUNCATED: ${truncated.join("; ")}`
+      : `${outcomes.join("; ")}; within-limit 31-deep chain -> ${typeof ok === "string" ? `signs with ${okStructs}/32 structs recorded` : tag(ok)}`);
+}
+{
+  // Recursion must still terminate at the already-visited check rather than
+  // hitting the new throw: those shapes are refused for a DIFFERENT reason
+  // (viem cannot hash them at all), and the diagnosis must stay that reason.
+  const { guarded } = rig();
+  const recursive = await guarded.signTypedData({
+    domain: { name: "USDC", version: "2", chainId: CHAIN_ID, verifyingContract: USDC },
+    types: {
+      TransferWithAuthorization: [...eip3009Types.TransferWithAuthorization, { name: "extra", type: "Node" }],
+      Node: [{ name: "child", type: "Node" }],
+    },
+    primaryType: "TransferWithAuthorization",
+    message: {
+      from: realAccount.address, to: SELLER, value: 10_000n,
+      validAfter: 0n, validBefore: soon(), nonce: nonce32(), extra: { child: null },
+    },
+  }).catch((e) => e);
+  check("D15b", "a self-referential struct is still diagnosed as an uncomputable DIGEST, not a record depth",
+    tag(recursive) === "DIGEST_UNCOMPUTABLE", `-> ${tag(recursive)}`);
+}
+
+// ===========================================================================
 // REGRESSIONS — everything that already held must keep holding
 // ===========================================================================
 {

@@ -163,9 +163,10 @@ export interface X402FetchOptions {
    *
    * On the x402 rail the settlement network is ALWAYS known — every
    * requirement names it, and the EIP-712 authorization the payer signs
-   * commits to the chain — so a deployment where NOTHING constrains the chain
-   * (no `assets` registry, no `policy.networks`) is never a deliberate
-   * configuration: it is the original chain-blind hole, in which a guard
+   * commits to the chain — so a deployment where NOTHING positively
+   * constrains the chain (no `assets` registry, no `policy.networks.allow`
+   * list — a block list alone admits every chain it does not name) is never a
+   * deliberate configuration: it is the original chain-blind hole, in which a guard
    * intended for one chain authorizes the identical payment on another (same
    * amount, same currency label, same merchant shape, wrong network). Such
    * deployments are therefore refused (NETWORK_UNGATED) before the payer runs.
@@ -264,27 +265,44 @@ function assertRecipientGated(opts: X402FetchOptions, payTo: string): void {
 }
 
 /**
- * The chain gate. Payment proceeds only when SOMETHING in the deployment
- * constrains the settlement network: a trusted `assets` registry (gates
- * (network, asset) pairs and refuses unlisted networks by construction), a
- * live `policy.networks` constraint, or the explicit `allowChainBlind`
- * opt-out. Evaluated per payment against the guard's CURRENT policy — a
- * setPolicy() that drops the networks block re-closes payment rather than
- * silently reopening the hole.
+ * The chain gate. Payment proceeds only when something in the deployment
+ * POSITIVELY constrains the settlement network: a trusted `assets` registry
+ * (gates (network, asset) pairs and refuses unlisted networks by
+ * construction), a live `policy.networks.allow` list, or the explicit
+ * `allowChainBlind` opt-out.
+ *
+ * A `networks.block` list alone does NOT satisfy the gate. A blocklist is a
+ * subtraction from an unbounded set — every chain it does not name still
+ * passes — so its presence proves nothing about which chains the deployment
+ * accepts. (An earlier version of this gate accepted any `networks` key,
+ * measured to pay on base-sepolia under `block: []`; that was the chain-blind
+ * hole with a blocklist for a fig leaf.) The block list still applies on top
+ * of an allow list, where a match can only tighten.
+ *
+ * Evaluated per payment against the guard's CURRENT policy — a setPolicy()
+ * that drops the allow list re-closes payment rather than silently reopening
+ * the hole.
  */
 function assertChainGated(opts: X402FetchOptions, network: string): void {
   if (opts.allowChainBlind === true) return;
   if (opts.assets !== undefined) return;
-  const nets = opts.guard.getPolicy().networks;
-  if (nets && (nets.allow !== undefined || nets.block !== undefined)) return;
+  if (opts.guard.getPolicy().networks?.allow !== undefined) return;
   throw new X402RequirementRefusedError(
     "NETWORK_UNGATED",
     `refusing to pay on network ${JSON.stringify(network)}: nothing in this deployment ` +
-      `constrains the settlement chain (no trusted asset registry, no policy.networks). ` +
-      `Configure an \`assets\` registry (recommended — it also pins the token), add a ` +
-      `\`networks\` constraint to the policy, or pass \`allowChainBlind: true\` to accept ` +
-      `any chain explicitly`,
+      `positively constrains the settlement chain (no trusted asset registry, no ` +
+      `policy.networks.allow list — a networks.block list alone does not count, because ` +
+      `every chain it does not name still passes). Configure an \`assets\` registry ` +
+      `(recommended — it also pins the token), add a \`networks.allow\` list to the ` +
+      `policy, or pass \`allowChainBlind: true\` to accept any chain explicitly`,
   );
+}
+
+/** Bounded, key-only description of a bad registry entry (values may be anything). */
+function describeAssetEntry(a: unknown): string {
+  if (a === null || typeof a !== "object") return JSON.stringify(a) ?? String(a);
+  const keys = Object.keys(a as Record<string, unknown>).slice(0, 8);
+  return `an object with keys [${keys.map((k) => JSON.stringify(k)).join(", ")}]`;
 }
 
 function defaultSelect(
@@ -483,6 +501,44 @@ function finishGuardResult(
  * a Request — not a one-shot ReadableStream).
  */
 export function createX402Fetch(opts: X402FetchOptions): FetchLike {
+  // CONFIGURATION REFUSES LOUDLY, BY NAME, AT WRAP TIME. A malformed assets
+  // entry (`address:` written instead of `asset:`) used to surface as a raw
+  // "Cannot read properties of undefined (reading 'toLowerCase')" from the
+  // matching code, mid-payment — fail closed on money, but pointing at
+  // nothing an operator could act on. The registry is the deployment's chain
+  // and token gate; an entry that cannot gate is refused before any request
+  // is in flight, the same stance NETWORK_POLICY_INVALID takes on poisoned
+  // network lists.
+  if (opts.assets !== undefined) {
+    if (!Array.isArray(opts.assets)) {
+      throw new Error(
+        "x402: `assets` must be an array of AssetInfo entries " +
+          "({ network, asset, symbol, decimals })",
+      );
+    }
+    opts.assets.forEach((a, i) => {
+      const bad =
+        a === null ||
+        typeof a !== "object" ||
+        typeof a.network !== "string" ||
+        a.network.trim().length === 0 ||
+        typeof a.asset !== "string" ||
+        a.asset.trim().length === 0 ||
+        typeof a.symbol !== "string" ||
+        typeof a.decimals !== "number";
+      if (bad) {
+        throw new Error(
+          `x402: assets[${i}] is not a usable AssetInfo — every entry needs a ` +
+            `non-blank string \`network\`, a non-blank string \`asset\` (the token ` +
+            `contract address), a string \`symbol\` and a number \`decimals\`; got ` +
+            `${describeAssetEntry(a)}. An entry that cannot match anything would ` +
+            `silently refuse every payment (or crash the matcher), so the ` +
+            `configuration is refused here instead`,
+        );
+      }
+    });
+  }
+
   const doFetch = opts.fetch ?? (globalThis.fetch as FetchLike);
   const select = opts.select ?? defaultSelect;
   const requireOriginMatch = opts.requireResourceOriginMatch ?? true;

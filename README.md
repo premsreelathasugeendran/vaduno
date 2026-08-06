@@ -268,9 +268,11 @@ Rail-specific security notes (see [SECURITY.md](SECURITY.md) and the [package RE
   pattern if that matters. v2 role-constant `payTo` values (e.g. `"merchant"`)
   are refused by default: an unresolvable recipient cannot be allowlisted.
 - **The adapter sets `intent.network`** (v1 network name, v2 CAIP-2 id) so
-  `policy.networks.allow` can refuse a wrong-chain payment. Without a `networks`
-  block the policy is chain-blind — the asset registry is caller config, not a
-  policy control.
+  `policy.networks.allow` can refuse a wrong-chain payment. Without a
+  `networks.allow` list the policy is chain-blind — a block list alone admits
+  every chain it does not name, so the adapter's chain gate does not accept it
+  as a constraint — and the asset registry is caller config, not a policy
+  control.
 - **Pass the `assets` registry.** Without it, `currency` comes from the server's
   spoofable `extra.symbol`. With it, a token that isn't on your list is refused.
   v1 network names and v2 CAIP-2 ids are **separate registry keys**.

@@ -349,6 +349,23 @@ export class VadunoGuard {
   ): Promise<void> {
     const settledAt = this.now().toISOString();
 
+    // SANITIZE THE SELF-REPORT BEFORE ANY EVIDENCE WRITE. The declared types
+    // say string, but this method sits at a trust boundary (the caller
+    // reports its own outcome), and an unrecordable `error` value — a
+    // bigint, NaN, an object holding either — used to cost the
+    // execution_result row itself: appendBestEffort swallowed the
+    // canonicalJson throw and the settlement of a REAL authorization went
+    // unrecorded (three rows, auditDegraded). Same class, same treatment as
+    // the intent-shape fix: record a bounded, tagged rendering instead of
+    // losing the row.
+    const safeId = refString(intentId);
+    const safeOutcome = {
+      status: outcome.status,
+      ...(outcome.error !== undefined
+        ? { error: recordableErrorString(outcome.error) }
+        : {}),
+    };
+
     if (outcome.status === "executed") {
       await this.commitBestEffort(intentId);
     }
@@ -356,14 +373,14 @@ export class VadunoGuard {
     // nor released. See releaseSpend().
 
     if (outcome.mandateId) {
-      await this.settleBestEffort(outcome.mandateId, intentId, {
-        status: outcome.status,
+      await this.settleBestEffort(outcome.mandateId, safeId, {
+        status: safeOutcome.status,
         settledAt,
-        ...(outcome.error !== undefined ? { error: outcome.error } : {}),
+        ...(safeOutcome.error !== undefined ? { error: safeOutcome.error } : {}),
       });
     }
 
-    await this.recordSettlement(intentId, outcome);
+    await this.recordSettlement(safeId, safeOutcome);
   }
 
   /**
@@ -852,7 +869,7 @@ export class VadunoGuard {
     } catch {
       // Non-cloneable intent (functions/symbols) — deny without touching it,
       // but still leave a best-effort trace of the rejected attempt.
-      const intentId = typeof intent?.id === "string" ? intent.id : "(unknown)";
+      const intentId = refString(intent?.id);
       const policyResult = internalDeny(
         this.policy,
         "INTENT_NOT_SERIALIZABLE",
@@ -860,13 +877,27 @@ export class VadunoGuard {
       );
       await this.appendBestEffort("policy_decision", { policyResult }, {
         intentId,
-        agentId:
-          typeof intent?.agentId === "string" ? intent.agentId : "(unknown)",
+        agentId: refString(intent?.agentId),
       });
       return { status: "denied", intentId, policyResult };
     }
 
-    const refs = { intentId: safe.id, agentId: safe.agentId };
+    // ENTRY REFS get the same sanitization the non-cloneable path above uses.
+    // AuditLedger writes refs as TOP-LEVEL entry fields and entryHash()
+    // canonicalizes the WHOLE entry — inspectIntentShape only sanitizes what
+    // lands in `data`. Raw refs meant a canonicalJson-hostile value in
+    // intent.id or intent.agentId (a bigint, NaN, a Date) made the FIRST
+    // append throw: AUDIT_WRITE_FAILED, ZERO ledger rows — the exact
+    // zero-evidence failure intent-shape.ts was written to kill, resurrected
+    // one line below its fix. The hostile value is still recorded, sanitized,
+    // inside data.intent; the refs are an index, and refString's type-tagged
+    // rendering is the honest index for an id that is not a string — an
+    // INJECTIVE one, because a first cut used a constant "(unknown)" and
+    // thereby let distinct hostile ids deliberately collide into one trail.
+    const refs = {
+      intentId: refString(safe.id),
+      agentId: refString(safe.agentId),
+    };
 
     // STRUCTURAL INSPECTION BEFORE THE FIRST APPEND. An intent holding a value
     // JSON cannot represent (NaN, ±Infinity, a bigint, a Date, a cycle) used
@@ -899,7 +930,7 @@ export class VadunoGuard {
       // Even the first audit write failed. Fail closed without executing.
       return {
         status: "denied",
-        intentId: safe.id,
+        intentId: refs.intentId,
         policyResult: internalDeny(
           this.policy,
           "AUDIT_WRITE_FAILED",
@@ -977,7 +1008,33 @@ export class VadunoGuard {
         policyVersion: this.policy.version,
       };
       await this.appendBestEffort("policy_decision", { policyResult }, refs);
-      return { status: "denied", intentId: safe.id, policyResult };
+      // refs.intentId, not safe.id: a shape-denied intent's id may be the
+      // very value the trail could not record (a bigint is not a string).
+      return { status: "denied", intentId: refs.intentId, policyResult };
+    }
+
+    // IDENTITY TYPE GATE. A CANONICALIZABLE non-string id — the number 42,
+    // null, a boolean — passes the shape inspection above (the values are
+    // recordable) and used to EXECUTE, leaving one payment with three
+    // identities: the raw non-string in GuardResult.intentId (violating its
+    // declared string type), the sanitized string in the ledger index, and
+    // the string the API contract promised. An id that cannot index the
+    // audit trail it is evidence in is refused, with the trail's usual two
+    // rows — before any budget or mandate use is touched.
+    if (typeof safe.id !== "string" || typeof safe.agentId !== "string") {
+      const offenders = [
+        ...(typeof safe.id !== "string" ? [`intent.id = ${refs.intentId}`] : []),
+        ...(typeof safe.agentId !== "string"
+          ? [`intent.agentId = ${refs.agentId}`]
+          : []),
+      ];
+      return await this.denyAudited(
+        safe,
+        refs,
+        "INTENT_ID_NOT_STRING",
+        `${offenders.join(" and ")} must be strings; a non-string identity ` +
+          `cannot index the audit trail this attempt is recorded in (fail closed)`,
+      );
     }
 
     try {
@@ -1059,7 +1116,29 @@ export class VadunoGuard {
           policyResult: prelimStance,
           requestedAt: this.now().toISOString(),
         });
-        await this.ledger.append("approval_resolved", { response }, refs);
+        // SANITIZE THE HANDLER'S RESPONSE BEFORE THE EVIDENCE WRITE. The
+        // handler is operator-supplied code answering a trust-boundary
+        // question, and an unrecordable value in its response (a bigint
+        // note, undefined inside an array) used to make this hard append
+        // throw: the outer catch denied GUARD_INTERNAL_ERROR — a human's
+        // APPROVAL converted into a deny — and the one row missing from the
+        // trail was the human's actual decision. Same inspector the intent
+        // goes through; the append stays HARD (an approval that cannot be
+        // recorded even in sanitized form must still not be acted on), and
+        // the DECISION below reads the raw response.approved, which the
+        // sanitized copy preserves verbatim when it is a boolean.
+        const responseShape = inspectIntentShape(response);
+        await this.ledger.append(
+          "approval_resolved",
+          responseShape.totalProblems === 0
+            ? { response }
+            : {
+                response: responseShape.sanitized,
+                responseSanitized: true,
+                problemsTotal: responseShape.totalProblems,
+              },
+          refs,
+        );
         if (!response.approved) {
           return { status: "approval_rejected", intentId: safe.id, policyResult: prelimStance };
         }
@@ -1611,7 +1690,11 @@ export class VadunoGuard {
   ): Promise<GuardResult<T>> {
     const policyResult = internalDeny(this.policy, code, message);
     await this.appendBestEffort("policy_decision", { policyResult }, refs);
-    return { status: "denied", intentId: intent.id, policyResult };
+    // refs.intentId, never intent.id: past the identity type gate the two are
+    // identical, but THIS method also serves the gate itself (and the outer
+    // GUARD_INTERNAL_ERROR catch), where intent.id may be the non-string the
+    // gate is refusing — GuardResult.intentId honors its declared type.
+    return { status: "denied", intentId: refs.intentId, policyResult };
   }
 
   private async settleBestEffort(
@@ -1757,6 +1840,49 @@ function withExtraReason(
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * The string form of an intent id / agentId used as a ledger REF (the
+ * top-level index `trailFor()` reads). Strings ride verbatim. Non-string
+ * values get a TYPE-TAGGED, bounded rendering — "(number 42)", "(bigint
+ * 111)", "(null)" — because the previous constant "(unknown)" sentinel
+ * merged every distinct non-string id into ONE index: two denied attempts
+ * with ids 111n and 222n shared a single trail, and their policy_decision
+ * rows became unattributable under concurrency. Injective for primitives up
+ * to the clamp; structured values collapse to "(object)" — acceptable
+ * because nothing legitimate uses an object as an id, and the full value
+ * still rides (sanitized) inside data.intent. Never throws.
+ */
+function refString(v: unknown): string {
+  if (typeof v === "string") return v;
+  if (v === null) return "(null)";
+  if (v === undefined) return "(undefined)";
+  const t = typeof v;
+  if (t === "number" || t === "boolean" || t === "bigint") {
+    const s = String(v);
+    return `(${t} ${s.length > 120 ? `${s.slice(0, 120)}…` : s})`;
+  }
+  if (v instanceof Date) {
+    const ms = v.getTime();
+    return `(date ${Number.isNaN(ms) ? "invalid" : v.toISOString()})`;
+  }
+  return t === "object" ? "(object)" : `(${t})`;
+}
+
+/**
+ * A string the ledger can ALWAYS record for a caller-supplied error value.
+ * The declared type is `string`, but settle() takes hostile-adjacent input
+ * at a trust boundary (the caller self-reports an outcome), and an
+ * unrecordable error value used to cost the execution_result row itself —
+ * the settlement of a REAL authorization went unrecorded. Never throws.
+ */
+function recordableErrorString(v: unknown): string {
+  if (typeof v === "string") return v;
+  if (v instanceof Error && typeof v.message === "string") {
+    return `(non-string error: ${v.message})`;
+  }
+  return `(non-string error: ${refString(v)})`;
 }
 
 /**

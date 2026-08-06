@@ -59,8 +59,16 @@ import { createHash } from "node:crypto";
  * attacker-shaped deeply-nested value becomes a fail-closed error at the
  * callers rather than an uncaught RangeError. Legitimate payment metadata never
  * approaches this.
+ *
+ * EXPORTED because the limit is measured from the root canonicalJson is
+ * HANDED — for a ledger entry that root is the ENTRY, not the intent nested
+ * inside it. intent-shape.ts derives its own (smaller) intent-depth limit
+ * from this constant; a private copy over there once "mirrored" this value
+ * from the wrong root, and well-formed intents deep enough to clear the
+ * walker but not the entry died inside entryHash() with zero rows written.
  */
-const MAX_DEPTH = 256;
+export const CANONICAL_MAX_DEPTH = 256;
+const MAX_DEPTH = CANONICAL_MAX_DEPTH;
 
 export class CanonicalizeError extends Error {
   constructor(message: string) {

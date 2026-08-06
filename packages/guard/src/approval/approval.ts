@@ -167,11 +167,21 @@ export class MemoryApprovalStore implements ApprovalStore {
   }
 
   async resolve(intentId: string, response: ApprovalResponse): Promise<void> {
-    const fp = this.pending.get(intentId)?.fingerprint;
+    // Same preconditions FileApprovalStore documents — surfaced by the shared
+    // conformance suite, which this class previously FAILED on both counts:
+    // only decide something currently pending (no decision can be planted for
+    // an id no human was shown), and never overwrite an existing decision (a
+    // late timeout must not clobber a human's call). Memory is the reference
+    // implementation; it has to hold itself to the semantics it references.
+    if (this.decisions.has(intentId)) return;
+    const pending = this.pending.get(intentId);
+    if (!pending) return;
     this.decisions.set(intentId, {
       ...response,
       decidedAt: this.now().toISOString(),
-      ...(fp !== undefined ? { fingerprint: fp } : {}),
+      ...(pending.fingerprint !== undefined
+        ? { fingerprint: pending.fingerprint }
+        : {}),
     });
     this.pending.delete(intentId);
   }

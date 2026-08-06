@@ -157,6 +157,38 @@ describe("chain-blind x402 deployments are refused by default", () => {
     expect(server.paidCalls()).toBe(1);
   });
 
+  it("a block list ALONE does not satisfy the gate: networks.block is a subtraction from an unbounded set", async () => {
+    // Measured before the fix: `networks: { block: [] }` and
+    // `networks: { block: ["solana:x"] }` both PAID on base-sepolia — the gate
+    // accepted the mere presence of a `networks` key as proof of constraint,
+    // but a blocklist admits every chain it does not name. Only an ALLOW list
+    // (or the assets registry) positively constrains the chain.
+    for (const block of [[], ["solana:x"]]) {
+      const server = mockServer({ network: "base-sepolia" });
+      const { guard } = makeGuard({ networks: { block } });
+      const pay = vi.fn(async () => "payload");
+      const x402 = createX402Fetch({ guard, agentId: "a", pay, fetch: server.fetch });
+
+      const err = await x402("https://api.example.com/data").catch((e) => e);
+      expect(err).toBeInstanceOf(X402RequirementRefusedError);
+      expect((err as X402RequirementRefusedError).code).toBe("NETWORK_UNGATED");
+      expect(pay).not.toHaveBeenCalled();
+      expect(server.paidCalls()).toBe(0);
+    }
+  });
+
+  it("a block list BESIDE an allow list still gates (and still denies its entries)", async () => {
+    const server = mockServer({ network: "base-sepolia" });
+    const { guard } = makeGuard({
+      networks: { allow: ["base-sepolia"], block: ["eip155:1"] },
+    });
+    const pay = vi.fn(async () => "payload");
+    const x402 = createX402Fetch({ guard, agentId: "a", pay, fetch: server.fetch });
+    const res = await x402("https://api.example.com/data");
+    expect(res.status).toBe(200);
+    expect(server.paidCalls()).toBe(1);
+  });
+
   it("the gate re-checks the LIVE policy: setPolicy() dropping networks re-closes payment (network)", async () => {
     const server = mockServer();
     const { guard } = makeGuard({ networks: { allow: ["base-sepolia"] } });

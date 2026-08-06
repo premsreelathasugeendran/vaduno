@@ -167,8 +167,14 @@ policy: {
   of every deployment written before the field existed — but it means **a policy
   without `networks` is chain-blind**. If you settle on chains, set it.
 - `@vaduno/x402` populates `intent.network` for you: the x402 network name in
-  v1 (`"base-sepolia"`), the CAIP-2 id in v2 (`"eip155:84532"`). Separate key
-  spaces, exactly like the `assets` registry — match the version you speak.
+  v1 (`"base-sepolia"`), the CAIP-2 id in v2 (`"eip155:84532"`). For the EVM
+  chains the x402 registry defines, `policy.networks` treats the two spellings
+  as **one chain** (a curated name → CAIP-2 alias table): `block:
+  ["eip155:84532"]` blocks `"base-sepolia"` and vice versa, so a counterparty
+  cannot pick whichever spelling your blocklist did not name. Non-EVM names
+  (`"solana"`) are **not** aliased — name both spellings if you constrain
+  them. The `assets` registry is different: its keys stay separate by design —
+  author v1 and v2 entries explicitly.
 
 ## Deterministic risk scorecard: tiers, step-up routing, auto-freeze
 

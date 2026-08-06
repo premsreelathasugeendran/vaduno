@@ -26,7 +26,7 @@ real viem account (closure-only; never a property)
 
 ## What it is
 
-A ~1200-line viem-compatible account whose only working capability is a
+A ~1400-line viem-compatible account whose only working capability is a
 policy-gated `signTypedData`. Every payment authorization an x402 client can
 produce — EIP-3009, Permit2, v1 and v2 — terminates in that one method, so
 policy runs before any signature exists, and a denial means no signature exists
@@ -46,7 +46,7 @@ node examples/guarded-signer/pay.mjs
 key and an in-memory ledger):
 
 ```
-node examples/guarded-signer/regress-defects.mjs      # 33 checks
+node examples/guarded-signer/regress-defects.mjs      # 37 checks
 ```
 
 Every check in it was observed FAILING against the unfixed wrapper before the
@@ -141,11 +141,47 @@ is a plain object; the EIP-712 digest covers only the fields listed in
 name while `types` omits `to` yields a signature over a struct with **no
 recipient**, while the guard is told the payee is an allowlisted seller and the
 ledger certifies it. The wrapper now checks that the type declaration commits to
-every field it relies on — and one level up, that an explicit
-`types.EIP712Domain` still commits to `chainId` (the policed network) and
-`verifyingContract` (the asset, hence the **decimals**). Narrowing the domain
-was a walk-around of the decimals fix: the same signature valid at a 2-decimal
-dollar token is worth $100.00 while the guard counts $0.01.
+every field it relies on — and one level up, that the domain still commits to
+`chainId` (the policed network) and `verifyingContract` (the asset, hence the
+**decimals**). Narrowing the domain was a walk-around of the decimals fix: the
+same signature valid at a 2-decimal dollar token is worth $100.00 while the
+guard counts $0.01.
+
+That domain check used to run **only** when the caller declared
+`types.EIP712Domain` explicitly. The premise behind the exemption — "viem infers
+the domain type from whichever fields are *present*, so presence is commitment"
+— is false, and it made this file violate the very principle it exists to state.
+`getTypesForEIP712Domain()` includes `chainId` only when
+`typeof domain.chainId` is `"number"` or `"bigint"`, while the wrapper's
+`asChainId` deliberately accepts decimal **strings**. So
+`domain.chainId: "84532"` was present, was read, was policed as
+`network: eip155:84532`, selected the `(chainId, asset)` registry row that
+supplies the decimals — and was not in the signed bytes at all. Measured:
+`digest(chainId="84532") === digest(chainId="1")`, and one signature recovers to
+the signer under every chain framing, so the same bytes are valid on a chain
+whose registry row calls the token 2-decimal. The decimals defect walking around
+again, through the inferred path this time.
+
+The wrapper's own evidence proved it and nothing consulted it: the ledger row
+recorded `committed.domain = [name, version, verifyingContract]` while
+`intent.network` said `eip155:84532`. The gate now reads **that same
+derivation** — `committedFieldSet(typed).domain` — on both paths, which makes
+the recorded evidence load-bearing rather than decorative and covers the
+explicit and inferred cases with one check. Hardening `asChainId` to reject
+strings would be defence in depth, not this fix, and is deliberately not done:
+it would turn a precise `TYPED_DATA_NOT_COMMITTED` into a generic
+`UNRECOGNIZED_TYPED_DATA` and send the operator hunting an unsupported payment
+shape instead of an uncommitted field.
+
+**Honest reachability:** the pristine shipped `@x402/evm` path does *not* trigger
+this — `getEvmChainId()` does `parseInt()` and yields a number, so an ordinary
+SDK-built request is unaffected and still signs. It fires for a caller handing
+the wrapper a JSON-sourced or hand-built request, which is exactly the
+untrusted-input threat model the snapshot and these commitment checks exist for.
+The `networks.allow` gate itself was never broken by this: a decimal-string
+`chainId` naming a forbidden chain was still refused `NETWORK_NOT_ALLOWED`. What
+was broken is the premise underneath it — the gated chain was unsigned, so the
+same bytes were valid on every chain.
 
 **Amounts are scaled from token atomic units into the policy currency's minor
 units.** The registry's `decimals` is *used*, not just recorded:
@@ -200,6 +236,20 @@ reference would silently omit a struct, which is the defect being fixed. That
 refusal is its own code because the digest in that case is perfectly
 computable; reporting it as `DIGEST_UNCOMPUTABLE` would be a false diagnosis in
 a file whose whole subject is refusals that point at the wrong cause.
+
+**The walker itself used to do exactly what its sibling refuses to do.** Its
+depth guard was `if (depth > 32 || Object.hasOwn(struct, name)) return` — a
+*silent* drop. With 40 distinct nested structs viem hashes all 40 (every one is
+in the typehash string) while `committed.struct` recorded 33 and said nothing
+about the other 8; at 64 and at 300 it recorded the same 33, so there was no
+upper bound and no marker. An evidence record that silently omits part of what
+was signed is worse than one that refuses to be computed, because the omission
+is indistinguishable from the struct not existing. The guard now **throws**, and
+the caller turns it into the same audited `COMMITMENT_RECORD_UNCOMPUTABLE`
+refusal its sibling produces. The already-visited test runs *first*, so a
+self-referential or mutually recursive declaration still terminates there and
+keeps its own (correct, different) diagnosis: viem cannot hash those at all, and
+they are refused `DIGEST_UNCOMPUTABLE` before the record is ever attempted.
 
 **Idempotency comes from the EIP-712 digest.** The intent id is
 `sig:` + `hashTypedData(request)` — a function of every byte that will be
@@ -331,6 +381,16 @@ carrying any function-valued property, or wrapped in a `Proxy`, is refused
 limit rather than a hole — but a Proxy is not exotic (instrumentation wrappers,
 reactive stores, test doubles), and this wrapper's whole purpose is to sit under
 someone else's SDK.
+
+**The evidence record's depth ceiling refuses shapes viem would sign.** A chain
+of more than 32 distinct nested struct references, or a type name with more than
+32 array levels, is refused `COMMITMENT_RECORD_UNCOMPUTABLE` even though
+`hashTypedData` handles it. This is a deliberate availability limit rather than
+a hole — the alternative measured here was recording a partial set with no
+marker, and the alternative measured for the array case was killing the process
+that writes the ledger — but no real payment shape comes near 32, so a
+counterparty that hits it is telling you something. The ceiling is a constant in
+the file, not a policy input.
 
 **The auth-capture escape hatch covers one of the two shipped flavours.**
 `resolveAuthCapture` rescues the EIP-3009 flavour. The permit2 flavour

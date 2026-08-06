@@ -58,12 +58,28 @@ export interface PaymentIntent {
    * chain in `metadata` did not help — no policy rule reads metadata. Only a
    * field the policy engine can see is a control.
    *
-   * FORMAT: an opaque identifier compared case-insensitively after trimming.
-   * CAIP-2 (`eip155:84532`, `solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1`) is the
-   * recommended form for chains; non-chain rails may use any stable string
-   * (`"stripe-live"`, `"upi"`). No wildcard or namespace-prefix matching is
-   * performed — `eip155` does NOT stand for every EVM chain, because implicit
-   * breadth is what made the original hole.
+   * FORMAT: compared case-insensitively after trimming, and — when the id
+   * contains a ":" — parsed STRUCTURALLY as a CAIP-2 chain id (`eip155:84532`,
+   * `solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1`) whose eip155 reference is
+   * canonicalized numerically: the id arrives from an untrusted counterparty,
+   * and `eip155:084532` must not read as a chain distinct from `eip155:84532`
+   * or a blocklist becomes spellable-around. A colon-bearing id that does not
+   * parse as CAIP-2 is DENIED under a network policy (NETWORK_UNPARSEABLE),
+   * never passed through. Non-chain rails may use any stable colon-free
+   * string (`"stripe-live"`, `"upi"`), compared as trim+lowercase. No
+   * wildcard or namespace-prefix matching is performed — `eip155` does NOT
+   * stand for every EVM chain, because implicit breadth is what made the
+   * original hole.
+   *
+   * ALIASING, curated and EVM-only: the x402 registry's v1 chain names
+   * (`"base-sepolia"`) and their CAIP-2 ids (`"eip155:84532"`) are the SAME
+   * chain on the wire — one adapter speaks both protocol versions — so both
+   * spellings canonicalize to one comparison key, or a blocklist naming one
+   * spelling is spelled around with the other (measured, money moved).
+   * Non-EVM v1 names (`"solana"`, `"solana-devnet"`) are NOT aliased: their
+   * CAIP-2 references are genesis-hash prefixes the curated table will not
+   * vouch for, so a policy constraining a non-EVM chain must name both
+   * spellings itself.
    *
    * OPTIONAL, and its absence is only meaningful relative to the policy: a
    * policy with no `networks` block imposes no network constraint at all
@@ -160,18 +176,28 @@ export interface SpendPolicy {
    * upgrade. But WHERE THE NETWORK IS ALWAYS KNOWN the safe configuration is
    * enforced: the @vaduno/x402 adapter — whose every requirement names its
    * settlement network, committed to by the EIP-712 domain the payer signs —
-   * REFUSES a deployment in which nothing constrains the chain (no trusted
-   * asset registry, no `networks` block here) unless the operator passes an
-   * explicit `allowChainBlind: true`. So a policy without `networks` is
-   * chain-blind by construction only on rails where chain-blindness can be a
-   * coherent choice, and never silently on x402. The moment a policy DOES
-   * declare a network constraint, the fail-closed rules apply in full:
-   * unknown network denied, unstated network denied, no wildcards.
+   * REFUSES a deployment in which nothing POSITIVELY constrains the chain (no
+   * trusted asset registry, no `allow` list here — a `block` list alone does
+   * not count, because every chain it does not name still passes) unless the
+   * operator passes an explicit `allowChainBlind: true`. So a policy without
+   * a `networks.allow` list is chain-blind by construction only on rails
+   * where chain-blindness can be a coherent choice, and never silently on
+   * x402. The moment a policy DOES declare a network constraint, the
+   * fail-closed rules apply in full: unknown network denied, unstated network
+   * denied, unparseable network denied, no wildcards — and an entry that
+   * cannot itself be canonicalized poisons the whole constraint
+   * (NETWORK_POLICY_INVALID), because a block entry that silently never
+   * matches is a hole the operator cannot see.
    */
   networks?: {
-    /** If present, `intent.network` must match one of these exactly (case-insensitive). */
+    /**
+     * If present, `intent.network` must match one of these (case-insensitive;
+     * CAIP-2 ids compared structurally, and curated EVM v1 names aliased to
+     * their CAIP-2 ids — see PaymentIntent.network for both rules and for
+     * the non-EVM limit: `"solana"` is NOT aliased, name both spellings).
+     */
     allow?: string[];
-    /** Always wins over allow. */
+    /** Always wins over allow. Same canonical comparison as `allow`. */
     block?: string[];
   };
   categories?: {

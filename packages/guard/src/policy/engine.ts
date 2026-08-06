@@ -136,20 +136,41 @@ export async function evaluatePolicy(
   const networkPolicy = policy.networks;
   if (networkPolicy && (networkPolicy.allow !== undefined || networkPolicy.block !== undefined)) {
     const configured = [...(networkPolicy.allow ?? []), ...(networkPolicy.block ?? [])];
-    const usable = configured.filter((n) => normNetwork(n) !== null);
-    if (configured.length > 0 && usable.length === 0) {
-      // Every entry is blank/non-string: the constraint cannot refuse
-      // anything, and a rule that enforces nothing must say so rather than
-      // read as "allowed" — the same stance windowConfigError takes.
+    const unusable = configured.filter((n) => normNetwork(n) === null);
+    if (unusable.length > 0) {
+      // ANY entry that cannot be canonicalized (blank, non-string, malformed
+      // CAIP-2 like a hex chain id) poisons the whole constraint. A block
+      // entry that silently never matches is a blocklist with a hole the
+      // operator cannot see; refuse loudly instead — the same stance
+      // windowConfigError takes on poisoned limits.
       reasons.push({
         code: "NETWORK_POLICY_INVALID",
         message:
-          "policy.networks lists no usable network identifier; refusing everything " +
-          "under this policy rather than enforcing nothing",
+          `policy.networks contains ${unusable.length} entr${unusable.length === 1 ? "y" : "ies"} ` +
+          `that cannot canonically identify a network ` +
+          `(${unusable.map((n) => JSON.stringify(n ?? null)).join(", ")}); refusing everything ` +
+          `under this policy rather than enforcing a constraint with holes`,
       });
     } else {
       const network = normNetwork(intent.network);
-      if (network === null) {
+      const rawNetwork =
+        typeof intent.network === "string" ? intent.network.trim() : "";
+      if (network === null && rawNetwork.length > 0) {
+        // The intent NAMED a network, but in a form that does not canonically
+        // identify one (malformed CAIP-2: hex chain id, internal whitespace,
+        // empty reference, extra colon). The id comes from an untrusted
+        // counterparty, and an unparseable spelling used to sail past a
+        // blocklist as "did not match, therefore not blocked" — refuse it
+        // instead, never pass it through.
+        reasons.push({
+          code: "NETWORK_UNPARSEABLE",
+          message:
+            `policy ${policy.id} constrains the settlement network but the intent's ` +
+            `network id ${JSON.stringify(intent.network)} does not parse as a canonical ` +
+            `chain id (CAIP-2) or a bare network name; refusing rather than passing an ` +
+            `id no list entry can match`,
+        });
+      } else if (network === null) {
         // Missing is a denial, never a skip — MERCHANT_KEY_MISSING's rule. An
         // intent that declines to say which chain it settles on, under a
         // policy that cares, is exactly the case this rule exists for.
@@ -478,16 +499,95 @@ function normalizeHost(host: string): string {
   return host.toLowerCase().replace(/\.$/, "");
 }
 
+/** CAIP-2 grammar, matched after case-folding: namespace ":" reference. */
+const CAIP2_RE = /^([a-z0-9-]{3,8}):([a-z0-9_-]{1,32})$/;
+
 /**
- * A network identifier reduced to its comparison form, or null when the value
- * cannot identify a network at all (absent, not a string, blank).
+ * Curated x402-v1-name -> CAIP-2 aliases: BOTH wire spellings of one chain
+ * must canonicalize to ONE comparison key.
  *
- * Trim + lowercase only. No wildcard expansion, no namespace prefixes: a
- * policy that says `eip155:84532` means that chain and no other, because the
- * hole this rule closes was caused by an implicit "any chain will do".
+ * THE HOLE THIS CLOSES. x402 v1 names the settlement network with a bare
+ * name ("base-sepolia"); x402 v2 names the SAME chain with a CAIP-2 id
+ * ("eip155:84532"). Treating the two families as disjoint key spaces meant
+ * `block: ["eip155:84532"]` did not block an intent whose network was
+ * "base-sepolia" — measured end to end: with an allow list carrying both
+ * spellings (the natural configuration, since one adapter speaks both
+ * protocol versions) and a block naming only one, a hostile 402 server
+ * answering in the OTHER spelling was PAID. The rationale that drove the
+ * structural CAIP-2 parse applies verbatim: a blocklist a counterparty can
+ * spell around is not a control.
+ *
+ * CURATED, NOT INFERRED — and EVM-only. Each entry is a chain identity fact
+ * (the x402 registry's v1 name and its numeric eip155 chain id); a wrong
+ * entry would forge an equivalence between two DIFFERENT chains, which is
+ * worse than the spell-around it prevents. Non-EVM v1 names ("solana",
+ * "solana-devnet") are deliberately NOT aliased here: their CAIP-2
+ * references are genesis-hash prefixes this table will not vouch for. A
+ * policy constraining a non-EVM chain must name BOTH spellings itself —
+ * stated in SpendPolicy.networks' docs, not silently absorbed.
+ *
+ * Null prototype: keys are compared against attacker-influenced network
+ * strings, and "constructor" must not alias to a function.
+ */
+const V1_NETWORK_ALIASES: Record<string, string> = Object.assign(
+  Object.create(null) as Record<string, string>,
+  {
+    "base": "eip155:8453",
+    "base-sepolia": "eip155:84532",
+    "avalanche": "eip155:43114",
+    "avalanche-fuji": "eip155:43113",
+    "polygon": "eip155:137",
+    "polygon-amoy": "eip155:80002",
+    "iotex": "eip155:4689",
+    "sei": "eip155:1329",
+    "sei-testnet": "eip155:1328",
+  },
+);
+
+/**
+ * A network identifier reduced to its CANONICAL comparison form, or null when
+ * the value cannot canonically identify a network (absent, not a string,
+ * blank, or a colon-bearing id that does not parse as CAIP-2).
+ *
+ * Two families, told apart by the presence of ":":
+ *
+ *  - BARE rail-native names ("base-sepolia", "stripe-live", "upi"): trimmed
+ *    and lowercased — and, when the name is a curated x402 v1 chain name,
+ *    canonicalized to its CAIP-2 id (V1_NETWORK_ALIASES) so the v1 and v2
+ *    wire spellings of one chain cannot be played against each other.
+ *
+ *  - CAIP-2 chain ids ("eip155:84532"): parsed STRUCTURALLY. The id arrives
+ *    in a 402 from an UNTRUSTED counterparty, and a comparison that is merely
+ *    textual lets that counterparty spell the same chain a way the blocklist
+ *    does not — "eip155:084532" for "eip155:84532" — and a block entry a
+ *    seller can spell around is not a control. So: exactly one colon,
+ *    namespace and reference must match the CAIP-2 shape, and an eip155
+ *    reference (a decimal chain id) is canonicalized numerically so leading
+ *    zeros cannot alias it. A colon-bearing id that does not parse (hex chain
+ *    id, internal whitespace, empty reference, extra colon) returns null and
+ *    is REFUSED by the engine, never passed through.
+ *
+ * Still no wildcard expansion and no namespace prefixes: a policy that says
+ * `eip155:84532` means that chain and no other, because the hole this rule
+ * closes was caused by an implicit "any chain will do".
  */
 function normNetwork(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const v = value.trim().toLowerCase();
-  return v.length > 0 ? v : null;
+  if (v.length === 0) return null;
+  // Bare rail-native name. A curated x402 v1 chain name canonicalizes to its
+  // CAIP-2 id so the two wire spellings of one chain are one comparison key
+  // (see V1_NETWORK_ALIASES); anything else keeps trim+lowercase semantics.
+  if (!v.includes(":")) return V1_NETWORK_ALIASES[v] ?? v;
+  const m = CAIP2_RE.exec(v);
+  if (m === null) return null;
+  const namespace = m[1]!;
+  const reference = m[2]!;
+  if (namespace === "eip155") {
+    // eip155 references are decimal chain ids; compare numerically so
+    // "084532" cannot pose as a chain distinct from "84532".
+    if (!/^[0-9]+$/.test(reference)) return null;
+    return `eip155:${BigInt(reference).toString(10)}`;
+  }
+  return `${namespace}:${reference}`;
 }

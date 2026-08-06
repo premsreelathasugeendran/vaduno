@@ -8,6 +8,102 @@ See [`SECURITY.md`](SECURITY.md) for what is and isn't guaranteed.
 
 ## 0.6.1 — unreleased
 
+### Fixed — two ways a refusal (or a valid payment) could still write ZERO ledger rows
+
+The 0.5.0 notes claimed a malformed intent leaves the "same two ledger rows any
+other deny leaves." That claim was overstated: two paths still ended in
+`AUDIT_WRITE_FAILED` with an empty ledger, and this round closes both. This is
+the third round of fixes for this class; what is different now is that the
+depth limit is *derived from the serializer's own constant* rather than
+mirrored by hand, and depth finally has test coverage.
+
+- **A hostile `intent.id` / `intent.agentId` erased the refusal's evidence.**
+  `inspectIntentShape` sanitizes what lands in the entry's `data` — but the
+  guard passed RAW `safe.id` / `safe.agentId` as append refs, which
+  `AuditLedger` writes as top-level entry fields, and `entryHash()`
+  canonicalizes the whole entry. So an intent whose *id* was a bigint, `NaN`,
+  or a `Date` made the very first append throw: `AUDIT_WRITE_FAILED`, zero
+  rows — the exact zero-evidence failure `intent-shape.ts` was written to
+  kill, resurrected one line below its fix (the non-cloneable path five lines
+  earlier already type-guarded correctly). Measured before the fix: repeated
+  refused attempts, 0 rows, every time. Refs are now sanitized before the
+  append; the hostile value itself is still recorded, sanitized, inside
+  `data.intent`, and the deny is `INTENT_NOT_SERIALIZABLE` with the usual two
+  rows. (The first cut of this fix indexed every non-string id as a constant
+  `"(unknown)"`, which a reattack showed merges DISTINCT hostile ids into one
+  trail — see the injective type-tagged index under "reattack findings"
+  below.)
+- **The intent-depth limit was measured from the wrong root — with NO upper
+  recovery bound.** The walker's private `MAX_DEPTH = 256` "mirrored"
+  `canonicalJson`'s, but canonicalJson serializes the LEDGER ENTRY, where the
+  intent sits at `entry.data.intent`, two levels deeper. A well-formed, fully
+  valid, about-to-execute payment nested 255–256 deep passed inspection with
+  zero problems and then threw inside `entryHash()`: `AUDIT_WRITE_FAILED`,
+  zero rows, no execution. Past 256 it got *worse*, not better: the
+  sanitization marker replaces an over-deep value at that value's own depth,
+  so the sanitized copy was itself unappendable — depth 263, 300, 1000 all
+  wrote zero rows too. The limit is now derived where it cannot drift:
+  `MAX_INTENT_DEPTH = CANONICAL_MAX_DEPTH − 2 (entry envelope) − 1 (marker
+  slot) = 253`, so the walker validates what the serializer will actually
+  see. Proven by test at depths 253 (executes, full trail on the ledger),
+  254, 255, 258, 263, 266, 300, 500 and 1000 (denied `INTENT_TOO_LARGE`, two
+  rows, chain verifies) — no upper bound. The honest trade: an intent at
+  exactly depth 254 used to execute and is now refused with evidence.
+- **Third file store, same prototype-key hole — and the reference store
+  diverged from its own documented semantics.** `FileApprovalStore` kept
+  `pending`/`decisions` on plain objects where both sibling file stores had
+  already moved to null-prototype records and documented why. The record is
+  keyed on caller-controlled `intentId`: `enqueue("__proto__")` was silently
+  dropped (`decisions["__proto__"]` reads `Object.prototype` — truthy — so
+  the item was "already decided" and no human was ever shown it), and
+  `getDecision("toString")` returned a *function* with no `.approved`, which
+  the queued handler records as "approval does not match this payment" — a
+  false audit row about a human decision that never existed. Fixed with the
+  same null-prototype pattern. The absence that let it hide is also fixed:
+  `ApprovalStore` now has the Memory-vs-File conformance suite the limiter
+  and consume store already had — and its first run caught a second bug:
+  `MemoryApprovalStore.resolve()` allowed planting a decision for a
+  never-enqueued id and allowed overwriting an existing decision, both of
+  which `FileApprovalStore`'s documented semantics forbid. Memory now
+  enforces the same preconditions (no plant, first decision wins). A sweep
+  for a fourth plain-object record keyed on caller strings found none: every
+  other keyed record in the workspace is a `Map`, null-prototype, or
+  fixed-key-validated.
+
+### Fixed — the chain gate accepted a blocklist as proof of constraint, and the blocklist itself could be spelled around
+
+Both reproduced against the current code before the fix. No money was at risk
+in either — but the chain constraint they were supposed to supply was not real.
+
+- **x402: a `networks.block` list alone no longer satisfies the chain gate.**
+  `assertChainGated` accepted the mere presence of a `networks` key — allow OR
+  block — as proof the deployment was chain-constrained. A blocklist is a
+  subtraction from an unbounded set: every chain it does not name passes, so it
+  supplies no positive constraint at all. Measured before the fix: with no
+  `policy.networks` the gate correctly refused `NETWORK_UNGATED`, but with
+  `networks: { block: [] }` — and with `block: ["solana:x"]` — the identical
+  request **paid on base-sepolia, 200 OK**, precisely the chain-blind hole the
+  gate's own docblock claimed to close. The gate now requires a positive
+  constraint: a trusted `assets` registry, a `policy.networks.allow` list, or
+  the explicit `allowChainBlind: true`. A block list still applies on top of an
+  allow list, where a match can only tighten.
+- **guard: network ids are canonicalized structurally, so a hostile seller
+  cannot respell a blocked chain.** Comparison was trim + lowercase text, and
+  the network id arrives in a 402 from an untrusted counterparty — so
+  `eip155:084532` (leading zero) evaded a `block: ["eip155:84532"]` entry, as
+  did hex, whitespace, and extra-colon spellings; the allow side was already
+  fail-closed for the same variants, which made the block list the weak one.
+  A block entry a counterparty can spell around is not a control. CAIP-2-shaped
+  ids (anything with a `:`) are now parsed structurally — namespace plus
+  reference, the `eip155` reference canonicalized numerically — a colon-bearing
+  id that does not parse is denied with the new `NETWORK_UNPARSEABLE` code
+  rather than passed through, and a policy entry that cannot itself be
+  canonicalized poisons the whole constraint (`NETWORK_POLICY_INVALID`, now
+  triggered by ANY unusable entry, not only when every entry is unusable),
+  because a block entry that silently never matches is a hole the operator
+  cannot see. Bare colon-free names (`"base-sepolia"`, `"stripe-live"`) keep
+  their trim+lowercase semantics.
+
 ### Fixed — a mandated payment could execute on a spend reservation it never took
 
 Found by a fresh sweep of the areas prior rounds had not looked at, reproduced
@@ -218,6 +314,81 @@ library code, not in the prototype.
   Residual, documented not hidden: a holder whose *event loop* is blocked
   cannot heartbeat, so a synchronous stall past `staleMs` plus the confirmation
   window is still reclaimable; that process cannot make progress anyway.
+
+### Fixed — what the reattack on this release's own fixes found
+
+Every fix above was independently re-attacked before release. The reattack
+confirmed the original defects closed — and surfaced the following, each
+reproduced against the fixed tree, then fixed with the reproduction as a test.
+
+- **The blocklist could still be spelled around — with the OTHER wire spelling
+  of the same chain.** x402 v1 names the settlement network `"base-sepolia"`;
+  x402 v2 names the same chain `"eip155:84532"`. `normNetwork` treated bare
+  names and CAIP-2 ids as disjoint key spaces, so `block: ["eip155:84532"]`
+  did not block an intent whose network was `"base-sepolia"` — and one adapter
+  speaks both protocol versions, so an allow list naturally carries both
+  spellings. Measured end to end: with both spellings allowed and one blocked,
+  a hostile 402 server answering in the other spelling was **paid, 200 OK**
+  (money moved on testnet; the mirror direction too). A curated v1-name →
+  CAIP-2 alias table (the EVM networks the x402 registry defines: base,
+  base-sepolia, avalanche, avalanche-fuji, polygon, polygon-amoy, iotex, sei,
+  sei-testnet) now canonicalizes both spellings to one comparison key — on the
+  intent, the allow list and the block list alike. **Behaviour change, both
+  directions of the same unification:** `block: ["eip155:84532"]` now blocks
+  `"base-sepolia"` (tightening), and `allow: ["base-sepolia"]` now admits
+  `"eip155:84532"` (the same chain it always claimed to admit). **Documented
+  limit:** non-EVM v1 names (`"solana"`, `"solana-devnet"`) are NOT aliased —
+  their CAIP-2 references are genesis-hash prefixes this table will not vouch
+  for — so a policy constraining a non-EVM chain must name both spellings
+  itself.
+- **A canonicalizable non-string `intent.id` executed — and the first cut of
+  the refs fix let distinct hostile ids collide.** An id of `42`, `null` or
+  `true` passed shape inspection (the values are recordable) and EXECUTED,
+  with `GuardResult.intentId` returning the raw non-string at runtime despite
+  its declared `string` type — one payment with three identities. And the
+  constant `"(unknown)"` index merged every distinct non-string id into ONE
+  trail (denied attempts with ids `111n` and `222n` shared a single index),
+  making rows unattributable under concurrency — evidence loss, not the "no
+  evidence loss" the first report claimed. Two changes: non-string
+  `intent.id` / `intent.agentId` are now **denied `INTENT_ID_NOT_STRING`**
+  with the usual two rows, before any budget or mandate use; and the ledger
+  index for a non-string id is an injective type-tagged rendering —
+  `"(number 42)"`, `"(bigint 111)"` — so distinct attempts stay distinct.
+  `GuardResult.intentId` now equals that index on every path. **Behaviour
+  change:** intents whose id/agentId is not a string used to execute (against
+  the declared types) and are now refused with evidence.
+- **`settle()` lost its `execution_result` row on a hostile outcome value.**
+  `guard.settle(id, { status: "failed", error: 10n })` made the best-effort
+  append throw inside `canonicalJson`: the settlement of a REAL authorization
+  went unrecorded — three rows instead of four, `auditDegraded` flagged. The
+  outcome's `error` (and the id ref) are now sanitized before any evidence
+  write; a non-string error is recorded as a bounded tagged rendering and the
+  fourth row always lands.
+- **A hostile approval-handler response converted a human APPROVAL into a
+  deny — and lost the `approval_resolved` row.** With step-up triggered and a
+  handler returning `{ approved: true, note: 10n }`, the hard
+  `approval_resolved` append threw, the outer catch denied
+  `GUARD_INTERNAL_ERROR`, and the one row missing was the human's actual
+  decision. The response now goes through the same inspector the intent does:
+  recorded sanitized (`responseSanitized: true`), the decision honored, the
+  append still hard.
+- **A malformed `assets` registry entry crashed the payer instead of naming
+  the configuration error.** Writing `address:` where `asset:` belongs
+  surfaced as a raw `TypeError: Cannot read properties of undefined (reading
+  'toLowerCase')` mid-payment. `createX402Fetch` now validates every entry at
+  wrap time and refuses by name (`assets[i] is not a usable AssetInfo …`),
+  before any request is in flight.
+
+**Known limits, stated rather than hidden:** (1) an intent nested past
+structuredClone's own recursion tolerance (~1,000+ wrappers) falls to the
+non-cloneable path — denied `INTENT_NOT_SERIALIZABLE` with ONE best-effort
+row (no `intent_received`), never zero, but thinner than the two-row contract
+every other deny meets; (2) an OBJECT-typed id collapses to the `"(object)"`
+index (nothing legitimate uses one, and the full value still rides sanitized
+in `data.intent`); (3) the x402 `assets` registry keeps v1 names and CAIP-2
+ids as separate keys by documented design — the alias unification applies to
+`policy.networks`, and an assets entry gates exactly the wire spelling it
+names, refusing unlisted ones.
 
 ## 0.6.0 — 2026-08-05
 

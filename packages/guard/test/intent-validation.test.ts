@@ -155,6 +155,95 @@ describe("intent validation is audited, never an audit-write failure", () => {
     ]);
   });
 
+  /**
+   * THE REGRESSION intent-shape.ts EXISTED TO KILL, resurfaced through the
+   * ENTRY REFS. inspectIntentShape sanitizes what lands in `data` — but the
+   * guard also passed RAW `safe.id` / `safe.agentId` as append refs, which
+   * AuditLedger places as TOP-LEVEL entry fields, and entryHash()
+   * canonicalizes the WHOLE entry. So a canonicalJson-hostile value in
+   * intent.id or intent.agentId made the FIRST append throw:
+   * AUDIT_WRITE_FAILED, zero ledger rows — while the sanitized intent copy
+   * sat unused in the entry that never got written. Measured before the fix:
+   * 500 refused attempts, 0 rows.
+   */
+  // The expected index is TYPE-TAGGED and injective per value (a constant
+  // "(unknown)" sentinel merged distinct hostile ids into one trail — see
+  // intent-id-refs.test.ts).
+  const hostileRefValues: Array<[string, unknown, string]> = [
+    ["a bigint", 10n, "(bigint 10)"],
+    ["NaN", Number.NaN, "(number NaN)"],
+    ["Infinity", Number.POSITIVE_INFINITY, "(number Infinity)"],
+    // structuredClone preserves it; canonicalJson refuses it
+    ["a Date", new Date(0), "(date 1970-01-01T00:00:00.000Z)"],
+  ];
+
+  for (const [label, value, taggedRef] of hostileRefValues) {
+    it(`denies and AUDITS an intent whose id is ${label} — two rows, never zero`, async () => {
+      const { guard, ledger } = setup();
+      const result = await guard.execute(
+        makeIntent({ id: value as unknown as string }),
+        never,
+      );
+      expect(result.status).toBe("denied");
+      const codes = result.policyResult.reasons.map((r) => r.code);
+      expect(codes).toContain("INTENT_NOT_SERIALIZABLE");
+      expect(codes).not.toContain("AUDIT_WRITE_FAILED");
+
+      const entries = await ledger.all();
+      expect(entries.map((e) => e.type)).toEqual([
+        "intent_received",
+        "policy_decision",
+      ]);
+      // The non-string id cannot ride the entry as an index; the honest
+      // index for it is a bounded type-tagged rendering — injective, so
+      // distinct hostile ids cannot deliberately collide into one trail.
+      expect(entries[0]!.intentId).toBe(taggedRef);
+      expect((await ledger.verify()).ok).toBe(true);
+    });
+
+    it(`denies and AUDITS an intent whose agentId is ${label} — two rows, never zero`, async () => {
+      const { guard, ledger } = setup();
+      const result = await guard.execute(
+        makeIntent({ agentId: value as unknown as string }),
+        never,
+      );
+      expect(result.status).toBe("denied");
+      expect(result.policyResult.reasons.map((r) => r.code)).toContain(
+        "INTENT_NOT_SERIALIZABLE",
+      );
+      const entries = await ledger.all();
+      expect(entries.map((e) => e.type)).toEqual([
+        "intent_received",
+        "policy_decision",
+      ]);
+      expect(entries[0]!.agentId).toBe(taggedRef);
+      expect((await ledger.verify()).ok).toBe(true);
+    });
+  }
+
+  it("hostile-id refusals keep accumulating evidence — N attempts leave 2N rows, not zero", async () => {
+    const { guard, ledger } = setup();
+    for (let i = 0; i < 5; i += 1) {
+      await guard.execute(makeIntent({ id: 10n as unknown as string }), never);
+    }
+    expect((await ledger.all()).length).toBe(10);
+    expect((await ledger.verify()).ok).toBe(true);
+  });
+
+  it("a string id — even a prototype-named one — still rides the entry refs verbatim", async () => {
+    const { guard, ledger } = setup();
+    await guard.execute(
+      makeIntent({
+        id: "__proto__",
+        amount: { amountMinor: 999_999_999, currency: "USD" },
+      }),
+      never,
+    );
+    const entries = await ledger.all();
+    expect(entries[0]!.intentId).toBe("__proto__");
+    expect((await ledger.trailFor("__proto__")).length).toBe(2);
+  });
+
   it("the recorded intent_received is readable and names the problem", async () => {
     const { guard, ledger } = setup();
     await guard.execute(

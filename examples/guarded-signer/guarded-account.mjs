@@ -299,29 +299,101 @@ function missingCommitment(types, structName, required) {
 /**
  * The EIP-712 DOMAIN has the same problem, one level up.
  *
- * viem infers EIP712Domain from whichever domain fields are present when the
- * caller does NOT declare it — in that case every present field is committed
- * and there is nothing to check. But an EXPLICIT `types.EIP712Domain` narrows
- * what the digest covers, and the wrapper reads `domain.chainId` (the policed
- * network) and `domain.verifyingContract` (the asset, hence the DECIMALS) from
- * it. Narrowed away, the same signature is valid at a different token: measured
- * at digest(verifyingContract=USDC) === digest(verifyingContract=2-decimal
- * token), i.e. the guard counts $0.01 for bytes worth $100.00 — the decimals
- * fix walked around rather than defeated.
+ * An EXPLICIT `types.EIP712Domain` narrows what the digest covers, and the
+ * wrapper reads `domain.chainId` (the policed network) and
+ * `domain.verifyingContract` (the asset, hence the DECIMALS) from it. Narrowed
+ * away, the same signature is valid at a different token: measured at
+ * digest(verifyingContract=USDC) === digest(verifyingContract=2-decimal token),
+ * i.e. the guard counts $0.01 for bytes worth $100.00 — the decimals fix walked
+ * around rather than defeated.
+ *
+ * THIS FUNCTION USED TO SHORT-CIRCUIT on the INFERRED path — `if
+ * (!Array.isArray(types?.EIP712Domain)) return null`, on the belief that when
+ * the caller does not declare the domain type, viem infers it from whichever
+ * domain fields are PRESENT, so presence == commitment. That belief is false,
+ * and it made this file violate the exact principle it exists to state.
+ *
+ * `getTypesForEIP712Domain()` includes `chainId` only when `typeof
+ * domain.chainId` is "number" or "bigint". `asChainId` deliberately accepts
+ * decimal STRINGS, so `domain.chainId: "84532"` is present, is read, is policed
+ * as `network: eip155:84532`, selects the (chainId, asset) registry row that
+ * supplies the DECIMALS — and is NOT IN THE SIGNED BYTES AT ALL. Measured:
+ * digest(chainId="84532") === digest(chainId="1"), and one signature recovers
+ * to the signer under every chain framing. The same bytes are then valid on a
+ * chain where the registry itself calls the token 2-decimal, making a policed
+ * $0.01 into a real $100.00 — the decimals defect walking around again, through
+ * the inferred-domain path this time. (`verifyingContract` has the same shape of
+ * exposure: viem's inference tests it for TRUTHINESS, not for being an address.)
+ *
+ * The wrapper's own evidence proved it and nothing consulted it: the ledger row
+ * recorded `committed.domain = [name, version, verifyingContract]` while
+ * `intent.network` said `eip155:84532`.
+ *
+ * So the check now runs on BOTH paths, against `committedFieldSet(typed).domain`
+ * — the same derivation the record uses, which is viem's own inference on the
+ * inferred path. That makes the RECORDED evidence load-bearing rather than
+ * decorative: if the row would say a field is not covered, the request is
+ * refused instead of signed.
+ *
+ * Hardening `asChainId` to reject decimal strings would be defence in depth, not
+ * this fix, and it is deliberately NOT done: it would turn a precise
+ * TYPED_DATA_NOT_COMMITTED into the generic UNRECOGNIZED_TYPED_DATA and send the
+ * operator looking for an unsupported payment shape instead of an uncommitted
+ * field. Same verdict, worse diagnosis — the failure mode this file keeps
+ * fixing.
+ *
+ * REACHABILITY, honestly: the pristine shipped `@x402/evm` path does NOT trigger
+ * this, because `getEvmChainId()` returns a `parseInt()` number. It fires for a
+ * caller handing the wrapper a JSON-sourced or hand-built request — which is
+ * exactly the untrusted-input threat model the snapshot and this whole family of
+ * checks exist for.
  */
-function missingDomainCommitment(types, needed) {
-  if (!Array.isArray(types?.EIP712Domain)) return null; // inferred: all present fields committed
+function missingDomainCommitment(typed, needed) {
+  let declared;
+  try {
+    declared = committedDomainFields(typed);
+  } catch (err) {
+    return (
+      "the EIP-712 domain type could not be derived, so which domain fields the signature " +
+      `commits to is unknown (${err instanceof Error ? err.message : String(err)})`
+    );
+  }
+  const explicit = Array.isArray(typed?.types?.EIP712Domain);
   for (const [name, type] of needed) {
-    const field = types.EIP712Domain.find((f) => f && f.name === name);
+    const field = declared.find((f) => f && String(f.name) === name);
     if (!field) {
-      return `types.EIP712Domain omits "${name}", so the signature does not commit to it ` +
-        "(the same bytes would be valid with a different one)";
+      return explicit
+        ? `types.EIP712Domain omits "${name}", so the signature does not commit to it ` +
+            "(the same bytes would be valid with a different one)"
+        : `domain.${name} is present and is policed, but viem's INFERRED EIP712Domain does not ` +
+            `include it for a value of type "${typeof typed?.domain?.[name]}", so the signature ` +
+            "does not commit to it (the same bytes would be valid with a different one). " +
+            (name === "chainId"
+              ? "Pass chainId as a number or a bigint, or declare types.EIP712Domain explicitly."
+              : "Declare types.EIP712Domain explicitly.");
     }
     if (String(field.type) !== type) {
       return `types.EIP712Domain.${name} is declared "${field.type}", expected "${type}"`;
     }
   }
   return null;
+}
+
+/**
+ * Which DOMAIN fields the digest covers — the single derivation used by both
+ * the commitment gate above and the `committed` evidence record below.
+ *
+ * On the inferred path it is viem's own `getTypesForEIP712Domain`, because that
+ * is precisely the inference `hashTypedData` just used; reimplementing it would
+ * be a second opinion about the bytes, and a second opinion is exactly what this
+ * file exists to eliminate. Sharing it with the gate is what stops the record
+ * and the decision from ever disagreeing.
+ */
+function committedDomainFields(typed) {
+  const types = typed?.types ?? {};
+  return Array.isArray(types.EIP712Domain)
+    ? types.EIP712Domain.map((f) => ({ name: String(f?.name), type: String(f?.type) }))
+    : getTypesForEIP712Domain({ domain: typed?.domain ?? {} });
 }
 
 /**
@@ -350,13 +422,33 @@ function missingDomainCommitment(types, needed) {
  */
 function committedFieldSet(typed) {
   const types = typed?.types ?? {};
-  const domain = Array.isArray(types.EIP712Domain)
-    ? types.EIP712Domain.map((f) => String(f?.name))
-    : getTypesForEIP712Domain({ domain: typed?.domain ?? {} }).map((f) => f.name);
+  const domain = committedDomainFields(typed).map((f) => String(f.name));
 
   const struct = {};
   const visit = (name, depth) => {
-    if (depth > 32 || Object.hasOwn(struct, name)) return;
+    // Already-recorded FIRST, so a self-referential or mutually recursive
+    // declaration terminates here rather than tripping the depth guard below.
+    if (Object.hasOwn(struct, name)) return;
+    if (depth > STRUCT_NESTING_LIMIT) {
+      // THROW, never drop. This guard used to be `if (depth > 32 || ...) return`
+      // — a SILENT truncation of the evidence. With 40 distinct nested structs
+      // viem hashes all 40 (every one of them is in the typehash string) while
+      // `committed.struct` recorded 33 and said nothing about the other 8; at
+      // 300 it recorded the same 33. An evidence record that silently omits
+      // part of what was signed is worse than one that refuses to be computed,
+      // because the omission is indistinguishable from the struct not existing.
+      //
+      // Its sibling `resolveStructRef` already throws on ARRAY_NESTING_LIMIT
+      // for the same reason, in the same words: an unresolved reference "would
+      // quietly omit a struct from the record, which is the exact defect this
+      // function was written to fix". The caller turns this into an audited
+      // COMMITMENT_RECORD_UNCOMPUTABLE refusal.
+      throw new Error(
+        `struct references from "${String(typed?.primaryType).slice(0, 40)}" nest more than ` +
+          `${STRUCT_NESTING_LIMIT} levels deep; the committed-field record cannot be derived ` +
+          "without silently omitting the structs past that depth",
+      );
+    }
     const decl = types[name];
     if (!Array.isArray(decl)) return;
     // defineProperty, not assignment: a struct literally named "__proto__" must
@@ -414,6 +506,8 @@ function committedFieldSet(typed) {
  * @returns {string|null} the key to record, or null when nothing is declared.
  */
 const ARRAY_NESTING_LIMIT = 32;
+/** How deep a chain of DISTINCT struct references the record will walk. */
+const STRUCT_NESTING_LIMIT = 32;
 
 function resolveStructRef(types, type) {
   const keys = Object.keys(types);
@@ -498,7 +592,7 @@ function extractPayment(typed, collectors) {
       return null;
     }
     const uncommitted =
-      missingDomainCommitment(typed?.types, DOMAIN_REQUIRED) ??
+      missingDomainCommitment(typed, DOMAIN_REQUIRED) ??
       missingCommitment(typed?.types, primaryType, EIP3009_REQUIRED);
     return {
       kind: "eip3009",
@@ -531,7 +625,7 @@ function extractPayment(typed, collectors) {
       (f) => f && f.name === "witness",
     )?.type;
     const uncommitted =
-      missingDomainCommitment(typed?.types, DOMAIN_REQUIRED) ??
+      missingDomainCommitment(typed, DOMAIN_REQUIRED) ??
       missingCommitment(typed?.types, "PermitWitnessTransferFrom", [
         ["permitted", "TokenPermissions"],
         ["spender", "address"],
