@@ -1,11 +1,19 @@
 # @vaduno/cloudflare
 
-A spend firewall for the [Cloudflare Agents SDK](https://developers.cloudflare.com/agents/)'s
-x402 payments client. Wrap your signing account once, and Vaduno policy — caps,
-merchant allowlists, chain gates, and a tamper-evident audit ledger — runs
-**inside `signTypedData`**, before any payment signature exists. A denied
-payment never has a signature, and a payment that was never signed cannot be
-settled by anyone, anywhere.
+The [Cloudflare Agents SDK](https://developers.cloudflare.com/agents/)'s x402
+payments client holds a raw private key — its own docs say
+`privateKeyToAccount(env.PRIVATE_KEY)` — and pays automatically whenever a paid
+tool asks. The shipped controls are a per-payment ceiling (`maxPaymentValue`,
+default 0.10 USDC) and an optional confirmation callback that, when omitted,
+approves everything. There is no cumulative budget, no merchant allowlist, and
+no audit trail of what was signed or refused. An agent that is tricked ten
+times pays ten times, to anyone, and leaves no record.
+
+This package is a spend firewall for that client. Wrap your signing account
+once, and Vaduno policy — caps, merchant allowlists, chain gates, and a
+tamper-evident audit ledger — runs **inside `signTypedData`**, before any
+payment signature exists. A denied payment never has a signature, and a
+payment that was never signed cannot be settled by anyone, anywhere.
 
 Part of [Vaduno](https://github.com/premsreelathasugeendran/vaduno) —
 non-custodial by construction. This package never holds funds and never holds
@@ -181,8 +189,11 @@ load-bearing.
 ## Dependencies, honestly
 
 - **`@vaduno/guard`** is the only runtime dependency, and it has zero runtime
-  dependencies of its own — that property is load-bearing for the
-  supply-chain story and is asserted by the release gate.
+  dependencies of its own — that property is load-bearing for the supply-chain
+  story, and the workspace pins it in a test
+  (`packages/guard/test/dependency-freeze.test.ts` freezes this package's
+  runtime dependencies to exactly `@vaduno/guard` and its peers to `viem`, so
+  adding a dependency fails the suite).
 - **`viem` is a peerDependency**, not a dependency. This package needs
   `hashTypedData` (the digest is the intent id), viem's own
   `getTypesForEIP712Domain` (so the commitment gate uses the *same* domain
@@ -210,6 +221,21 @@ the defect first) and through which real payments settled on Base Sepolia,
 each verified by decoding the USDC `Transfer` log on-chain. The port's test
 suite re-proves each preserved property the same way: every security test was
 first run against a deliberately broken build and observed failing.
+
+Evidence, not adjectives — Base Sepolia transactions you can check yourself:
+
+- [`0x8f47f9…74e5`](https://sepolia.basescan.org/tx/0x8f47f9f420042bdbca67e30ba260c40bf800b0feb1de6fcaae0780a7ddaa74e5)
+  — 0.01 USDC through the prototype wrapper; the transaction input decoded, the
+  EIP-712 digest recomputed from the token's own `DOMAIN_SEPARATOR()`, the
+  signer recovered, and the ledger row keyed on that exact digest
+  (`examples/guarded-signer/verify-ledger-binding.mjs`).
+- [`0x2936e9…e402`](https://sepolia.basescan.org/tx/0x2936e9fb85bf9f8cf3bd4db48531bf3960684c11df15597d706753059428e402)
+  and
+  [`0xdda635…f156`](https://sepolia.basescan.org/tx/0xdda635b45a34e78b49ee806488f8831b534d2b411b2b623469c531e02faf6156)
+  — 0.01 USDC each through **this package's packaged `dist`** (the `npm pack`
+  tarball installed into a clean project outside the workspace), with the deny
+  paths exercised in the same runs: a non-allowlisted payee and an over-cap
+  amount both refused with no signature produced.
 
 Testnet caveat: those settlements are Base Sepolia (chain 84532) faucet USDC.
 No mainnet payment has been made through this code.
