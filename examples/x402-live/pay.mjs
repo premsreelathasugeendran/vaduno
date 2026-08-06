@@ -19,7 +19,7 @@
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createPublicClient, http, erc20Abi } from "viem";
+import { createPublicClient, http, erc20Abi, parseEventLogs } from "viem";
 import { baseSepolia } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
 import {
@@ -81,7 +81,7 @@ const guard = new VadunoGuard({
 // x402 `exact` on an EVM chain is EIP-3009 transferWithAuthorization: the payer
 // signs an off-chain authorization and the FACILITATOR submits it and pays the
 // gas. So this wallet needs USDC and no ETH.
-async function signExact(req) {
+async function signExact(req, ctx) {
   if (req.network !== NETWORK) throw new Error(`refusing: network ${req.network} is not ${NETWORK}`);
   if (req.asset.toLowerCase() !== USDC.toLowerCase()) {
     throw new Error(`refusing: asset ${req.asset} is not Base Sepolia USDC`);
@@ -122,10 +122,22 @@ async function signExact(req) {
     message: authorization,
   });
 
+  // The v2 PaymentPayload (x402 spec §5.2): `accepted` is a REQUIRED verbatim
+  // echo of the requirement we are paying — the server deep-equals it against
+  // its own requirement, and the facilitator cross-checks the authorization
+  // against it. Omitting it is what every earlier attempt got wrong.
   const payload = {
     x402Version: 2,
-    scheme: req.scheme,
-    network: req.network,
+    resource: ctx.resource,
+    accepted: {
+      scheme: req.scheme,
+      network: req.network,
+      amount: req.amount,
+      payTo: req.payTo,
+      asset: req.asset,
+      maxTimeoutSeconds: req.maxTimeoutSeconds,
+      extra: req.extra,
+    },
     payload: {
       signature,
       authorization: {
@@ -143,6 +155,9 @@ async function signExact(req) {
 }
 
 // ---- run ------------------------------------------------------------------
+/** The facilitator's settlement tx hash, captured from onSettled. */
+let settlementTx = null;
+
 const x402 = createX402Fetch({
   guard,
   agentId: "live-demo",
@@ -159,6 +174,7 @@ const x402 = createX402Fetch({
   v2: { pay: signExact },
   onSettled: (settlement, intentId) => {
     console.log("  settlement:", JSON.stringify(settlement));
+    settlementTx = typeof settlement?.transaction === "string" ? settlement.transaction : null;
     writeFileSync(join(here, "last-settlement.json"), JSON.stringify({ intentId, settlement }, null, 2));
   },
 });
@@ -173,9 +189,54 @@ for (const e of await ledger.all()) console.log(" ", e.seq, e.type);
 const v = await ledger.verify();
 console.log("ledger verify:", JSON.stringify(v));
 
-const after = await chain.readContract({
+// WAIT FOR THE SETTLEMENT TX BEFORE READING THE BALANCE. The 200 comes back as
+// soon as the facilitator ACCEPTS the authorization; the transfer lands a block
+// or two later. Reading the balance straight after the response therefore
+// printed "spent: 0.000000 USDC" for a payment that had, in fact, settled — a
+// report that understates what happened is as wrong as one that overstates it,
+// and this one told a reader the example costs nothing. Block on the receipt
+// the facilitator named, and say plainly when there is nothing to block on.
+// WHAT ACTUALLY MOVED, taken from the settlement transaction's own Transfer
+// log rather than from a balance read.
+//
+// Two balance-based versions of this block printed "spent: 0.000000 USDC" for
+// a payment that had genuinely settled, for two different reasons. Reading
+// right after the 200: the 200 means the facilitator ACCEPTED the
+// authorization, not that the transfer landed. Reading "latest" right after
+// waiting for the receipt: the public RPC is load-balanced, and the node
+// answering the balance call was behind the one that answered the receipt
+// call. Pinning the read to the settlement block failed too — that node did
+// not have the block yet ("block not found"). Every one of those is the same
+// mistake, which is asking a node about STATE when the evidence is an EVENT:
+// the receipt carries the ERC-20 Transfer log, it is exact, and it cannot lag
+// because it arrived with the receipt. A report that understates a payment is
+// as wrong as one that overstates it.
+if (settlementTx) {
+  console.log(`\nwaiting for settlement tx ${settlementTx} …`);
+  const receipt = await chain.waitForTransactionReceipt({ hash: settlementTx });
+  console.log(`  mined in block ${receipt.blockNumber}, status: ${receipt.status}`);
+  const transfers = parseEventLogs({ abi: erc20Abi, eventName: "Transfer", logs: receipt.logs })
+    .filter(
+      (l) =>
+        l.address.toLowerCase() === USDC.toLowerCase() &&
+        l.args.from.toLowerCase() === account.address.toLowerCase(),
+    );
+  if (transfers.length === 0) {
+    console.log("  no USDC Transfer FROM this payer in that transaction — nothing left this wallet");
+  }
+  for (const t of transfers) {
+    console.log(
+      `  moved ${(Number(t.args.value) / 1e6).toFixed(6)} USDC -> ${t.args.to} ` +
+        "(decoded from the settlement transaction's own log)",
+    );
+  }
+} else {
+  console.log("\nno settlement tx was reported, so there is no receipt to decode.");
+}
+// Secondary, and labelled as such: the wallet balance at whatever height this
+// RPC is currently serving. Indicative only — see above.
+console.log("balance at start:", (Number(balance) / 1e6).toFixed(6));
+const latest = await chain.readContract({
   address: USDC, abi: erc20Abi, functionName: "balanceOf", args: [account.address],
 });
-console.log("\nbalance before:", (Number(balance) / 1e6).toFixed(6));
-console.log("balance after: ", (Number(after) / 1e6).toFixed(6));
-console.log("spent:", (Number(balance - after) / 1e6).toFixed(6), "USDC");
+console.log("balance now:     ", (Number(latest) / 1e6).toFixed(6), "(read at 'latest', which may lag)");

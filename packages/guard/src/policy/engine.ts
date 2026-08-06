@@ -130,7 +130,72 @@ export async function evaluatePolicy(
     });
   }
 
+  // Settlement network. Evaluated only when the policy declares a constraint;
+  // see SpendPolicy.networks for why the default is additive and what changes
+  // the moment an operator opts in.
+  const networkPolicy = policy.networks;
+  if (networkPolicy && (networkPolicy.allow !== undefined || networkPolicy.block !== undefined)) {
+    const configured = [...(networkPolicy.allow ?? []), ...(networkPolicy.block ?? [])];
+    const usable = configured.filter((n) => normNetwork(n) !== null);
+    if (configured.length > 0 && usable.length === 0) {
+      // Every entry is blank/non-string: the constraint cannot refuse
+      // anything, and a rule that enforces nothing must say so rather than
+      // read as "allowed" — the same stance windowConfigError takes.
+      reasons.push({
+        code: "NETWORK_POLICY_INVALID",
+        message:
+          "policy.networks lists no usable network identifier; refusing everything " +
+          "under this policy rather than enforcing nothing",
+      });
+    } else {
+      const network = normNetwork(intent.network);
+      if (network === null) {
+        // Missing is a denial, never a skip — MERCHANT_KEY_MISSING's rule. An
+        // intent that declines to say which chain it settles on, under a
+        // policy that cares, is exactly the case this rule exists for.
+        reasons.push({
+          code: "NETWORK_MISSING",
+          message:
+            `policy ${policy.id} constrains the settlement network but the intent ` +
+            `states none (got ${JSON.stringify(intent.network ?? null)})`,
+        });
+      } else {
+        if (networkPolicy.block?.some((n) => normNetwork(n) === network)) {
+          reasons.push({
+            code: "NETWORK_BLOCKED",
+            message: `network "${intent.network}" is blocklisted`,
+          });
+        }
+        if (
+          networkPolicy.allow &&
+          !networkPolicy.allow.some((n) => normNetwork(n) === network)
+        ) {
+          reasons.push({
+            code: "NETWORK_NOT_ALLOWED",
+            message: `network "${intent.network}" is not on the allowlist`,
+          });
+        }
+      }
+    }
+  }
+
   // Merchant rules: block always wins; then allowlist (if present) must match.
+  //
+  // A host-form BLOCK pattern is unevaluable without a parseable
+  // `merchant.url`, and unevaluable must not read as "not blocked" — that let
+  // an agent drop one optional field and walk past the entire blocklist.
+  if (
+    policy.merchants?.block?.some((m) => isHostForm(m)) &&
+    parsedHost(intent.merchant.url) === null
+  ) {
+    reasons.push({
+      code: "MERCHANT_URL_UNVERIFIABLE",
+      message:
+        `merchants.block contains a host pattern but the intent carries no parseable ` +
+        `merchant.url (${JSON.stringify(intent.merchant.url ?? null)}); a blocklist that ` +
+        `cannot be evaluated denies rather than passes`,
+    });
+  }
   if (policy.merchants?.block?.some((m) => merchantMatches(intent, m))) {
     reasons.push({
       code: "MERCHANT_BLOCKED",
@@ -292,22 +357,62 @@ function lc(s: string): string {
 }
 
 /**
- * Merchant pattern matching. The destination the executor actually pays is the
- * URL host, so host patterns are matched ONLY against `merchant.url`, never
- * against the free-text `merchant.id` (which is attacker-controlled).
+ * Merchant pattern matching.
+ *
+ * NEITHER FORM VERIFIES THE PAYEE. This function compares a policy pattern
+ * against fields of the intent, and every field of the intent is set by the
+ * caller — `merchant.url` exactly as much as `merchant.id`. The guard never
+ * contacts the URL, never resolves it, and has no independent knowledge of who
+ * receives the money. Anything stronger would require the library to observe
+ * the settlement itself, which it deliberately cannot do: it holds no funds and
+ * never sits on the wire.
+ *
+ * WHAT HOST PATTERNS ACTUALLY BUY, then, is MATCHING PRECISION, not trust:
+ * the value is parsed as a URL and compared on the hostname at a dot boundary,
+ * so `evil-amazon.com` and `amazon.com.evil.net` cannot pass as `amazon.com`,
+ * and case / trailing-dot FQDN variants normalize out. An `id:` pattern is an
+ * exact string compare over free text, which offers none of that. Use host
+ * patterns where a URL exists — but understand what they police.
+ *
+ * WHAT MAKES A HOST PATTERN MEANINGFUL is therefore entirely on the caller:
+ * `merchant.url` must be derived PER INTENT from the destination this payment
+ * is actually about to reach. A `merchant.url` fixed once at construction
+ * makes every host pattern in the policy match for every recipient — the
+ * pattern is then policing a constant. That is not hypothetical: in a
+ * signer-level integration the guard sees `merchant.id` = the payee address
+ * extracted from the bytes about to be signed (the strongest fact available
+ * anywhere in the intent) and `merchant.url` = the request URL fixed at wrap
+ * time, so a policy of `merchants.allow: ["host:x402.org"]` authorizes a
+ * transfer to an arbitrary address. In that deployment the `id:` form is the
+ * stronger control, and the ranking implied by an earlier version of this
+ * comment was backwards.
+ *
+ * A HOST PATTERN IN `allow` CAN ONLY WIDEN, NEVER NARROW. `merchants.allow`
+ * is DISJUNCTIVE: an intent passes if ANY entry matches. So adding a host
+ * entry beside an `id:` entry does not mean "this host AND this recipient" —
+ * it means "this recipient OR anyone that host names". There is no way to
+ * express the conjunction here. On a rail where the URL does not determine
+ * the recipient (x402: `payTo` is an arbitrary address the server names, and
+ * it, not the URL, is what the EIP-712 authorization commits to), that makes
+ * a host entry in `allow` a recipient bypass wearing the shape of a control.
+ * @vaduno/x402 therefore REFUSES host-form `allow` entries by default
+ * (RECIPIENT_UNGATED) — a rail that knows its own commitment structure can
+ * enforce what this rail-agnostic function cannot. Host patterns in
+ * `merchants.block` are unaffected: on the block side a match always denies,
+ * so disjunction only tightens.
  *
  * Pattern forms:
  *   "amazon.com"        host pattern (contains a dot) — matches the URL host
  *                       exactly or at a dot boundary (sub.amazon.com), never
  *                       a lookalike like evil-amazon.com. Requires a URL.
  *   "host:example"      explicit host pattern (matches even without a dot).
- *   "id:openai"         explicit id pattern — matches merchant.id exactly.
- *                       WEAK: merchant.id is not verified; use only for
- *                       trusted, integrator-controlled ids.
- *   "openai"            bare token without a dot — treated as an id pattern
- *                       (same weakness as "id:").
+ *   "id:openai"         explicit id pattern — exact match on merchant.id.
+ *   "openai"            bare token without a dot — treated as an id pattern.
  *
- * Fails closed: a host pattern with no usable URL does not match.
+ * Fails closed: a host pattern with no usable URL does not match — which on
+ * the ALLOW side means denied. On the BLOCK side "does not match" would mean
+ * "not blocked", so `evaluatePolicy` refuses that case outright
+ * (MERCHANT_URL_UNVERIFIABLE) instead of relying on this function's answer.
  */
 export function merchantMatches(
   intent: PaymentIntent,
@@ -336,19 +441,53 @@ export function merchantMatches(
     return merchantId === lc(hostPattern);
   }
 
-  if (!intent.merchant.url) return false;
-  let host: string;
-  try {
-    host = normalizeHost(new URL(intent.merchant.url).hostname);
-  } catch {
-    return false;
-  }
+  const host = parsedHost(intent.merchant.url);
+  if (host === null) return false;
   const p = normalizeHost(hostPattern);
   if (p.length === 0) return false;
   return host === p || host.endsWith("." + p);
 }
 
+/**
+ * True if `pattern` is a HOST-form pattern — the forms that need a URL to be
+ * evaluable at all. Shares the classification with merchantMatches so the
+ * blocklist's "can this even be checked?" question and the match itself can
+ * never disagree about which family a pattern belongs to.
+ */
+function isHostForm(pattern: string): boolean {
+  const raw = pattern.trim();
+  const lower = raw.toLowerCase();
+  if (lower.startsWith("id:")) return false;
+  if (lower.startsWith("host:")) return true;
+  return raw.includes(".");
+}
+
+/** The normalized hostname of `url`, or null when there isn't a usable one. */
+function parsedHost(url: string | undefined): string | null {
+  if (!url) return null;
+  try {
+    const host = normalizeHost(new URL(url).hostname);
+    return host.length > 0 ? host : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Lowercase and strip a single trailing dot (FQDN form). */
 function normalizeHost(host: string): string {
   return host.toLowerCase().replace(/\.$/, "");
+}
+
+/**
+ * A network identifier reduced to its comparison form, or null when the value
+ * cannot identify a network at all (absent, not a string, blank).
+ *
+ * Trim + lowercase only. No wildcard expansion, no namespace prefixes: a
+ * policy that says `eip155:84532` means that chain and no other, because the
+ * hole this rule closes was caused by an implicit "any chain will do".
+ */
+function normNetwork(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const v = value.trim().toLowerCase();
+  return v.length > 0 ? v : null;
 }

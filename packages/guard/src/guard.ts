@@ -1,4 +1,6 @@
 import { evaluatePolicy, policyWindows } from "./policy/engine.js";
+import { inspectIntentShape } from "./policy/intent-shape.js";
+import type { IntentShapeProblem } from "./policy/intent-shape.js";
 import { MemorySpendLimiter, merchantKeyOf } from "./enforce/spend-limiter.js";
 import {
   applyRiskTier,
@@ -12,6 +14,7 @@ import type {
   ApprovalHandler,
   GuardResult,
   PaymentIntent,
+  PolicyReason,
   PolicyResult,
   SpendHistory,
   SpendLimiter,
@@ -421,6 +424,7 @@ export class VadunoGuard {
         merchantId: string;
         merchantKey?: string;
         rail: string;
+        network?: string;
       } | null = null;
       let agentId = "";
       if (authIndex >= 0) {
@@ -432,6 +436,7 @@ export class VadunoGuard {
           merchantId?: unknown;
           merchantKey?: unknown;
           rail?: unknown;
+          network?: unknown;
         };
         if (
           Number.isSafeInteger(d.amountMinor) &&
@@ -449,6 +454,9 @@ export class VadunoGuard {
             // still be countable — it lands keyless and counts toward every
             // merchant window rather than escaping them.
             ...(typeof d.merchantKey === "string" ? { merchantKey: d.merchantKey } : {}),
+            // Same optionality as merchantKey: an authorization row from a
+            // caller that states no network simply has none to recover.
+            ...(typeof d.network === "string" ? { network: d.network } : {}),
           };
         }
       }
@@ -860,8 +868,33 @@ export class VadunoGuard {
 
     const refs = { intentId: safe.id, agentId: safe.agentId };
 
+    // STRUCTURAL INSPECTION BEFORE THE FIRST APPEND. An intent holding a value
+    // JSON cannot represent (NaN, ±Infinity, a bigint, a Date, a cycle) used
+    // to make this very append throw, which returned AUDIT_WRITE_FAILED and
+    // left ZERO ledger entries — the malformed attempt was the one attempt
+    // with no evidence. Record a sanitized copy instead, then deny with a real
+    // policy code below. See policy/intent-shape.ts.
+    const shape = inspectIntentShape(safe);
+    // BOUNDED EVIDENCE: at most MAX_REPORTED_PROBLEMS problem strings ride on
+    // the row (paths and descriptions clamped inside intent-shape.ts); the
+    // rest are COUNTED via problemsTotal, never enumerated. The first version
+    // enumerated everything, which let a counterparty inflate the
+    // tamper-evident ledger ~62x per byte of hostile input.
+    const receivedData =
+      shape.totalProblems === 0
+        ? { intent: safe }
+        : {
+            intent: shape.sanitized,
+            intentSanitized: true,
+            problems: shape.problems.map((p) => `${p.path}: ${p.problem}`),
+            problemsTotal: shape.totalProblems,
+            ...(shape.totalProblems > shape.problems.length
+              ? { problemsTruncated: true }
+              : {}),
+          };
+
     try {
-      await this.ledger.append("intent_received", { intent: safe }, refs);
+      await this.ledger.append("intent_received", receivedData, refs);
     } catch (err) {
       // Even the first audit write failed. Fail closed without executing.
       return {
@@ -873,6 +906,78 @@ export class VadunoGuard {
           errMsg(err),
         ),
       };
+    }
+
+    // A malformed intent is now a normal, audited deny — same two ledger rows
+    // an ordinary denial leaves. INVALID_AMOUNT when the money itself is the
+    // unrepresentable value (the operator-facing case), plus one
+    // INTENT_NOT_SERIALIZABLE reason naming every other offending path.
+    // Reported exhaustively, like every other deny in this engine, so the
+    // trail shows everything that was wrong rather than the first thing.
+    if (shape.totalProblems > 0) {
+      const reasons: PolicyReason[] = [];
+      if (shape.amountUnrepresentable) {
+        // shape.amountProblem is carried separately from the capped problem
+        // list, so the operator-facing INVALID_AMOUNT reason survives even
+        // when thousands of other problems precede the amount in walk order.
+        reasons.push({
+          code: "INVALID_AMOUNT",
+          message: `amountMinor must be a positive safe integer: ${shape.amountProblem}`,
+        });
+      }
+      // TWO DISTINCT CODES, because they are two distinct operator problems.
+      // INTENT_NOT_SERIALIZABLE means values the trail cannot record exactly
+      // (NaN, a bigint, a cycle). INTENT_TOO_LARGE means the values are
+      // perfectly representable but the intent breached an inspection bound
+      // and was not fully walked (see intent-shape.ts, which caps the walk so
+      // a counterparty cannot inflate the ledger). Reporting a 25,000-element
+      // array of strings as "holds values the audit trail cannot record
+      // exactly" would be false, and a wrong reason sends the operator after
+      // the wrong fix.
+      const others = shape.problems.filter(
+        (p) => p.path !== "$.amount.amountMinor",
+      );
+      const otherCount = shape.totalProblems - (shape.amountUnrepresentable ? 1 : 0);
+      if (otherCount > 0) {
+        // The message is O(1) in attacker input: it joins only the retained,
+        // clamped window and states the true count of what it does not show.
+        const describe = (kind: IntentShapeProblem["kind"]): string =>
+          others
+            .filter((p) => p.kind === kind)
+            .map((p) => `${p.path} (${p.problem})`)
+            .join("; ");
+        const suffix =
+          otherCount > others.length
+            ? `; ${otherCount} problems total, first ${others.length} shown (truncated)`
+            : "";
+        if (shape.unrepresentable) {
+          reasons.push({
+            code: "INTENT_NOT_SERIALIZABLE",
+            message:
+              `intent holds values the audit trail cannot record exactly: ` +
+              describe("unrepresentable") +
+              suffix,
+          });
+        }
+        if (shape.oversize) {
+          reasons.push({
+            code: "INTENT_TOO_LARGE",
+            message:
+              `intent exceeds the structural inspection bounds, so it cannot be ` +
+              `audited in full and is refused: ` +
+              describe("oversize") +
+              suffix,
+          });
+        }
+      }
+      const policyResult: PolicyResult = {
+        decision: "deny",
+        reasons,
+        policyId: this.policy.id,
+        policyVersion: this.policy.version,
+      };
+      await this.appendBestEffort("policy_decision", { policyResult }, refs);
+      return { status: "denied", intentId: safe.id, policyResult };
     }
 
     try {
@@ -1192,6 +1297,52 @@ export class VadunoGuard {
         };
       }
       consumedMandateId = intent.mandateId!;
+
+      // BUDGET OWNERSHIP — the invariant this guard's caps rest on: NOTHING
+      // EXECUTES ON A RESERVATION IT DID NOT TAKE.
+      //
+      // The limiter keys reservations on `intent.id`. The consume registry keys
+      // uses on (mandateId, intent.id). Those key spaces are DIFFERENT, and the
+      // difference was a live cap bypass: reuse one intent id under a second
+      // mandate (or under a mandate after a first payment that carried none)
+      // and `reserve()` answers `replayed` — recording NOTHING — while
+      // `consumeOnce()` answers "fresh", because (M2, id) is a key it has never
+      // seen. The old code took the mandate's word and executed. Measured
+      // before this check, two 600-minor payments under a 1000-minor daily cap
+      // both executed with the limiter holding a single 600 reservation; with
+      // eight mandates, nine payments (5400) executed against the same counted
+      // 600, and `authorize()` behaved identically.
+      //
+      // A FRESH mandate use is new money by definition, so it needs its own
+      // budget claim. It has none, and there is no honest way to take one now:
+      // the window evaluation that would have refused it already happened, on
+      // someone else's reservation. So refuse. A retry — same mandate, same
+      // intent id — never reaches here: consumeOnce answers "duplicate" and the
+      // replay branch above returns the original outcome, which is the property
+      // reuse of an id is actually FOR.
+      //
+      // Placed after the consume (not before) precisely so that replay keeps
+      // working; the price is one burned mandate use on a payment that never
+      // ran. Settled "failed" so a later retry replays a terminal outcome
+      // instead of hanging on "unresolved" — the same trade, in the same
+      // direction, as the late-freeze exit below.
+      if (reservation.replayed) {
+        await this.settleBestEffort(consumedMandateId, intent.id, {
+          status: "failed",
+          settledAt: this.now().toISOString(),
+          error: "denied before execution: no budget reservation was taken for this use",
+        });
+        return await this.denyAudited(
+          intent,
+          refs,
+          "INTENT_ID_NOT_BUDGETED",
+          `intent id ${JSON.stringify(intent.id)} already holds a spend reservation from an ` +
+            `earlier payment, but mandate ${JSON.stringify(consumedMandateId)} treats this as a ` +
+            `NEW use — so this payment would move funds that no spend window ever counted. ` +
+            `Use a unique intent id per payment; reuse an id only to retry the SAME payment ` +
+            `under the SAME mandate, which replays the original outcome instead of paying again`,
+        );
+      }
     }
 
     // Snapshot the money-affecting fields BEFORE calling the executor, so the
@@ -1205,6 +1356,11 @@ export class VadunoGuard {
       merchantId: intent.merchant.id,
       merchantKey,
       rail: intent.rail,
+      // The settlement network rides on the evidence so a row says WHERE the
+      // money moved, not just how much. Omitted entirely when the intent
+      // states none, so rows written by callers that predate the field keep
+      // exactly the shape (and hash inputs) they had before.
+      ...(intent.network !== undefined ? { network: intent.network } : {}),
     };
 
     // LAST-EXIT FREEZE RE-CHECK. The freeze check at the top of this section

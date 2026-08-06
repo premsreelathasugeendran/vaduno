@@ -33,3 +33,10 @@ examples/claude-code-hook/guard-hook.log
 examples/x402-live/.wallet
 examples/x402-live/ledger.jsonl
 examples/x402-live/last-settlement.json
+
+# Same, for examples/guarded-signer — these are per-run artifacts (the hash
+# chain and the last settlement receipt), not source. It reuses the x402-live
+# wallet, so there is no key of its own to ignore here.
+examples/guarded-signer/ledger.jsonl
+examples/guarded-signer/ledger-deny.jsonl
+examples/guarded-signer/last-settlement.json

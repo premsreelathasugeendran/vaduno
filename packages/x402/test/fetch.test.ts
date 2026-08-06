@@ -71,6 +71,12 @@ describe("createX402Fetch", () => {
       agentId: "agent-1",
       pay,
       fetch: server.fetch,
+      // This test is ABOUT host-form allowlisting — that merchant.url is
+      // derived from the REAL request URL. The adapter now refuses host-form
+      // `allow` entries unless the operator opts in (they widen the recipient
+      // constraint; see assertRecipientGated), so the opt-in is stated here
+      // rather than the property being dropped. The assertion is unchanged.
+      allowHostOnlyMerchantPolicy: true,
     });
 
     await expect(x402("https://evil-api.com/data")).rejects.toBeInstanceOf(
@@ -103,6 +109,9 @@ describe("createX402Fetch", () => {
         pay,
         fetch: server.fetch,
         requireResourceOriginMatch: false,
+        // See the note above: host-form allowlisting is the property under
+        // test here, so the opt-in is explicit.
+        allowHostOnlyMerchantPolicy: true,
       });
 
       // merchant.url is evil.com (the real endpoint) -> not on the allowlist.

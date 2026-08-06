@@ -47,14 +47,32 @@ export class FileSpendLimiter implements SpendLimiter {
     this.mutex = new FileMutex(`${filePath}.lock`, now, lockOpts);
   }
 
+  /**
+   * NULL-PROTOTYPE, and this is load-bearing rather than hygiene.
+   *
+   * `reservations` is indexed by reservationId, which the guard sets to
+   * `intent.id` — a field the threat model assumes the caller controls. On a
+   * plain `{}` (and on JSON.parse's output, which also inherits Object.
+   * prototype) `reservations["__proto__"]` reads back Object.prototype: TRUTHY.
+   * reserve() takes that as "already reserved" and answers `replayed: true`
+   * WITHOUT inserting anything, so the amount is never counted by any window.
+   * Measured before this change, against the same inputs: the file limiter
+   * answered `{"ok":true,"reservationId":"__proto__","replayed":true}` where
+   * MemorySpendLimiter — the reference semantics every implementation must
+   * reproduce — answered `replayed: false`.
+   *
+   * The same read hits `constructor`, `toString`, `valueOf` and every other
+   * Object.prototype member. A null-prototype record has no such members, so an
+   * id is DATA here and nothing else.
+   */
   private async load(): Promise<FileShape> {
     try {
       const raw = await readFile(this.filePath, "utf8");
       const parsed = JSON.parse(raw) as Partial<FileShape>;
-      return { reservations: parsed.reservations ?? {} };
+      return { reservations: Object.assign(Object.create(null), parsed.reservations) };
     } catch (err: unknown) {
       const e = err as NodeJS.ErrnoException;
-      if (e.code === "ENOENT") return { reservations: {} };
+      if (e.code === "ENOENT") return { reservations: Object.create(null) };
       // A corrupt file fails closed (reserve throws -> guard denies) rather
       // than forgetting spend. Atomic writes make this unreachable from our
       // own writes.

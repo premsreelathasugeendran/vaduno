@@ -6,6 +6,219 @@ This project is pre-1.0. Under semver, 0.x minor bumps may break the API. Two
 have, and each was breaking because the fix for a real security bug required it.
 See [`SECURITY.md`](SECURITY.md) for what is and isn't guaranteed.
 
+## 0.6.1 — unreleased
+
+### Fixed — a mandated payment could execute on a spend reservation it never took
+
+Found by a fresh sweep of the areas prior rounds had not looked at, reproduced
+against the current code before the fix.
+
+- **Cap bypass: one intent id, two mandates.** The spend limiter keys
+  reservations on `intent.id`. The consume registry keys uses on
+  `(mandateId, intent.id)`. Those key spaces are different, and the difference
+  was live. Reuse one intent id under a **second** mandate — or under a mandate
+  after a first payment that carried none — and `reserve()` answers `replayed`
+  and records **nothing**, while `consumeOnce()` answers "fresh", because that
+  pair is new to it. The guard took the mandate's word and ran the rail, so the
+  payment moved funds no spend window ever counted. Measured before the fix
+  against a 1,000-minor daily cap with payments of 600: two mandates executed
+  1,200 of real spend against 600 counted; eight mandates executed nine payments
+  (5,400) against the same counted 600; `authorize()` handed out two
+  authorizations under one cap. `MANDATE_REPLAY_MISMATCH` could not catch it —
+  the digest it compares lives on a claim key the registry had never held.
+  The guard now refuses any mandated payment whose reservation came back
+  `replayed`, with a new `INTENT_ID_NOT_BUDGETED` code, upholding the invariant
+  the caps rest on: **nothing executes on a reservation it did not take.** A
+  genuine retry (same mandate, same id) is untouched — `consumeOnce()` answers
+  "duplicate" and the replay branch returns the original outcome, which is the
+  property id reuse exists for. The check costs one burned mandate use on a
+  payment that never ran, settled `failed`, the same trade the late-freeze exit
+  already makes.
+- **`FileSpendLimiter` treated prototype-named reservation ids as lookup hits.**
+  `reservationId` is `intent.id`, a field the threat model assumes the caller
+  controls, and the reservation record was a plain object — so
+  `reservations["__proto__"]` read back `Object.prototype` (truthy) and
+  `reserve()` answered "already reserved" on an **empty** limiter while
+  recording nothing. Measured: the file limiter returned
+  `{"ok":true,"reservationId":"__proto__","replayed":true}` where
+  `MemorySpendLimiter` (Map-backed, the reference semantics every store must
+  reproduce) returned `replayed: false`; the same read hits `constructor`,
+  `toString` and every other prototype member. Both file-backed stores now hold
+  their records on null-prototype objects, and the SpendLimiter conformance
+  suite covers the case, so any future store is held to it too.
+- **Docs corrected.** `SECURITY.md`, `docs/SECURITY-MODEL.md` and both READMEs
+  claimed a used intent id could not be replayed as a different payment, full
+  stop. That held only *within one mandate*. The rows now say which check covers
+  which case, and name the gap that was open.
+
+### Fixed — three semantic defects found by adversarial review of the signer binding
+
+Putting `@vaduno/guard` in the mandatory signing path of a shipped x402 client
+held against every escape, freeze-bypass and concurrency probe thrown at it. Not
+one attack got past the wrapper. What broke was **semantics** — what the guard
+is *told* about the payment it is approving — and all three are in shipped
+library code, not in the prototype.
+
+- **Policy was chain-blind: `PaymentIntent` had no network dimension.** Currency
+  is not a chain. With an entirely ordinary multi-chain asset registry (Base
+  Sepolia USDC and Ethereum Sepolia USDC, both symbol `USDC`) a transfer on
+  chainId 11155111 was authorized by a deployment targeting 84532 — same intent
+  shape, same currency, wrong chain. The chain lived in `metadata`, which no
+  policy rule reads, so the only chain gate was the caller's asset registry:
+  caller config, not a policy control. Added `intent.network` (opaque id,
+  CAIP-2 recommended) and `policy.networks.allow` / `.block`.
+  - **Exact match only**, case-insensitive after trimming. `"eip155"` does not
+    stand for every EVM chain; implicit breadth is what caused this.
+  - Once a `networks` block exists, an intent stating no network is denied
+    `NETWORK_MISSING`, and a `networks` block with no usable entry denies
+    `NETWORK_POLICY_INVALID` rather than enforcing nothing.
+  - **The default is layered, not merely additive.** At the *guard* layer a
+    policy with no `networks` block imposes no network constraint: the guard is
+    rail-agnostic and cannot know whether a "network" is even meaningful for the
+    rail in use, and denying unstated networks would deny every payment of every
+    deployment that predates the field. But **where the network is always known,
+    the safe configuration is enforced**: `@vaduno/x402` refuses a deployment in
+    which *nothing* constrains the chain — no `assets` registry and no
+    `policy.networks` — with `NETWORK_UNGATED`, before the payer runs. Opt out
+    with `allowChainBlind: true`. So "expressible but not enforced" is closed on
+    the rail where chain-blindness could never be a coherent choice.
+    See `SECURITY.md` limitation 11.
+  - `@vaduno/x402` now populates `intent.network` (v1 network name, v2 CAIP-2
+    id — separate key spaces, exactly like the `assets` registry). The network
+    also rides on `execution_started` / `execution_result` evidence rows, so a
+    record says *where* money moved.
+
+- **A host-form `merchants.block` pattern was evadable by omitting one optional
+  field.** `merchantMatches` returns false for a host pattern with no parseable
+  `merchant.url`. On the allow side false means denied — fail closed. On the
+  **block** side false meant *not blocked*, so an agent (which the threat model
+  assumes controls every intent field) dropped `merchant.url` and walked past
+  the entire blocklist. An unevaluable host-form block pattern now denies
+  `MERCHANT_URL_UNVERIFIABLE`. **Behaviour change, in the tightening
+  direction:** if you run a host-form blocklist and some intents legitimately
+  carry no URL, those intents now deny — set `merchant.url`, or express the rule
+  with `id:` patterns.
+
+- **A refusal that could not be recorded left no record.** An intent holding a
+  value JSON cannot represent — `NaN` or `±Infinity` amount, a bigint, a `Date`,
+  a cycle — made the very first ledger append throw, so the guard returned
+  `AUDIT_WRITE_FAILED` and wrote **zero** ledger entries, versus two for an
+  ordinary deny. The refusal was right; the evidence of the most suspicious
+  attempt an operator could receive was the evidence that vanished. The intent
+  is now inspected up front (`policy/intent-shape.ts`, accepting exactly
+  `canonicalJson`'s value space), a **sanitized** copy is recorded — offending
+  values replaced by a marker, tagged `intentSanitized: true` with the list of
+  offending paths — and the payment is denied `INVALID_AMOUNT` (when the money
+  itself is unrepresentable) and/or `INTENT_NOT_SERIALIZABLE`. Same two ledger
+  rows any other deny leaves.
+
+### Changed — a documented claim that outran the evidence
+
+- **`SECURITY.md` and `policy/engine.ts` ranked host patterns as categorically
+  stronger than `id:` patterns, and said host patterns avoid
+  attacker-controlled fields. That was wrong.** `merchant.url` is caller-set
+  exactly as `merchant.id` is; the guard never contacts the URL and has no
+  independent knowledge of the payee. What a host pattern buys is **matching
+  precision** — URL parsing plus a dot boundary, so lookalikes and FQDN variants
+  cannot slip through — not trust. It is meaningful only if the caller derives
+  `merchant.url` per intent from the real destination; fixed once at
+  construction, it matches for every recipient. In a signer-level integration
+  the ranking inverts outright: `merchant.id` there carries the payee address
+  extracted from the bytes about to be signed, so `id:` is the stronger control.
+  No verification the library cannot perform was invented; the claim was
+  corrected. `SECURITY.md` limitation 5, the threat table, the
+  `merchantMatches` docblock, and `packages/guard/README.md` now agree.
+
+  **A documentation fix was not enough, and the re-examination found why.**
+  `merchants.allow` is **disjunctive** — an intent passes if *any* entry
+  matches — so a host-form entry there can only ever *widen* the recipient
+  constraint, never narrow it. `["host:api.example.com", "id:0x…"]` does not
+  mean "this host AND this recipient"; it means "this recipient OR anyone that
+  host names", and the conjunction is not expressible at all. On x402, where
+  `payTo` is decoupled from the resource host and is what the EIP-712
+  authorization actually commits to, that makes a host entry in `allow` a
+  recipient bypass wearing the shape of a control. Measured: a policy of
+  `merchants.allow: ["host:api.example.com"]` against a server on that host
+  naming an arbitrary `payTo` **paid, 200 OK**, with every control the operator
+  wrote satisfied. So `@vaduno/x402` now **refuses** a policy carrying a
+  host-form `allow` entry (`RECIPIENT_UNGATED`) before the payer runs; opt out
+  with `allowHostOnlyMerchantPolicy: true`. Host patterns in `merchants.block`
+  are untouched — a match there always denies, so disjunction only tightens.
+  The rail-agnostic guard still cannot verify a payee; the *adapter*, which
+  knows this rail's commitment structure, can refuse the configuration that
+  pretends otherwise.
+
+  **This is a breaking change for existing x402 callers, and our own demo was
+  the first casualty** — worth stating plainly, because it is exactly what an
+  upgrader will hit. `examples/x402-agent` carried
+  `merchants: { allow: ["trusted-api.com"] }`, so after the gate landed every
+  one of its eight scenarios refused `RECIPIENT_UNGATED` and the run ended with
+  `ledger entries: 0`: a demo of a spend firewall that demonstrated nothing,
+  including the controls that were still working. Fixed the way the new
+  guidance says to — `allow: ["id:<payTo>"]` to bind the recipient,
+  `block: ["evil-api.com"]` for the host rule (a blocklist match always denies,
+  so disjunction only tightens), plus a `networks` block now that the chain is
+  policeable. If your policy allowlists hosts on x402, this is the migration.
+
+### Fixed — a denial-of-service surface introduced by the DEFECT-7 audit fix
+
+- **A counterparty could inflate the tamper-evident ledger at will.** Making
+  every refusal audited (so a malformed, possibly hostile intent stops leaving
+  *zero* evidence) turned an O(1) fail-closed rejection into an unbounded,
+  un-deduplicated, counterparty-driven writer into the audit log: every
+  offending value produced a full `{path, problem}` record on the
+  `intent_received` row *and* was re-joined into one `policy_decision` reason
+  message. Measured at a steady **~62x, linear and uncapped** — 100,000 bad
+  values in one intent wrote **18,678,768 bytes** of ledger, and a
+  100-million-slot sparse array (O(1) caller bytes) drove the walk itself out
+  of memory. `packages/guard/src/policy/intent-shape.ts` is now bounded in
+  every dimension: at most 8 problem records are retained with paths and
+  descriptions clamped, containers are capped at 10,000 entries, the whole walk
+  at 20,000 nodes, and everything not enumerated is **counted**
+  (`problemsTotal`, `problemsTruncated`, and per-container "N not inspected"
+  markers) so the trace stays truthful. The same intent now writes **592,130
+  bytes**, and writes the same 592,130 bytes at any larger n. The refusal is
+  still audited — that was the point of DEFECT 7 and it is kept.
+- **The sanitized deep copy was built unconditionally and discarded.** A clean
+  intent — the common case — paid for a full materialized clone that was thrown
+  away (+27 MB retained for one clean intent). Inspection is now two passes:
+  detect-only first, and the copy is built only when there is something to
+  sanitize.
+- **A size refusal was reported as a serialization failure.** An intent that
+  merely breached an inspection bound was denied `INTENT_NOT_SERIALIZABLE`
+  ("holds values the audit trail cannot record exactly"), which is false for
+  25,000 perfectly recordable strings and sends the operator after the wrong
+  fix. Size breaches now deny `INTENT_TOO_LARGE`; the two codes are reported
+  independently and an intent can carry both.
+
+### Fixed — `FileMutex` could admit two simultaneous holders
+
+- **The stale-lock reclaim rested on a single wall-clock subtraction.**
+  `FileMutex` is the cross-process exclusion under four correctness properties —
+  the ledger's compare-and-append (a fork), the consume store (a double spend),
+  the spend limiter (a cap bypass), and the revocation freeze store — and it had
+  **no test**. Reclaim treated a lock as abandoned when
+  `now() - lockfile.mtimeMs > staleMs`, against an mtime written once at
+  creation and never refreshed. Two ways that deleted a *live* holder's lock,
+  both reproduced against the pre-fix code in
+  `packages/guard/test/file-mutex.test.ts`:
+  - a holder whose critical section merely **outlasts `staleMs`** is
+    indistinguishable from a dead one, because the only evidence was the
+    creation time;
+  - a **forward clock jump** larger than `staleMs` — an NTP correction, a VM
+    resume — instantly ages every live lock on the box past the threshold, with
+    nothing anomalous about the holder or the load.
+
+  A holder now **heartbeats** the lockfile's mtime every `staleMs/3` while it
+  works, and a reclaimer never deletes on first sight: it records the mtime,
+  waits a confirmation window measured on a **monotonic** clock (so the jump
+  that made the lock look stale cannot also fast-forward the confirmation),
+  re-stats, and reclaims only if nothing refreshed it. Crash recovery is
+  unchanged — a dead holder never heartbeats — and is pinned by its own test.
+  Residual, documented not hidden: a holder whose *event loop* is blocked
+  cannot heartbeat, so a synchronous stall past `staleMs` plus the confirmation
+  window is still reclaimable; that process cannot make progress anyway.
+
 ## 0.6.0 — 2026-08-05
 
 ### Fixed — a security defect found by running against a live host

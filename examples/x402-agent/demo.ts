@@ -132,7 +132,22 @@ async function mockPayerV2(
   });
 }
 
-// ── Guard: $5/txn, $10/day in USDC, only a trusted API host ─────────────────
+const PAYTO = "0x000000000000000000000000000000000000dEaD";
+const USDC_CONTRACT = "0xUSDCTokenContract";
+
+// ── Guard: $5/txn, $10/day in USDC, one allowed RECIPIENT ───────────────────
+// The allowlist names the recipient (`id:<payTo>`), not the host. On x402 the
+// two are decoupled: `payTo` is an arbitrary address the server puts in its
+// 402, and `payTo` — not the request URL — is what the payer's authorization
+// commits to. A host-form entry in `merchants.allow` therefore reads as a
+// merchant control while constraining no recipient, and because `allow` is
+// disjunctive it can only ever WIDEN, so @vaduno/x402 refuses such a policy up
+// front (RECIPIENT_UNGATED). This demo used to carry exactly that mistake.
+//
+// Host patterns still belong in `merchants.block`, where a match always denies
+// and disjunction only tightens — that is what stops the off-allowlist call
+// below. A blocklist does not scale to the open web; it is the honest half of
+// what a host pattern can do on this rail.
 const ledger = new AuditLedger(new MemoryLedgerStore());
 const guard = new VadunoGuard({
   policy: {
@@ -140,13 +155,14 @@ const guard = new VadunoGuard({
     version: 1,
     currency: "USDC",
     limits: { perTransactionMinor: usdc(5), perDayMinor: usdc(10) },
-    merchants: { allow: ["trusted-api.com"] },
+    merchants: { allow: [`id:${PAYTO}`], block: ["evil-api.com"] },
+    // Currency is not a chain: USDC exists on many of them, and the v1 network
+    // NAME and the v2 CAIP-2 id are separate key spaces, so the same chain is
+    // authored twice — exactly like the asset registry below.
+    networks: { allow: ["base-sepolia", "eip155:84532"] },
   },
   ledger,
 });
-
-const PAYTO = "0x000000000000000000000000000000000000dEaD";
-const USDC_CONTRACT = "0xUSDCTokenContract";
 
 // Trusted token registry: binds spend to the REAL token contract, so a hostile
 // server can't spoof extra.symbol="USDC" over a different asset. v1 names and
@@ -253,7 +269,10 @@ await callPaidApi("Another call (v1)", "https://trusted-api.com/news", usdc(4));
 // carries PAYMENT-SIGNATURE, and the network id is CAIP-2.
 await callPaidApiV2("Premium call (v2, header transport)", "https://trusted-api.com/quotes", usdc(2));
 await callPaidApi("Over per-txn cap", "https://trusted-api.com/bulk", usdc(6));
-await callPaidApi("Untrusted host (prompt-injected URL)", "https://evil-api.com/data", usdc(1));
+// A prompt-injected URL on a blocklisted host — note the server there names the
+// SAME allowed payTo, so the recipient allowlist alone would have paid it. The
+// host blocklist is what refuses.
+await callPaidApi("Blocklisted host (prompt-injected URL)", "https://evil-api.com/data", usdc(1));
 await callHostile();
 await callV2RolePayTo();
 // $3 + $4 + $2 = $9 spent; this $4 would make $13 > $10/day → daily cap blocks

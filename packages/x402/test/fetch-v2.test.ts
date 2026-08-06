@@ -143,6 +143,12 @@ describe("v2 security properties (each v1 property, proven on the v2 path)", () 
       fetch: server.fetch,
       v2: { pay: payV2 },
       requireResourceOriginMatch: false,
+      // Host-form allowlisting is the property under test (merchant.url is
+      // derived from the REAL request URL, not the server's claim). The
+      // adapter now refuses host-form `allow` entries unless opted in — they
+      // widen the recipient constraint, see assertRecipientGated — so the
+      // opt-in is explicit here. The assertion is unchanged.
+      allowHostOnlyMerchantPolicy: true,
     });
     await expect(x402("https://evil.com/pay")).rejects.toBeInstanceOf(
       X402PaymentBlockedError,

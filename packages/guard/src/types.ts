@@ -15,7 +15,18 @@ export interface MerchantRef {
   /** Stable identifier chosen by the integrator (e.g. "openai", "aws"). */
   id: string;
   name?: string;
-  /** Full URL of the merchant/endpoint being paid, if applicable. */
+  /**
+   * Full URL of the merchant/endpoint being paid, if applicable.
+   *
+   * CALLER-SUPPLIED, exactly like `id`. The guard never contacts this URL and
+   * has no way to confirm that the money is going to whoever answers it, so a
+   * host pattern in `merchants.allow` is only as strong as the caller's
+   * discipline in deriving THIS field, per intent, from the destination the
+   * payment is actually about to reach. Set it once at construction and every
+   * host pattern in the policy matches for every recipient — see
+   * `merchantMatches` in policy/engine.ts for the full statement of what host
+   * patterns do and do not guarantee.
+   */
   url?: string;
 }
 
@@ -34,6 +45,33 @@ export interface PaymentIntent {
   category?: string;
   /** Which rail will execute this (e.g. "x402", "stripe-issuing", "upi", "mock"). */
   rail: string;
+  /**
+   * Which SETTLEMENT NETWORK this payment executes on — the chain, ledger, or
+   * scheme instance, as distinct from the `rail` (the software path) and the
+   * `currency` (the unit of account).
+   *
+   * WHY IT IS A FIRST-CLASS FIELD. Currency does not identify a chain. USDC on
+   * Base Sepolia (`eip155:84532`) and USDC on Ethereum Sepolia
+   * (`eip155:11155111`) produce the SAME intent shape and the same currency
+   * code, so a deployment targeting one of them authorized a transfer on the
+   * other: identical amount, identical merchant, wrong network. Putting the
+   * chain in `metadata` did not help — no policy rule reads metadata. Only a
+   * field the policy engine can see is a control.
+   *
+   * FORMAT: an opaque identifier compared case-insensitively after trimming.
+   * CAIP-2 (`eip155:84532`, `solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1`) is the
+   * recommended form for chains; non-chain rails may use any stable string
+   * (`"stripe-live"`, `"upi"`). No wildcard or namespace-prefix matching is
+   * performed — `eip155` does NOT stand for every EVM chain, because implicit
+   * breadth is what made the original hole.
+   *
+   * OPTIONAL, and its absence is only meaningful relative to the policy: a
+   * policy with no `networks` block imposes no network constraint at all
+   * (every pre-existing caller), while a policy that HAS one denies an intent
+   * that declines to say where it settles (NETWORK_MISSING). Missing is a
+   * denial, never a skip.
+   */
+  network?: string;
   /** Mandate this intent claims authorization under, if any. */
   mandateId?: string;
   /**
@@ -97,6 +135,41 @@ export interface SpendPolicy {
   };
   merchants?: {
     /** If present, intent merchant must match one of these (id or exact host / dot-boundary subdomain). */
+    allow?: string[];
+    /**
+     * Always wins over allow.
+     *
+     * A host-form entry here needs a parseable `merchant.url` to mean
+     * anything, so an intent that carries none is denied
+     * MERCHANT_URL_UNVERIFIABLE rather than passing: on the allow side a
+     * non-match already fails closed, but on the BLOCK side "did not match"
+     * used to mean "not blocked", which let an agent evade the whole
+     * blocklist by omitting one optional field.
+     */
+    block?: string[];
+  };
+  /**
+   * Settlement-network constraint over `intent.network`. See PaymentIntent's
+   * `network` field for the format and for why currency is not a chain.
+   *
+   * DEFAULT, ARGUED — IN TWO LAYERS. At the GUARD layer, omitting this block
+   * imposes no network constraint: the guard is rail-agnostic and cannot know
+   * whether a "network" even exists for the rail in use (a Stripe test-mode
+   * charge has nothing meaningful to gate), and a default that denied
+   * unstated networks would deny every pre-existing caller's every payment on
+   * upgrade. But WHERE THE NETWORK IS ALWAYS KNOWN the safe configuration is
+   * enforced: the @vaduno/x402 adapter — whose every requirement names its
+   * settlement network, committed to by the EIP-712 domain the payer signs —
+   * REFUSES a deployment in which nothing constrains the chain (no trusted
+   * asset registry, no `networks` block here) unless the operator passes an
+   * explicit `allowChainBlind: true`. So a policy without `networks` is
+   * chain-blind by construction only on rails where chain-blindness can be a
+   * coherent choice, and never silently on x402. The moment a policy DOES
+   * declare a network constraint, the fail-closed rules apply in full:
+   * unknown network denied, unstated network denied, no wildcards.
+   */
+  networks?: {
+    /** If present, `intent.network` must match one of these exactly (case-insensitive). */
     allow?: string[];
     /** Always wins over allow. */
     block?: string[];

@@ -52,7 +52,7 @@ await ledger.verify();  // { ok: true, entries: n } — or exactly where history
 
 | | |
 |---|---|
-| **Policy engine** | Per-transaction / rolling day-week-month caps, merchant & category allowlists, rail restrictions, velocity limits (scope-wide **and per-merchant**, layerable burst + sustained windows), approval thresholds. Pure code, no model in the loop. |
+| **Policy engine** | Per-transaction / rolling day-week-month caps, merchant & category allowlists, **settlement-network** allow/block, rail restrictions, velocity limits (scope-wide **and per-merchant**, layerable burst + sustained windows), approval thresholds. Pure code, no model in the loop. |
 | **Signed mandates** | Ed25519 "permission slips" binding what a human authorized (amount, merchant, time window) to what executes. |
 | **Post-quantum readiness (evidence layer)** | The hash chain and Merkle tree are SHA-256 — already adequate against a quantum adversary (Grover halves the bits; 128-bit preimage resistance remains); the signatures are the exposed surface. Hybrid (v2) mandates carry an ML-DSA-44 (FIPS 204) signature alongside Ed25519 over the same `vaduno-mandate/v2` payload where the runtime supports it (a runtime probe — `mlDsa44Available()` — decides, never a version string; signing without support throws a typed `PqUnavailableError`). The classical signatures remain exposed post-CRQC unless the verifier sets `requireAlgs: ["ML-DSA-44"]`. See `docs/SECURITY-MODEL.md`, "Post-quantum posture". |
 | **Non-exportable signing** | Pass an `Ed25519Signer` instead of a `privateKeyPem` and the mandate key can live in a KMS/HSM: only signatures enter the process, every signer output is verified against the public key the signer declared at construction before anything is recorded, and every signer failure denies (never degrades to unsigned output). The key behind a signer must be minted for Vaduno and hold no other signing authority — never a blockchain wallet key. See `docs/signers.md` in the repo. |
@@ -73,7 +73,8 @@ const results = await Promise.all(
 ```
 
 - `status: "replayed"` carries the original outcome (`executed` / `failed` / `unresolved`); the executor does **not** run again.
-- A used intent id presented with **different money fields** is denied `MANDATE_REPLAY_MISMATCH` — an id-reuse attack, not a retry.
+- A used intent id presented with **different money fields** *under the same mandate* is denied `MANDATE_REPLAY_MISMATCH` — an id-reuse attack, not a retry.
+- A used intent id presented **under a different mandate** is denied `INTENT_ID_NOT_BUDGETED`. The digest check cannot see this one: `(M2, id)` is a claim key the registry has never held, so it answers "fresh". What catches it is the budget invariant — nothing executes on a spend reservation it did not take. Use a unique intent id per payment; reuse one only to retry the *same* payment under the *same* mandate.
 - Cross-process safety needs a shared `ConsumeStore` — [`FileConsumeStore`](https://www.npmjs.com/package/@vaduno/guard) on one box, [`PostgresConsumeStore`](https://www.npmjs.com/package/@vaduno/postgres) for multiple instances.
 - **Rolling spend caps need a shared limiter too.** The default is in-memory and per-instance, so two guard processes each enforcing a $50/day cap let $100 through. Pass `FileSpendLimiter` (one box) or `PostgresSpendLimiter` (multiple instances) and the cap holds — `reserve()` evaluates every window and records the reservation as one atomic step, so there is no read-then-write gap to race. See [SECURITY.md](https://github.com/premsreelathasugeendran/vaduno/blob/master/SECURITY.md).
 - **Caps are scoped to `policy.id`, never to `intent.agentId`.** The threat model assumes the agent controls every field of the intent, so a cap keyed on `agentId` would let a compromised agent mint a fresh budget by changing one string — which it did, in 0.2.0. If you want per-agent budgets, run one guard (and one policy id) per agent rather than trusting the intent.
@@ -105,6 +106,69 @@ velocity: {
 - **No velocity-free upgrade interval.** Spend records written before merchant attribution existed carry no merchant key and count toward *every* merchant window until they age out — bounded over-hold instead of a blind spot.
 - **Set `merchant.url` consistently, or one merchant gets two budgets.** Merchant identity is derived as the URL host when a URL is present and the merchant id otherwise, and the two forms are deliberately disjoint so an attacker cannot craft an id that collides with a host. The honest-integrator cost is that the *same* merchant sent sometimes with a URL and sometimes without counts as two separate per-merchant budgets.
 - **An empty `maxTransactions: []` enforces nothing** — it produces no windows and is identical to omitting the field. It is not an error and it is not a limit of zero; if you mean "no transactions", the policy already has better tools.
+
+## Merchant patterns and settlement networks: what they actually constrain
+
+**No merchant pattern verifies the payee.** `merchantMatches` compares a policy
+pattern against fields of the intent, and the caller sets every field of the
+intent — `merchant.url` exactly as much as `merchant.id`. The guard never
+contacts the URL and has no independent knowledge of who receives the money.
+
+| Form | Compares against | What it buys |
+|---|---|---|
+| `"openai.com"` / `"host:openai"` | `merchant.url` | **Matching precision**: parsed as a URL, compared on the hostname at a dot boundary, so `evil-openai.com` and `openai.com.evil.net` cannot pass; case and trailing-dot FQDN variants normalize out. |
+| `"id:openai"` / `"openai"` | `merchant.id` | Exact string compare. No parsing, no boundary logic. |
+
+Neither is "the strong one" *a priori* — pick by which field **your**
+integration derives honestly, per intent, from the real payment destination. A
+`merchant.url` fixed once at construction makes every host pattern match for
+every recipient. In a signer-level integration the ranking inverts: there
+`merchant.id` carries the payee address pulled from the bytes about to be
+signed (the strongest fact available) while `merchant.url` is the constant, so
+`id:` is the stronger control. Same in x402, where funds go to `payTo`,
+decoupled from the request host — constrain it with `id:<payTo>`.
+
+**`allow` is disjunctive, so a host pattern there can only widen.** An intent
+passes if *any* entry matches, so `["host:api.example.com", "id:0x…"]` does not
+mean "this host **and** this recipient" — it means "this recipient **or**
+anyone that host names". The conjunction is not expressible. Where the URL does
+not determine the recipient, that makes a host entry in `allow` a recipient
+bypass in the shape of a control, and `@vaduno/x402` refuses it outright
+(`RECIPIENT_UNGATED`; opt out with `allowHostOnlyMerchantPolicy: true`) because
+that adapter knows its rail's commitment structure. Host patterns in
+`merchants.block` are unaffected — a match there always denies, so disjunction
+only tightens.
+
+A host-form entry in `merchants.block` **needs** a parseable `merchant.url`, so
+an intent carrying none is denied `MERCHANT_URL_UNVERIFIABLE` rather than
+passing. On the allow side a non-match already denies; on the block side "did
+not match" would have meant "not blocked", and dropping one optional field
+walked past the whole blocklist.
+
+**Currency is not a chain.** USDC on Base Sepolia and USDC on Ethereum Sepolia
+produce the identical intent shape and the same currency code, so constrain the
+network explicitly:
+
+```ts
+policy: {
+  // ...
+  networks: { allow: ["eip155:84532"] },   // exact, case-insensitive, no wildcards
+},
+// and the intent says where it settles:
+{ /* ... */ network: "eip155:84532" }      // CAIP-2 recommended; @vaduno/x402 sets it
+```
+
+- Exact match only. `"eip155"` does **not** stand for every EVM chain — implicit
+  breadth is what made chain-blindness possible in the first place.
+- Once a `networks` block exists, an intent that states **no** network is denied
+  `NETWORK_MISSING`. Missing is a denial, never a skip.
+- Omitting `networks` imposes no network constraint at all. That default is
+  deliberate and additive — denying unstated networks would deny every payment
+  of every deployment written before the field existed — but it means **a policy
+  without `networks` is chain-blind**. If you settle on chains, set it.
+- `@vaduno/x402` populates `intent.network` for you: the x402 network name in
+  v1 (`"base-sepolia"`), the CAIP-2 id in v2 (`"eip155:84532"`). Separate key
+  spaces, exactly like the `assets` registry — match the version you speak.
 
 ## Deterministic risk scorecard: tiers, step-up routing, auto-freeze
 

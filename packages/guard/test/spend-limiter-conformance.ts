@@ -141,6 +141,36 @@ export function runSpendLimiterConformance(harness: SpendLimiterHarness): void {
       });
     });
 
+    it("a reservation id that names an Object.prototype slot is DATA, not a lookup hit", async () => {
+      // REGRESSION. reservationId is `intent.id`, a field the threat model
+      // assumes the caller controls. An implementation that indexes a plain
+      // JS object by it reads `reservations["__proto__"]` back as
+      // Object.prototype — TRUTHY — and answers "already reserved" while
+      // recording nothing, so the amount never counts against any cap.
+      // Measured on FileSpendLimiter before its store was given a null
+      // prototype: reserve("__proto__") returned
+      // {"ok":true,"reservationId":"__proto__","replayed":true} on an EMPTY
+      // limiter, where MemorySpendLimiter (Map-backed, the reference
+      // semantics) returned replayed:false. Every Object.prototype member is
+      // an instance of this: constructor, toString, valueOf, hasOwnProperty.
+      for (const id of ["__proto__", "constructor", "toString", "valueOf"]) {
+        await withLimiter(async ([l]) => {
+          const first = await l.reserve(req(id, 3_000, [dayCap(5_000)], T0));
+          expect(first.ok).toBe(true);
+          // A FIRST reservation is never a replay, whatever it is called.
+          if (first.ok) expect(first.replayed).toBe(false);
+          // And it must actually be counted: 3_000 of 5_000 is spent.
+          const totals = await l.totalsSince(
+            SCOPE,
+            new Date(T0 - DAY_MS).toISOString(),
+            CUR,
+          );
+          expect(totals.totalMinor).toBe(3_000);
+          expect((await l.reserve(req("other", 2_001, [dayCap(5_000)], T0))).ok).toBe(false);
+        });
+      }
+    });
+
     it("spend outside the window no longer counts", async () => {
       await withLimiter(async ([l]) => {
         expect((await l.reserve(req("old", 5_000, [dayCap(5_000)], T0))).ok).toBe(true);

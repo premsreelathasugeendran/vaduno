@@ -20,14 +20,15 @@ does **not** yet cover — so you can decide whether it fits your threat model.
 | Threat | Defense |
 |---|---|
 | Agent tries to overspend | Per-transaction / rolling day-week-month caps, evaluated deterministically |
-| Prompt-injected merchant swap | Merchant allowlist matched against the **URL host** when the pattern contains a dot (`openai.com`) — never the attacker-controlled `merchant.id`. A bare token without a dot matches `merchant.id` and is weak by construction; see limitation 3 |
-| Forged `merchant.id` to impersonate an allowed host | Host patterns ignore `merchant.id` entirely; lookalikes and trailing-dot FQDNs are normalized out |
+| Merchant-lookalike swap (`evil-openai.com`, `openai.com.evil.net`, trailing-dot FQDN) | A host pattern (`openai.com`, or explicit `host:`) is parsed as a URL and compared on the hostname at a **dot boundary**, so a lookalike cannot pass as the real host and case/FQDN variants normalize out. **This constrains `merchant.url`, which is caller-supplied like every other intent field** — see limitation 5 for what that does and does not buy you |
+| Blocklist evaded by dropping `merchant.url` | A host-form entry in `merchants.block` is unevaluable without a parseable URL, and unevaluable now DENIES (`MERCHANT_URL_UNVERIFIABLE`) instead of reading as "not blocked". **This row was FALSE before 0.6.1:** omitting one optional field walked past the entire blocklist |
+| Payment settled on the wrong chain | `intent.network` is a first-class field and `policy.networks.allow` / `.block` constrain it (exact, case-insensitive, no namespace wildcards); an intent that states no network under a policy that declares one is denied `NETWORK_MISSING`. **A policy with no `networks` block is chain-blind** — currency is not a chain, and USDC on two testnets produced the identical intent. See limitation 11 |
 | Concurrent requests racing a limit | The decision→**reserve**→consume→execute→commit section is serialized per guard (async mutex), and the cap itself is enforced INSIDE the atomic reserve rather than by a re-check under the lock — a re-check is still check-then-act across processes. The mutex orders one process; `SpendLimiter.reserve()` is what holds across them |
 | Cap reset by rotating `agentId` | Reservations are scoped to the **policy id**, set by the operator — never `intent.agentId`, which the agent controls. **This row was FALSE in 0.2.0:** the limiter keyed on `agentId`, so two guards sharing one limiter passed $100 through a $50 cap by rotating it. Fixed in 0.2.1; regression test in `test/cap-bypass.test.ts` |
 | Overspend via a dropped/doctored audit write | Spend limits are enforced from **authoritative in-memory state**, never from a read-back of the store: `execute()` increments its counter under the lock the instant the executor succeeds, and a two-phase `authorize()` spend counts from the moment its budget is reserved in the limiter. A lost `execution_result` write — on either path — flags `auditDegraded` but cannot un-count the charge |
 | Mandate replay (same signed mandate used twice) | Mandates are consume-once, claimed atomically in a `ConsumeStore` keyed on (mandateId, intentId), immediately before execution |
 | Retry storm / duplicate orchestration hop double-charging | Runtime enforcement: the same (mandate, intent id) claims **one** use; every duplicate returns `replayed` with the original outcome and the executor never re-runs (the rail fires **at most** once under N-way parallelism — zero times if the intent is denied or the executor never runs) |
-| A used intent id reused for a *different* payment | The claim commits an `intentDigest` of amount+currency+merchant+rail; a mismatch is denied `MANDATE_REPLAY_MISMATCH` — never replayed, never executed |
+| A used intent id reused for a *different* payment | Two independent checks, because the digest alone covered less than this row used to claim. **Same mandate:** the claim commits an `intentDigest` of amount+currency+merchant+rail; a mismatch is denied `MANDATE_REPLAY_MISMATCH` — never replayed, never executed. **Different mandate (or none, then one):** the digest check never fires, because `(M2, id)` is a claim key the registry has never seen — so the guard additionally refuses any mandated payment whose spend reservation was `replayed` rather than taken, `INTENT_ID_NOT_BUDGETED`. **This row was incomplete before 0.6.1:** reservations key on `intent.id` while claims key on `(mandateId, intent.id)`, and the gap executed real payments no spend window counted — measured at nine payments (5,400 minor) against a 1,000 cap with 600 counted. Regression test in `packages/guard/test/cap-bypass.test.ts` |
 | A mandate misapplied to a different task/merchant/agent | Optional context binding: `contextHash` must match the intent's context blob, and its `agentId`/`merchantId` fields must equal the intent (`CONTEXT_MISMATCH`) |
 | Mandate replay across restart / second instance | `hydrateFromLedger()` rebuilds use-counts **and** the consume registry from a shared persistent ledger; a `FileConsumeStore` (or DB unique index) makes claims atomic across live processes |
 | Field-value swap between check and execution (getter TOCTOU) | The intent is `structuredClone`d to a flat snapshot at entry; checks and the executor use that snapshot |
@@ -220,9 +221,34 @@ These are documented, not hidden. Some are scope choices; some are on the roadma
    chain. `verify()` catches recompute-inconsistent tampering; to catch a
    wholesale rewrite/truncation you must retain `head()` out-of-band and pass it
    to `verify(head)`. Signed heads / external anchoring are roadmap.
-5. **`merchant.id` matching is weak by construction.** `id:`/bare-token patterns
-   match an attacker-controlled field; use **host patterns** for anything
-   security-relevant. `id` patterns are for trusted, integrator-assigned ids.
+5. **No merchant pattern verifies the payee — `merchant.url` is caller-supplied,
+   exactly like `merchant.id`.** The guard never contacts the URL, never
+   resolves it, and has no independent knowledge of who receives the money.
+   What a **host pattern** buys over an `id:`/bare-token pattern is *matching
+   precision*, not trust: URL parsing plus a dot boundary, so lookalikes and
+   FQDN variants cannot slip through, where an `id:` pattern is a raw string
+   compare. It is meaningful only if you derive `merchant.url` **per intent**
+   from the destination the payment is actually about to reach; a
+   `merchant.url` fixed once at construction makes every host pattern match for
+   every recipient. Earlier releases of this document ranked host patterns as
+   *categorically stronger* and said they avoid attacker-controlled fields —
+   **that claim was wrong**, and in a signer-level integration it is backwards:
+   there `merchant.id` carries the payee address extracted from the bytes about
+   to be signed (the strongest fact in the intent) while `merchant.url` is the
+   constant, so `id:` is the stronger control. Pick the form by which field
+   your integration derives honestly, not by a ranking. Related and already
+   documented: in x402 the funds go to `payTo`, decoupled from the request
+   host — constrain it with `id:<payTo>`.
+   **`merchants.allow` is disjunctive, so a host entry can only WIDEN.** An
+   intent passes if *any* entry matches, so `["host:api.example.com",
+   "id:0x…"]` does not mean "this host AND this recipient" — it means "this
+   recipient OR anyone that host names". The conjunction is not expressible
+   here. On x402, where the URL does not determine the recipient, that makes a
+   host entry in `allow` a recipient bypass in the shape of a control, so
+   **@vaduno/x402 refuses host-form `allow` entries by default**
+   (`RECIPIENT_UNGATED`; opt out with `allowHostOnlyMerchantPolicy: true`).
+   Host patterns in `merchants.block` are unaffected — a match there always
+   denies, so disjunction only tightens.
 6. **Node runtime only.** Uses `node:crypto`. No edge/workerd build yet.
 7. **One policy per guard.** No per-agent multi-policy routing yet; run separate
    guards for separate policies.
@@ -288,6 +314,19 @@ These are documented, not hidden. Some are scope choices; some are on the roadma
     cross families, but the within-family truncation residual exists
     (~2^32 birthday between attacker-chosen keys). Nothing here is called
     "quantum-safe"; the release gate rejects that phrase.
+11. **A policy without a `networks` block is chain-blind, by choice.** Currency
+    is not a chain: USDC on Base Sepolia (`eip155:84532`) and USDC on Ethereum
+    Sepolia (`eip155:11155111`) produce the same intent shape and the same
+    currency code, and before 0.6.1 the intent had no chain dimension at all —
+    a deployment targeting one settled on the other, with the caller's asset
+    registry as the only gate, which is caller config and not a policy control.
+    `intent.network` + `policy.networks` fix that, but the default had to stay
+    additive: denying every unstated network would deny every payment of every
+    deployment that predates the field. So the control exists and is
+    fail-closed **once you switch it on** (unknown network denied, unstated
+    network denied `NETWORK_MISSING`, no namespace wildcards — `eip155` is not
+    "every EVM chain") and does nothing at all until you do. If you settle on
+    chains, set it.
 
 ## x402 rail adapter (`@vaduno/x402`)
 
@@ -304,9 +343,17 @@ server. Guarantees:
   `metadata.resourceClaimed` for audit only. By default a claim whose origin
   differs from the request origin is refused (`requireResourceOriginMatch`,
   fail closed).
-- **Host allowlist ≠ recipient control.** In x402 funds go to `payTo`,
-  decoupled from the request host. Constrain the recipient explicitly with an
-  `id:<payTo>` merchant pattern; a host allowlist alone does not. v2 permits
+- **Host allowlist ≠ recipient control — and the adapter now enforces that.**
+  In x402 funds go to `payTo`, decoupled from the request host, and `payTo` is
+  what the authorization commits to. Because `merchants.allow` is disjunctive,
+  a host-form entry there only widens the recipient constraint, so this
+  adapter **refuses** a policy carrying one (`RECIPIENT_UNGATED`) before the
+  payer runs. Constrain the recipient with `id:<payTo>` entries, put host
+  patterns in `merchants.block` (where matching always denies), or pass
+  `allowHostOnlyMerchantPolicy: true` to accept host-based allowlisting
+  explicitly. Measured before this gate: a policy of
+  `merchants.allow: ["host:api.example.com"]` against a server on that host
+  naming an arbitrary `payTo` **paid, 200 OK**. v2 permits
   `payTo` to be a role constant (e.g. `"merchant"`) resolved out of band —
   refused by default (`PAYTO_ROLE_REFUSED`) when it matches `^[a-z]{1,16}$` —
   a SHAPE HEURISTIC, not a role list, so `MERCHANT` or `merchant_wallet` are

@@ -143,6 +143,31 @@ export function runLedgerConcurrencyConformance<R>(
         // `unique (prev_hash)` constraint enforces at the DB layer; without
         // this assertion "no duplicate seq" can be satisfied by renumbering
         // the loser while both children of one parent survive.
+        //
+        // THIS ASSERTION FAILED ONCE, in one full 1022-test workspace run, and
+        // was then hunted rather than shrugged off. It did NOT reproduce in:
+        // 5 isolated runs, 3 full guard suites, 2 full workspace suites, 25
+        // runs of this file under three concurrent full-guard-suite loops, or
+        // 1,110 in-process rounds of this exact shape (24 appends, 3 handles)
+        // across all three stores — including a variant with FileMutex
+        // staleMs forced to 1 ms. What the hunt DID establish:
+        //  - MemoryLedgerStore cannot fork: its compare-and-append is one
+        //    synchronous body, so once an entry is the tail, exactly one
+        //    append can match its hash as `expected.prevHash`.
+        //  - SupabaseLedgerStore cannot fork: `unique (prev_hash)` makes a
+        //    second child of one parent unrepresentable AT THE DATABASE, and
+        //    the schema-faithful fake enforces it in one synchronous body.
+        //  - JsonlLedgerStore can fork by exactly ONE mechanism — two
+        //    simultaneous FileMutex holders, which requires a stale reclaim of
+        //    a LIVE holder. That mechanism was real, had no test, and is now
+        //    fixed (heartbeat + monotonic confirmed reclaim; see
+        //    src/enforce/file-mutex.ts and test/file-mutex.test.ts, where both
+        //    of its triggers are reproduced against the pre-fix code).
+        // The honest statement: the fork path that existed has been closed,
+        // and this specific failure was never reproduced, so it is NOT claimed
+        // to have been that path. If it recurs, the fixture below plus
+        // verify() (which reports a fork distinctly from a gap) is where to
+        // start.
         const { handles, read, dispose } = await open(3);
         await Promise.all(
           Array.from({ length: 24 }, (_, i) =>

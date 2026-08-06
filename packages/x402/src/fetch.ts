@@ -158,6 +158,133 @@ export interface X402FetchOptions {
   now?: () => Date;
   /** Enable x402 v2 (header-carried) payments. Absent = v2 402s are refused. */
   v2?: X402V2Options;
+  /**
+   * EXPLICIT opt-out of the chain gate (default false).
+   *
+   * On the x402 rail the settlement network is ALWAYS known — every
+   * requirement names it, and the EIP-712 authorization the payer signs
+   * commits to the chain — so a deployment where NOTHING constrains the chain
+   * (no `assets` registry, no `policy.networks`) is never a deliberate
+   * configuration: it is the original chain-blind hole, in which a guard
+   * intended for one chain authorizes the identical payment on another (same
+   * amount, same currency label, same merchant shape, wrong network). Such
+   * deployments are therefore refused (NETWORK_UNGATED) before the payer runs.
+   *
+   * Set true only if you genuinely accept any settlement network the server
+   * names. The refusal names this flag, so an operator who hits it on upgrade
+   * knows exactly what to configure instead (an `assets` registry is the
+   * recommended gate — it also pins the token contract).
+   */
+  allowChainBlind?: boolean;
+  /**
+   * EXPLICIT opt-out of the recipient gate (default false).
+   *
+   * A `merchants.allow` list whose every entry is HOST-FORM reads as a
+   * merchant control but does not constrain the recipient on this rail — see
+   * assertRecipientGated. Set true if you genuinely intend to pay whatever
+   * address an allowlisted host names (e.g. the host IS the merchant and
+   * rotates its own settlement address). Recipient policing is then delegated
+   * to that host's honesty.
+   */
+  allowHostOnlyMerchantPolicy?: boolean;
+}
+
+/**
+ * Is `pattern` a HOST-form merchant pattern? Mirrors `merchantMatches` in
+ * @vaduno/guard exactly — "id:" is a recipient pattern, "host:" is a host
+ * pattern, and a bare token is a host pattern iff it contains a dot. If the
+ * two classifications ever drift, this gate refuses (or admits) the wrong
+ * configurations, so a change to one belongs in the other.
+ */
+function isHostFormPattern(pattern: string): boolean {
+  const raw = pattern.trim();
+  const lower = raw.toLowerCase();
+  if (lower.startsWith("id:")) return false;
+  if (lower.startsWith("host:")) return true;
+  return raw.includes(".");
+}
+
+/**
+ * The recipient gate.
+ *
+ * `merchants.allow: ["host:api.example.com"]` READS as "only pay this
+ * merchant". On x402 it does not mean that and cannot: the protocol decouples
+ * the recipient from the resource host — `payTo` is an arbitrary address the
+ * server names in its 402 — and the EIP-712 authorization the payer signs
+ * commits to `payTo`, never to the request URL. Measured before this gate: a
+ * server on an allowlisted host naming `payTo: 0xAtTaCkEr…` was PAID, 200 OK,
+ * with every policy control the operator wrote satisfied.
+ *
+ * WHY ANY HOST ENTRY IN `allow` IS REFUSED, not merely a host-ONLY list.
+ * `merchants.allow` is DISJUNCTIVE — an intent passes if ANY pattern matches —
+ * so a host entry can only ever LOOSEN the recipient constraint, never tighten
+ * it. `["host:api.example.com", "id:0x…dEaD"]` therefore admits payment to
+ * every address api.example.com cares to name, exactly as the host-only list
+ * did; the `id:` entry beside it changes nothing and merely makes the policy
+ * read safer. There is no AND to express here, so on this rail a host pattern
+ * in `allow` is never a recipient control and is always a widening one.
+ *
+ * The governing principle is that a field is policeable iff the
+ * authorization's digest commits to it. This adapter, unlike the rail-agnostic
+ * guard, KNOWS this rail's commitment structure, so it refuses the
+ * configuration that is false assurance rather than silently honoring it.
+ *
+ * WHAT IS NOT REFUSED, and why the line is here:
+ *  - a policy with NO `merchants` block: the operator made no merchant claim,
+ *    and the asset registry plus the origin check are the stated gates;
+ *  - `id:` entries: `merchant.id` IS `payTo`, the committed field — this is
+ *    the control that means something on x402;
+ *  - host patterns in `merchants.BLOCK`: disjunction is safe on the block
+ *    side (a match always denies), so a host blocklist only ever tightens.
+ *
+ * Host patterns in `allow` are not worthless in general — this adapter derives
+ * `merchant.url` per request from the origin it actually contacts (never from
+ * the server's `resource` claim), so such a pattern does police the endpoint
+ * reached. But that endpoint is the URL the CALLER passed to this fetch: the
+ * pattern catches a caller-side mistake, not a counterparty. Opt in with
+ * `allowHostOnlyMerchantPolicy` if that is the property you want.
+ */
+function assertRecipientGated(opts: X402FetchOptions, payTo: string): void {
+  if (opts.allowHostOnlyMerchantPolicy === true) return;
+  const allow = opts.guard.getPolicy().merchants?.allow;
+  if (allow === undefined || allow.length === 0) return;
+  const hostForms = allow.filter((p) => isHostFormPattern(p));
+  if (hostForms.length === 0) return;
+  throw new X402RequirementRefusedError(
+    "RECIPIENT_UNGATED",
+    `refusing to pay ${JSON.stringify(payTo)}: policy.merchants.allow contains host-form ` +
+      `pattern(s) ${JSON.stringify(hostForms)}. On x402 the recipient is decoupled from the ` +
+      `resource host — payTo is what the authorization commits to — and \`allow\` is ` +
+      `disjunctive, so a host pattern only widens the recipient constraint: this policy ` +
+      `admits payment to ANY address an allowlisted host names. Constrain the recipient with ` +
+      `\`id:<payTo>\` entries (host patterns belong in \`merchants.block\`, where matching ` +
+      `always denies), or pass \`allowHostOnlyMerchantPolicy: true\` to accept host-based ` +
+      `allowlisting explicitly`,
+  );
+}
+
+/**
+ * The chain gate. Payment proceeds only when SOMETHING in the deployment
+ * constrains the settlement network: a trusted `assets` registry (gates
+ * (network, asset) pairs and refuses unlisted networks by construction), a
+ * live `policy.networks` constraint, or the explicit `allowChainBlind`
+ * opt-out. Evaluated per payment against the guard's CURRENT policy — a
+ * setPolicy() that drops the networks block re-closes payment rather than
+ * silently reopening the hole.
+ */
+function assertChainGated(opts: X402FetchOptions, network: string): void {
+  if (opts.allowChainBlind === true) return;
+  if (opts.assets !== undefined) return;
+  const nets = opts.guard.getPolicy().networks;
+  if (nets && (nets.allow !== undefined || nets.block !== undefined)) return;
+  throw new X402RequirementRefusedError(
+    "NETWORK_UNGATED",
+    `refusing to pay on network ${JSON.stringify(network)}: nothing in this deployment ` +
+      `constrains the settlement chain (no trusted asset registry, no policy.networks). ` +
+      `Configure an \`assets\` registry (recommended — it also pins the token), add a ` +
+      `\`networks\` constraint to the policy, or pass \`allowChainBlind: true\` to accept ` +
+      `any chain explicitly`,
+  );
 }
 
 function defaultSelect(
@@ -409,6 +536,13 @@ export function createX402Fetch(opts: X402FetchOptions): FetchLike {
       );
     }
 
+    // The two configuration gates, before anything is contacted or signed: a
+    // deployment in which nothing constrains the settlement network, and a
+    // merchant allowlist that constrains no recipient. Both refuse a
+    // configuration that reads as a control but is not one on this rail.
+    assertChainGated(opts, requirement.network);
+    assertRecipientGated(opts, requirement.payTo);
+
     // Defense in depth: the server's claimed resource origin must match where
     // we actually connected. Fail closed on a mismatch (or unparseable claim).
     if (requireOriginMatch) {
@@ -524,6 +658,10 @@ async function payV2(
     );
   }
 
+  // The configuration gates — same stance as the v1 path.
+  assertChainGated(opts, requirement.network);
+  assertRecipientGated(opts, requirement.payTo);
+
   // v2 payTo may be a role constant instead of an address. Refuse by default:
   // an unresolvable recipient cannot be allowlisted, so every `id:<payTo>`
   // policy would silently stop constraining where the money goes.
@@ -597,8 +735,14 @@ async function payV2(
   let settlement: SettlementResponse | null = null;
 
   const result = await opts.guard.execute(intent, async () => {
-    // v2.pay() throwing here means nothing was transmitted -> guard records
-    // "failed" and the spend is NOT counted. Correct: no money moved.
+    // v2.pay() throwing here means nothing was transmitted. The guard records
+    // "failed" — but the spend STAYS COUNTED, exactly as on the v1 path:
+    // burn-on-failure holds for ANY thrown executor, because a throw cannot
+    // distinguish "never sent" from "sent, then the connection died". (An
+    // earlier version of this comment claimed the spend was not counted; that
+    // was false — the guard's reservation is deliberately left held. If you
+    // can PROVE nothing was transmitted, guard.releaseSpend(intentId) is the
+    // explicit way to reclaim it.)
     const paymentHeader = await v2.pay(requirement, ctx);
     const headers = new Headers(baseInit.headers);
     headers.set(PAYMENT_SIGNATURE_HEADER, paymentHeader);

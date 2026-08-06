@@ -11,6 +11,19 @@ export function makeGuard(policyOver: Partial<SpendPolicy> = {}) {
       version: 1,
       currency: "USDC",
       limits: { perTransactionMinor: usdc(5), perDayMinor: usdc(20) },
+      // The adapter refuses chain-blind deployments by default (NETWORK_UNGATED
+      // — see assertChainGated in src/fetch.ts), so the helper policy declares
+      // the networks the mock servers use, exactly as a real deployment must.
+      // Tests probing the ungated default pass `networks: undefined` explicitly.
+      networks: {
+        allow: [
+          "base-sepolia",
+          "ethereum-sepolia",
+          "eip155:84532",
+          "eip155:11155111",
+          "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+        ],
+      },
       ...policyOver,
     },
     ledger,

@@ -1,0 +1,14 @@
+{
+  "name": "guarded-signer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "GuardedAccount: @vaduno/guard in the MANDATORY signing path — policy runs inside signTypedData, so a denied payment never has a signature.",
+  "scripts": {
+    "start": "node pay.mjs"
+  },
+  "dependencies": {
+    "@vaduno/guard": "*",
+    "viem": "^2.21.0"
+  }
+}

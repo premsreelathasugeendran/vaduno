@@ -89,7 +89,9 @@ const result = await guard.execute(
 const audit = await ledger.verify();  // { ok: true, entries: n } — or exactly where history was tampered
 ```
 
-**On merchant patterns:** a pattern containing a dot (`openai.com`) matches the **URL host** — the thing you actually connected to, which an agent cannot forge. A bare token with no dot (`openai`) matches `merchant.id`, a field the agent supplies, so it is only safe for trusted integrator-assigned ids. Use host patterns for anything security-relevant.
+**On merchant patterns:** a pattern containing a dot (`openai.com`) matches the **URL host** in `merchant.url`; a bare token (`openai`) matches `merchant.id`. Both fields are set by the caller, so neither form verifies who receives the money — the guard never contacts the URL. What a host pattern buys is *matching precision*: URL parsing plus a dot boundary, so `evil-openai.com` cannot pass as `openai.com`. It is meaningful only if you set `merchant.url` **per intent** from the destination the payment actually reaches; fixed once at construction, it matches for every recipient. Pick the form by which field your integration derives honestly — details and the case where the ranking inverts are in [`SECURITY.md`](SECURITY.md) limitation 5.
+
+**On chains:** currency is not a chain. Set `intent.network` (CAIP-2, e.g. `"eip155:84532"`) and `policy.networks.allow` if you settle on-chain — a policy without a `networks` block is chain-blind, because USDC on two different testnets produces the identical intent.
 
 What the guard blocks, from the demo (`npm run demo`):
 
@@ -160,7 +162,8 @@ const results = await Promise.all(
 **Scope of that guarantee:** at-most-once holds within one process by default, and across processes when you supply a shared store. `FileConsumeStore` covers several processes on one box; [`@vaduno/postgres`](packages/postgres) covers multiple instances. Both are held to the same conformance suite — the one that a check-then-act implementation passes sequentially and fails only under concurrency.
 
 - **`status: "replayed"`** carries the original attempt's outcome (`executed` / `failed` / `unresolved`); the executor does **not** run again.
-- A used intent id presented with **different money fields** is denied `MANDATE_REPLAY_MISMATCH` — an id-reuse attack, not a retry.
+- A used intent id presented with **different money fields** *under the same mandate* is denied `MANDATE_REPLAY_MISMATCH` — an id-reuse attack, not a retry.
+- A used intent id presented **under a different mandate** is denied `INTENT_ID_NOT_BUDGETED`. The digest check cannot see this one: `(M2, id)` is a claim key the registry has never held, so it answers "fresh". What catches it is the budget invariant — nothing executes on a spend reservation it did not take. Use a unique intent id per payment; reuse one only to retry the *same* payment under the *same* mandate.
 - **Context binding** (`mandateContextHash`): set `constraints.contextHash` at issue time and the intent must present the exact context blob — with `agentId`/`merchantId` matching — or it's denied `CONTEXT_MISMATCH`. This binds a mandate to one approved task run so a valid mandate can't be redirected by a different orchestration hop.
 - **Cross-process:** the default `MemoryConsumeStore` covers one process; pass a `FileConsumeStore` (one box) or `PostgresConsumeStore` (multi-instance) so a race between processes still yields exactly one execution. `hydrateFromLedger()` rebuilds the registry after a restart.
 
@@ -264,6 +267,10 @@ Rail-specific security notes (see [SECURITY.md](SECURITY.md) and the [package RE
   allowlist does *not* constrain the recipient — pin it with an `id:<payTo>`
   pattern if that matters. v2 role-constant `payTo` values (e.g. `"merchant"`)
   are refused by default: an unresolvable recipient cannot be allowlisted.
+- **The adapter sets `intent.network`** (v1 network name, v2 CAIP-2 id) so
+  `policy.networks.allow` can refuse a wrong-chain payment. Without a `networks`
+  block the policy is chain-blind — the asset registry is caller config, not a
+  policy control.
 - **Pass the `assets` registry.** Without it, `currency` comes from the server's
   spoofable `extra.symbol`. With it, a token that isn't on your list is refused.
   v1 network names and v2 CAIP-2 ids are **separate registry keys**.

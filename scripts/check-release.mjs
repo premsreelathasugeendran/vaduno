@@ -214,6 +214,16 @@ for (const name of PACKAGES) {
           .filter((f) => f.endsWith(".md"))
           .map((f) => join(root, "docs", f))
       : []),
+    // Example READMEs carry the same claims to the same readers — often the
+    // MOST load-bearing ones, because an example is where a reader goes to find
+    // out what the thing actually does. They are not published to npm, so the
+    // per-package loop above never sees them; leaving them unscanned would be
+    // the gate's scope being narrower than the claim made for it, again.
+    ...(existsSync(join(root, "examples"))
+      ? readdirSync(join(root, "examples"))
+          .map((d) => join(root, "examples", d, "README.md"))
+          .filter((p) => existsSync(p))
+      : []),
   ];
   for (const p of extraDocs) {
     if (!existsSync(p)) continue;

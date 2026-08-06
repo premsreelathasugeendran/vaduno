@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import { AuditLedger } from "../src/ledger/ledger.js";
 import { MemoryLedgerStore } from "../src/ledger/stores/memory.js";
 import { MemorySpendLimiter } from "../src/enforce/spend-limiter.js";
+import { MandateManager, generateMandateKeyPair } from "../src/mandate/mandate.js";
 import { VadunoGuard } from "../src/guard.js";
 import type { PaymentIntent, SpendLimiter, SpendPolicy } from "../src/types.js";
 
@@ -167,5 +168,173 @@ describe("REGRESSION: reused intent.id must not re-run the rail", () => {
     // The failed reservation is still held, so a NEW intent for the same amount
     // must be denied — otherwise a retry loop with fresh ids spends unbounded.
     expect((await g.execute(intent("f-2"), boom)).status).toBe("denied");
+  });
+});
+
+/**
+ * REGRESSION: a MANDATED payment executing on a reservation it never took.
+ *
+ * The limiter keys reservations on `intent.id`. The consume registry keys uses
+ * on (mandateId, intent.id). Reuse one intent id under a SECOND mandate — or
+ * under a mandate after a first payment that carried none — and the two stores
+ * disagree: `reserve()` answers `replayed` and records NOTHING, while
+ * `consumeOnce()` answers "fresh", because that (mandate, id) pair is new to
+ * it. The guard took the mandate's word and ran the rail, so the payment moved
+ * funds no spend window ever counted.
+ *
+ * Measured before the fix, cap 1_000, payments of 600:
+ *   two mandates       -> both executed, real spend 1_200, limiter counted 600
+ *   eight mandates     -> nine executed, real spend 5_400, limiter counted 600
+ *   authorize()        -> two authorizations under one 1_000 cap
+ * The first payment did not even need a mandate.
+ */
+const CAP_M = 1_000;
+
+const mandatePolicy: SpendPolicy = {
+  id: "mandate-cap-policy",
+  version: 1,
+  currency: "USD",
+  limits: { perTransactionMinor: 1_000, perDayMinor: CAP_M },
+};
+
+function mIntent(id: string, mandateId?: string): PaymentIntent {
+  return {
+    id,
+    agentId: "agent-1",
+    ...(mandateId !== undefined ? { mandateId } : {}),
+    merchant: { id: "openai", url: "https://api.openai.com" },
+    amount: { amountMinor: 600, currency: "USD" },
+    rail: "x402",
+    requestedAt: new Date().toISOString(),
+  };
+}
+
+async function mandateFixture(count: number, maxUses = 1) {
+  const limiter = new MemorySpendLimiter();
+  const keys = generateMandateKeyPair();
+  const mandates = new MandateManager({
+    publicKeyPem: keys.publicKeyPem,
+    privateKeyPem: keys.privateKeyPem,
+  });
+  const ids: string[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const m = await mandates.issue({
+      issuer: "human@example.com",
+      agentId: "agent-1",
+      constraints: {
+        maxAmountMinor: 1_000,
+        currency: "USD",
+        validFrom: "2000-01-01T00:00:00.000Z",
+        expiresAt: "2100-01-01T00:00:00.000Z",
+        maxUses,
+      },
+    });
+    ids.push(m.id);
+  }
+  // A FRESH guard per call, so the single-guard in-memory advisory history is
+  // never what refuses — the limiter is the thing under test.
+  const mk = () =>
+    new VadunoGuard({
+      policy: mandatePolicy,
+      ledger: new AuditLedger(new MemoryLedgerStore()),
+      limiter,
+      mandates,
+    });
+  const counted = () =>
+    limiter.totalsSince("mandate-cap-policy", "1970-01-01T00:00:00.000Z", "USD");
+  return { limiter, mandates, ids, mk, counted };
+}
+
+describe("REGRESSION: nothing executes on a reservation it did not take", () => {
+  it("a second mandate cannot re-use one intent id to spend past the cap", async () => {
+    const { ids, mk, counted } = await mandateFixture(2);
+    let spent = 0;
+    const pay = async () => {
+      spent += 600;
+      return { ok: true };
+    };
+
+    const first = await mk().execute(mIntent("SAME-ID", ids[0]), pay);
+    const second = await mk().execute(mIntent("SAME-ID", ids[1]), pay);
+
+    expect(first.status).toBe("executed");
+    expect(second.status).toBe("denied");
+    if (second.status === "denied") {
+      expect(second.policyResult.reasons.map((r) => r.code)).toContain(
+        "INTENT_ID_NOT_BUDGETED",
+      );
+    }
+    expect(spent).toBe(600);
+    expect((await counted()).totalMinor).toBe(600);
+  });
+
+  it("the unmandated-then-mandated variant is closed too (one mandate suffices)", async () => {
+    const { ids, mk, counted } = await mandateFixture(1);
+    let spent = 0;
+    const pay = async () => {
+      spent += 600;
+      return { ok: true };
+    };
+
+    expect((await mk().execute(mIntent("SAME-ID"), pay)).status).toBe("executed");
+    expect((await mk().execute(mIntent("SAME-ID", ids[0]), pay)).status).toBe("denied");
+    expect(spent).toBe(600);
+    expect((await counted()).totalMinor).toBe(600);
+  });
+
+  it("it does not scale with the number of mandates", async () => {
+    const { ids, mk, counted } = await mandateFixture(8);
+    let spent = 0;
+    const pay = async () => {
+      spent += 600;
+      return { ok: true };
+    };
+    await mk().execute(mIntent("SAME-ID"), pay);
+    for (const id of ids) {
+      expect((await mk().execute(mIntent("SAME-ID", id), pay)).status).toBe("denied");
+    }
+    // Was 5_400 of real spend against 600 counted, under a 1_000 cap.
+    expect(spent).toBe(600);
+    expect((await counted()).totalMinor).toBe(600);
+  });
+
+  it("the two-phase authorize() path holds the same invariant", async () => {
+    const { ids, mk, counted } = await mandateFixture(1);
+    expect((await mk().authorize(mIntent("SAME-ID"))).status).toBe("authorized");
+    expect((await mk().authorize(mIntent("SAME-ID", ids[0]))).status).toBe("denied");
+    expect((await counted()).totalMinor).toBe(600);
+  });
+
+  it("a genuine RETRY — same mandate, same id — still replays, and never denies", async () => {
+    // The check must not eat the property intent-id reuse actually exists for.
+    // maxUses 2 so the mandate itself does not refuse the retry first
+    // (MANDATE_USES_EXHAUSTED) — this test is about the consume registry's
+    // DUPLICATE branch, which is the one the new check must not reach.
+    const { ids, mk } = await mandateFixture(1, 2);
+    let railCalls = 0;
+    const pay = async () => {
+      railCalls += 1;
+      return { ok: true };
+    };
+    const first = await mk().execute(mIntent("RETRY", ids[0]), pay);
+    const again = await mk().execute(mIntent("RETRY", ids[0]), pay);
+    expect(first.status).toBe("executed");
+    expect(again.status).toBe("replayed");
+    if (again.status === "replayed") expect(again.original.status).toBe("executed");
+    expect(railCalls).toBe(1);
+  });
+
+  it("distinct intent ids under distinct mandates are unaffected — the cap does the refusing", async () => {
+    const { ids, mk } = await mandateFixture(2);
+    const pay = async () => ({ ok: true });
+    expect((await mk().execute(mIntent("id-1", ids[0]), pay)).status).toBe("executed");
+    // 600 + 600 > 1_000: refused by the DAY window, not by the new check.
+    const second = await mk().execute(mIntent("id-2", ids[1]), pay);
+    expect(second.status).toBe("denied");
+    if (second.status === "denied") {
+      expect(second.policyResult.reasons.map((r) => r.code)).not.toContain(
+        "INTENT_ID_NOT_BUDGETED",
+      );
+    }
   });
 });

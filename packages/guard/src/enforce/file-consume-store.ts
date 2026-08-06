@@ -53,10 +53,17 @@ export class FileConsumeStore implements ConsumeStore {
     try {
       const raw = await readFile(this.filePath, "utf8");
       const parsed = JSON.parse(raw) as Partial<FileShape>;
-      return { claims: parsed.claims ?? {} };
+      // NULL-PROTOTYPE for the same reason as FileSpendLimiter.load(): this
+      // record is indexed by caller-influenced strings, and on a plain object
+      // `claims["__proto__"]` reads back Object.prototype — truthy — which
+      // claim() would take as an existing claim. The length prefix in key()
+      // happens to make every key start with a digit today, so nothing named
+      // after a prototype slot can be produced; that is one line away in
+      // another file, and this record should not depend on it.
+      return { claims: Object.assign(Object.create(null), parsed.claims) };
     } catch (err: unknown) {
       const e = err as NodeJS.ErrnoException;
-      if (e.code === "ENOENT") return { claims: {} };
+      if (e.code === "ENOENT") return { claims: Object.create(null) };
       // A corrupt registry fails closed (claims error -> guard denies) rather
       // than forgetting consumed uses. Atomic writes make this unreachable
       // from our own writes.

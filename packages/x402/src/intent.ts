@@ -60,6 +60,17 @@ export function requirementToIntent(
     },
     amount: { amountMinor: parseAtomicAmount(req.maxAmountRequired), currency },
     rail: "x402",
+    // FIRST-CLASS, not just metadata. The network used to live only in
+    // `metadata.network`, which no policy rule reads — so a guard configured
+    // for one chain authorized the identical intent on another (same currency,
+    // same shape, wrong chain), with the caller's asset registry as the only
+    // gate. Promote it so `policy.networks` can refuse it.
+    //
+    // KEY SPACE: v1 carries the x402 network NAME ("base-sepolia"); v2 carries
+    // a CAIP-2 id ("eip155:84532"). They are separate key spaces, exactly as
+    // the `assets` registry already treats them — a `networks.allow` entry for
+    // `base` does not admit `eip155:8453`. Match the version you speak.
+    network: req.network,
     requestedAt: now().toISOString(),
     metadata: {
       scheme: req.scheme,
@@ -109,6 +120,10 @@ export function requirementToIntentV2(
     },
     amount: { amountMinor: parseAtomicAmount(req.amount), currency },
     rail: "x402",
+    // The CAIP-2 network id, first-class so `policy.networks` can gate it.
+    // See the v1 builder above for why metadata alone was not a control, and
+    // for the v1-name / v2-CAIP-2 key-space split.
+    network: req.network,
     requestedAt: now().toISOString(),
     metadata: {
       x402Version: 2,
