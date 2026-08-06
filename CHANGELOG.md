@@ -6,7 +6,7 @@ This project is pre-1.0. Under semver, 0.x minor bumps may break the API. Two
 have, and each was breaking because the fix for a real security bug required it.
 See [`SECURITY.md`](SECURITY.md) for what is and isn't guaranteed.
 
-## 0.6.1 — unreleased
+## 0.6.1 — 2026-08-06
 
 ### Fixed — two ways a refusal (or a valid payment) could still write ZERO ledger rows
 
