@@ -94,10 +94,10 @@ honestly as a demonstration of engineering rather than a product seeking users.
 
 ## What is true regardless of the outcome
 
-If the gate fails, what remains is a published, MIT-licensed library with 1,201
-passing tests (measured 2026-08-09), twenty-one payments settled on a live chain — the count from an
+If the gate fails, what remains is a published, MIT-licensed library with 1,202
+passing tests, twenty-two payments settled on a live chain — the count from an
 exhaustive on-chain scan of every USDC transfer out of the experiment wallet
-(2026-08-09, genesis to tip, zero dropped RPC chunks; an earlier count of
+(re-measured 2026-08-10, genesis to tip, zero dropped RPC chunks; an earlier count of
 "seven" in this file came from a scan that silently swallowed failed chunks,
 which is exactly the defect class this project keeps writing about), including
 two through the packaged `@vaduno/cloudflare` build and one signed by a
