@@ -11,3 +11,15 @@ export {
   type TypedDataRequest,
   type WrappableAccount,
 } from "./guarded-signer.js";
+export {
+  connectRemoteSigner,
+  createSignerHost,
+  httpTransport,
+  remoteSigner,
+  SIGNER_WIRE_VERSION,
+  type RemoteSignerOptions,
+  type SignerHost,
+  type SignerTransport,
+  type SignerWireRefusal,
+  type SignerWireResponse,
+} from "./signer-host.js";

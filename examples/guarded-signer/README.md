@@ -339,9 +339,11 @@ process can read that file and sign around the wrapper entirely. The wrapper
 makes the guard mandatory for *every signature this object can produce*; making
 it mandatory for the deployment is a **key-custody property** — the raw key must
 live in a separate process, Durable Object, or KMS whose sole exposed API is the
-gated `signTypedData`. This example demonstrates the seam; it cannot enforce the
-custody around it. Treat the single-process version as a development
-convenience, not the security boundary.
+gated `signTypedData`. That configuration now ships:
+`createSignerHost` / `remoteSigner` in `@vaduno/cloudflare`, demonstrated with
+two real OS processes in [`examples/keyless-agent`](../keyless-agent/)
+(`npm run demo:keyless`). Treat THIS example's single-process version as a
+development convenience, not the security boundary.
 
 **The chain gate and the validity ceiling are opt-in.** The intent carries
 `network: eip155:<chainId>`, so `policy.networks.allow` can gate the chain — but

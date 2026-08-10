@@ -60,8 +60,12 @@ licensing); no such adapter will be accepted.
    than claiming distributed trust we don't have.
 3. **Vaduno cannot stop spend that bypasses it.** An agent holding a raw
    funded wallet key can pay without asking. The deployment pattern is to
-   give agents *only* guarded paths (x402 fetch wrapper, issued cards) — the
-   guard governs what flows through it.
+   give agents *only* guarded paths — the x402 fetch wrapper, issued cards,
+   or `@vaduno/cloudflare`'s out-of-process signer host, where the key lives
+   in a separate process/Durable Object whose only exposed capability is the
+   policy-gated `signTypedData` and the agent process is keyless — the guard
+   governs what flows through it, and the custody arrangement decides whether
+   anything can flow around it.
 4. **Tamper-evidence is not tamper-proofness.** An attacker with full control
    of the store can destroy history; they cannot *fabricate* a history that
    passes verification against an externally retained head or signed root.

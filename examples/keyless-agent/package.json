@@ -1,0 +1,16 @@
+{
+  "name": "keyless-agent",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The agent process holds NO key: a separate signer-host process owns the wallet, and its only exposed capability is the policy-gated signTypedData of @vaduno/cloudflare.",
+  "scripts": {
+    "start": "node demo.mjs",
+    "start:live": "node demo.mjs --live"
+  },
+  "dependencies": {
+    "@vaduno/cloudflare": "*",
+    "@vaduno/guard": "*",
+    "viem": "^2.21.0"
+  }
+}

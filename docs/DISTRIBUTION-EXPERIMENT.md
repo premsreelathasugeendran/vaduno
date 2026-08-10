@@ -23,23 +23,34 @@ Nobody has ever asked for this. That is the honest starting position.
 
 ## Why npm downloads are not the metric
 
-`@vaduno/guard` reports ~1,187 downloads a week. That number is worthless here,
-and it is worth writing down why so nobody is tempted by it later:
+`@vaduno/guard` reports a weekly download total in the hundreds-to-low-thousands.
+That number is worthless here — and it is a *moving* number, so no snapshot of it
+is quoted as a fact: the total read ~1,187 on 2026-08-06 and 824 two days later,
+with one day at 0. Any specific figure written into a doc becomes the next false
+claim within days. What is stable, and what matters, is the *shape* of the daily
+curve (this sample measured 2026-08-09):
 
 ```
-2026-07-30   351      <- publish day
+2026-07-28   141      <- publish wave (0.6.0 across the packages)
+2026-07-29   330      <-  "
+2026-07-30   351      <-  "
 2026-07-31    20
 2026-08-01    42
 2026-08-02    22
 2026-08-03   163
-2026-08-04   347      <- publish day
+2026-08-04   347      <- publish day (0.6.1)
 2026-08-05   242
+2026-08-06    20
+2026-08-07     0
+2026-08-08    30
+2026-08-09     0
 ```
 
-The spikes land on publish days and collapse between them. That is registry
-mirrors and security scanners reacting to a new version — automated traffic that
-would look identical if the package were empty. A package with 1,187 weekly
-downloads and zero stars, zero forks and zero questions has no human users.
+The spikes land on publish days — one spike per release, not one ever — and
+collapse to near zero between them, some days literally zero. That is registry
+mirrors and security scanners reacting to new versions: automated traffic that
+would look identical if the package were empty. A package with that download
+curve and zero stars, zero forks and zero questions has no human users.
 
 Downloads may be *reported*, but they do not count toward the gate.
 
@@ -83,9 +94,14 @@ honestly as a demonstration of engineering rather than a product seeking users.
 
 ## What is true regardless of the outcome
 
-If the gate fails, what remains is a published, MIT-licensed library with 1,186
-passing tests, seven payments settled and independently verified on a live
-chain (the latest two through the packaged `@vaduno/cloudflare` build), a
+If the gate fails, what remains is a published, MIT-licensed library with 1,201
+passing tests (measured 2026-08-09), twenty-one payments settled on a live chain — the count from an
+exhaustive on-chain scan of every USDC transfer out of the experiment wallet
+(2026-08-09, genesis to tip, zero dropped RPC chunks; an earlier count of
+"seven" in this file came from a scan that silently swallowed failed chunks,
+which is exactly the defect class this project keeps writing about), including
+two through the packaged `@vaduno/cloudflare` build and one signed by a
+separate key-holder process the agent could not reach around — plus a
 documented adversarial process that found and fixed twenty real defects in its
 own code, and a policy engine proven to sit in the mandatory signing path of a
 shipped third-party SDK.

@@ -4,6 +4,71 @@ All packages are versioned together and released as a matched set.
 
 ## Unreleased
 
+### Added — `@vaduno/cloudflare`: out-of-process key custody (`createSignerHost` / `remoteSigner`)
+
+The README has said from the first release that the in-process wrapper "can be
+routed around — an injected agent holding a raw wallet key can simply not call
+it", and that closing it needs the raw key kept "where only the wrapper reaches
+it (separate process, Durable Object, or KMS)". That was a documented
+aspiration. It now ships:
+
+- `createSignerHost(options)` — same options as `guardedSigner` — keeps the
+  raw account in the key-holder process and exposes exactly one capability:
+  the policy-gated `signTypedData`, as `handle(string) -> string` and as a
+  `fetch(Request) -> Response` for a Durable Object / Worker route. Every
+  other method (`signTransaction`, `signMessage`, `exportKey`, anything) is an
+  audited `HOST_METHOD_DISABLED` refusal; malformed or unparseable wire input
+  is an audited refusal that never kills the host.
+- `remoteSigner({ address, send })` / `connectRemoteSigner(send)` — the agent
+  side: structurally a `ClientEvmSigner` for `withX402Client`, constructed
+  from a public address and a transport. There is no key in the agent process
+  to steal and no raw account to reach around; a full compromise there can
+  only *ask*, and every ask is policed and ledgered on the host's side.
+- The boundary is textual by construction (strings both ways), with a
+  bigint-preserving, injective wire codec that REFUSES anything JSON would
+  silently mangle (`TYPED_DATA_NOT_SERIALIZABLE`) — pinned by a test that the
+  remote signature is byte-identical to a local `guardedSigner` signature
+  over the same request.
+- Honest residuals, in the README: host-process compromise still owns the
+  key; the transport authenticates nobody by itself; client-side codec
+  refusals cannot reach the host's ledger.
+- `examples/keyless-agent` (`npm run demo:keyless`) spawns both OS processes
+  and hard-checks the properties above; with `--live` it made a real Base
+  Sepolia settlement (tx `0x7711f2…fb92`, 0.01 testnet USDC) in which the
+  payment signature was produced in the key-holder process.
+
+### Fixed — doc claims brought back to measured reality (2026-08-09 audit)
+
+Every factual claim in the docs was re-measured against the registry, the
+chain, and the test suite. Corrected where reality had moved or the original
+measurement was wrong:
+
+- README status header said v0.6.0 while npm's latest was 0.6.1 for all eight
+  packages.
+- The npm download curve was described as "a single spike on publish day and
+  flat afterwards". The conclusion (automated traffic, no human users) stands;
+  the shape was wrong — there is one spike per publish, collapsing to near
+  zero between releases. Docs now describe the shape and quote no weekly
+  total, because the total is a moving number (~1,187 on 2026-08-06, 824 two
+  days later) and any hardcoded figure becomes false within days.
+- `docs/DISTRIBUTION-EXPERIMENT.md` said "seven payments settled". An
+  exhaustive on-chain scan (genesis to tip, retrying failed RPC chunks, zero
+  dropped) counts twenty-one USDC transfers out of the experiment wallet —
+  the earlier count came from a scan that silently swallowed failed chunks
+  and under-reported, which is the exact defect class this project documents
+  elsewhere.
+- "1,189 tests" was ambiguous against a suite reporting 1,186 passed +
+  3 skipped; the README now states passed and skipped separately (1,201
+  passing + 3 capability-gated skips after this round's signer-host tests).
+- The spend-limiter conformance figures ("23 cases, naive passes 19
+  sequential / fails 4 concurrent") predated the suite's growth; re-measured
+  against the current suite it is 38 cases, naive passes all 33 sequential
+  and fails exactly the 5 concurrent ones — the claim's point is unchanged.
+- `CONTRIBUTING.md` still said v0.2.2 / "981 tests across seven packages";
+  `docs/LAUNCH.md` still said 364 tests and "one spike on publish day, zero
+  every other day". Both corrected (LAUNCH keeps its 0.2.x bug history as
+  history).
+
 ### Added — `@vaduno/cloudflare`: the guarded signer as a publishable package
 
 The `examples/guarded-signer/` prototype — five adversarial rounds, 20

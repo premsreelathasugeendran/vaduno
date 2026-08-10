@@ -1,6 +1,7 @@
 # Contributing to Vaduno
 
-Thanks for looking. This is a young project (v0.2.2) and outside eyes are
+Thanks for looking. This is a young project (0.x — the README header states the
+current version) and outside eyes are
 genuinely wanted — especially on the concurrency and the cryptography, which
 are where the real bugs have been.
 
@@ -19,7 +20,7 @@ you're unsure whether something qualifies, report it privately anyway.
 ```bash
 npm install
 npm run build
-npm run test        # 981 tests across seven packages (3 capability-gated skips)
+npm run test        # the full suite across all eight packages (a few skips are capability-gated and say so)
 ```
 
 Then run the scenarios — each is a story from the README, and they are the
@@ -32,6 +33,7 @@ npm run demo:stripe          # Stripe Issuing real-time authorization
 npm run demo:transparency    # inclusion proofs + witness cosigning
 npm run demo:revocation      # the kill switch, and what it does NOT cover
 npm run demo:cross-process   # two real OS processes racing one $50/day cap
+npm run demo:keyless         # a keyless agent process signing through a separate key-holder process
 ```
 
 ## The rules that aren't negotiable
@@ -112,9 +114,10 @@ this repo and send a PR. Your harness returns **two independent handles on the
 same backing store**: that is what exercises the cross-process contract, and a
 single handle is precisely how both original bugs hid.
 
-How much that matters, measured: a deliberately naive check-then-act limiter
-**passes all 19 sequential cases and fails only the 4 concurrent ones.** If you
-write a store and only run it sequentially, you will believe it works.
+How much that matters, measured (re-measured 2026-08-09 against the current
+38-case suite): a deliberately naive check-then-act limiter **passes all 33
+sequential cases and fails only the 5 concurrent ones.** If you write a store
+and only run it sequentially, you will believe it works.
 
 The whole contract reduces to one rule, in both interfaces: within a **single**
 call, the duplicate check, the budget check, and the insert happen atomically

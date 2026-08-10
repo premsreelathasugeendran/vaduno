@@ -135,12 +135,17 @@ load-bearing.
   the SDK forces the wrapper; swapping it in is a developer's choice. "The
   guard is in the mandatory signing path" is a claim about *this object*, not
   about the ecosystem.
-- **Full closure needs key custody.** If other code in the same environment
-  can read the raw key, it can sign around any wrapper. The wrapper makes the
-  guard mandatory for every signature *this object* can produce; making it
-  mandatory for the deployment means keeping the raw key where only the
-  wrapper reaches it — a separate process, a Durable Object whose only
-  exposed API is the gated `signTypedData`, or a KMS.
+- **Full closure needs key custody — and that configuration ships in this
+  package.** If other code in the same environment can read the raw key, it
+  can sign around any wrapper: the wrapper makes the guard mandatory for every
+  signature *this object* can produce, not for the deployment. To make it
+  mandatory for the deployment, keep the raw key where only the wrapper
+  reaches it: `createSignerHost` / `remoteSigner` below put the key in a
+  separate process or Durable Object whose only exposed capability is the
+  gated `signTypedData`. What that still does not cover: compromise of the
+  host process itself, a caller-authentication story (anyone who can reach
+  the transport can *request* policy-gated signatures), and a deployer who
+  never wires the guard in at all.
 - **The chain gate and the validity ceiling are opt-in.** A policy with no
   `networks` block does not constrain the chain (the asset registry is caller
   config, not policy), and `maxValiditySeconds` is unset by default.
@@ -170,6 +175,63 @@ load-bearing.
   test suite cross-checking against a genuine run of the shipped scheme. If
   upstream changes the struct, declared auth-capture payments start failing
   `AUTH_CAPTURE_MISMATCH` — closed, but loudly.
+
+## Out-of-process custody: `createSignerHost` + `remoteSigner`
+
+The wrapper above runs in the process that holds the key. That is a guardrail
+against a *confused* agent; a *compromised* agent process simply reads the key
+and signs around it. The closure is to keep the key where the agent is not:
+
+```
+agent process (keyless)                 key-holder process / Durable Object
+───────────────────────                 ───────────────────────────────────
+remoteSigner({ address, send })  ──►    createSignerHost({ account, guard, assets })
+  structurally a ClientEvmSigner;         holds the key in its closure; its ONLY
+  holds an address and a transport,       method is the policy-gated signTypedData
+  nothing else                            of the guardedSigner above
+```
+
+```ts
+// key-holder side (a separate process, or a Durable Object's fetch):
+import { createSignerHost } from "@vaduno/cloudflare";
+const host = createSignerHost({ account, guard, assets });   // same options as guardedSigner
+// host.handle(requestJson) -> responseJson, or host.fetch(request) -> Response
+
+// agent side (no key anywhere in this process):
+import { connectRemoteSigner, httpTransport } from "@vaduno/cloudflare";
+const account = await connectRemoteSigner(httpTransport("https://signer.internal/"));
+const client = withX402Client(mcpClient, { account });       // unchanged
+```
+
+What this buys, stated exactly:
+
+- **The boundary is textual by construction.** `handle()` takes a string and
+  returns a string, so nothing non-serializable — no object references, no
+  key material — can cross in either direction. The wire codec preserves
+  bigints and refuses anything JSON would silently mangle, so the host signs
+  byte-for-byte what the caller presented (pinned by test: the remote
+  signature equals the local one).
+- **The host recognizes exactly one capability.** Any other method —
+  `signTransaction`, `signMessage`, `exportKey`, anything — is an audited
+  refusal (`HOST_METHOD_DISABLED`). There is no door to leave open.
+- **A compromised agent process can only ask.** Every ask is policed, and
+  every decision — including refusals of malformed or hostile wire input —
+  lands in the guard's hash-chained ledger, which lives with the key, out of
+  the agent's reach. Kill the host and the agent's signing capability dies
+  with it.
+- **What it does NOT buy:** compromise of the host process still owns the
+  key; the transport authenticates nobody by itself (put it where only the
+  agent reaches it, and add caller auth at that layer if you need it); and
+  client-side codec refusals happen in the agent process and are not on the
+  host's ledger — the request never reached it.
+
+`npm run demo:keyless` (in the repo) spawns both processes for real: the agent
+proves it cannot reach an ungated capability, an allowed payment signs across
+the boundary and recovers to the host's key, and killing the host kills
+signing. The same demo with `--live` made a real Base Sepolia settlement —
+[`0x7711f2…fb92`](https://sepolia.basescan.org/tx/0x7711f23c37047bb09c8583cf8a18176451211f87c193e5ddd93e6817cf5efb92),
+0.01 testnet USDC — where the payment signature was produced in the key-holder
+process and the agent process never held a key at any point.
 
 ## Options
 
