@@ -1,6 +1,6 @@
 {
   "name": "@vaduno/cloudflare",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "Spend firewall for the Cloudflare Agents SDK x402 client. Wraps your signer so Vaduno policy runs inside signTypedData — a denied payment never has a signature. Never holds funds or keys to funds; you keep your own key.",
   "type": "module",
   "main": "./dist/index.js",
@@ -40,7 +40,7 @@
     "prepublishOnly": "npm run build && npm run test"
   },
   "dependencies": {
-    "@vaduno/guard": "^0.6.1"
+    "@vaduno/guard": "^0.7.0"
   },
   "peerDependencies": {
     "viem": ">=2.21.0 <3"

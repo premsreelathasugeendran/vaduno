@@ -53,6 +53,19 @@ failures are first-class evidence, not dropped.
   Your executor moves money; Vaduno decides whether it may run and records the
   outcome. This is the deliberate line that keeps it out of money-transmitter
   scope. Do not put it in the money path.
+- **An in-process wrapper cannot police a process that skips it.** A library
+  the agent's own process imports is a guardrail against a *confused* agent; a
+  compromised runtime holding a raw wallet key can simply not call it. Closing
+  that is a custody arrangement, not a library feature: give the agent *only*
+  guarded paths — Stripe Issuing, where the network enforces the guard's
+  authorization answer, or `@vaduno/cloudflare`'s out-of-process signer host
+  (0.7.0+), where the raw key lives in a separate process or Durable Object
+  whose only exposed capability is the policy-gated `signTypedData` and the
+  agent process is keyless: a full compromise of it can only *ask*, and every
+  ask is policed and ledgered on the key-holder's side. The residual is stated
+  where it belongs: whoever controls the *host* process owns the key, and the
+  transport authenticates nobody by itself. See `docs/SECURITY-MODEL.md`,
+  which is authoritative where any claim conflicts.
 
 ## Known limitations (current version)
 
@@ -250,7 +263,15 @@ These are documented, not hidden. Some are scope choices; some are on the roadma
    (`RECIPIENT_UNGATED`; opt out with `allowHostOnlyMerchantPolicy: true`).
    Host patterns in `merchants.block` are unaffected — a match there always
    denies, so disjunction only tightens.
-6. **Node runtime only.** Uses `node:crypto`. No edge/workerd build yet.
+6. **The core packages are Node-only.** `@vaduno/guard` (ledger hashing,
+   mandates, the file stores) imports `node:crypto` and friends; there is no
+   dedicated edge build of the core. The one exception is
+   `@vaduno/cloudflare`'s own runtime path (the in-process wrapper and the
+   signer host): it has no `node:` import — refusal ids use Web Crypto — and
+   the signer host speaks `fetch(Request) → Response` so it can sit in a
+   Worker or Durable Object route. The `VadunoGuard` instance you configure it
+   with still comes from `@vaduno/guard`, so the guard's own machinery keeps
+   its Node requirement wherever it runs.
 7. **One policy per guard.** No per-agent multi-policy routing yet; run separate
    guards for separate policies.
 8. **Approval is blocking (but resolvable out-of-band).** The handler is awaited
@@ -405,9 +426,11 @@ server. Guarantees:
 ## Dependency posture
 
 `@vaduno/guard` has **zero runtime dependencies** — deliberately, because it is
-the package that sits between an agent and real money. The other six published
-packages depend only on `@vaduno/*` and, for `@vaduno/stripe`, a `stripe`
-*peer* dependency you supply. CI asserts this on every push: a published package
+the package that sits between an agent and real money. The other seven published
+packages depend only on `@vaduno/*` and, where a rail demands the rail's own
+library, a *peer* dependency you supply: `stripe` for `@vaduno/stripe`, `viem`
+for `@vaduno/cloudflare` (your copy is used, so the bytes you sign and the
+bytes the wrapper polices come from the same library). CI asserts this on every push: a published package
 gaining any third-party runtime dependency fails the build, because an
 installing user receiving no third-party code is what makes this supply chain
 auditable by reading it.

@@ -2,7 +2,7 @@
 
 All packages are versioned together and released as a matched set.
 
-## Unreleased
+## 0.7.0 — 2026-08-10
 
 ### Added — `@vaduno/cloudflare`: out-of-process key custody (`createSignerHost` / `remoteSigner`)
 
@@ -70,6 +70,12 @@ measurement was wrong:
   history).
 
 ### Added — `@vaduno/cloudflare`: the guarded signer as a publishable package
+
+(Chronology, for anyone diffing against the registry: this entry was first
+published to npm as `@vaduno/cloudflare@0.6.1` on 2026-08-07, after the rest
+of the 0.6.1 set — so the npm 0.6.1 artifact contains the in-process guarded
+signer described here and NOT the signer host above, which first ships in
+0.7.0.)
 
 The `examples/guarded-signer/` prototype — five adversarial rounds, 20
 confirmed defects fixed, real Base Sepolia settlements verified on-chain — is

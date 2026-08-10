@@ -1,6 +1,6 @@
 {
   "name": "@vaduno/x402",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "x402 rail adapter for Vaduno. Governs HTTP 402 stablecoin payments with policy, mandates, and a tamper-evident audit trail. Never signs or holds keys to funds — you plug in your own payer.",
   "type": "module",
   "main": "./dist/index.js",
@@ -36,7 +36,7 @@
     "prepublishOnly": "npm run build && npm run test"
   },
   "dependencies": {
-    "@vaduno/guard": "^0.6.1"
+    "@vaduno/guard": "^0.7.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
