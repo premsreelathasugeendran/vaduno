@@ -58,14 +58,33 @@ async function packument(fullName) {
   return res.json();
 }
 
-/** Local tarball shasum, so "already published" can be checked for SAMENESS. */
+/**
+ * Local tarball shasum, so "already published" can be checked for SAMENESS.
+ *
+ * Returns null when it cannot be determined, and NEVER throws. The comparison
+ * below is informational — npm physically refuses to overwrite a published
+ * version, so nothing depends on this answer. It used to read
+ * `JSON.parse(out)[0].shasum` and that crashed the entire 0.7.0 re-run with
+ * "Cannot read properties of undefined (reading 'shasum')": the pipeline pins
+ * npm to a major, npm 12 changed the shape of `pack --json`, and an
+ * informational check took the release down with it. A diagnostic that can fail
+ * the thing it is diagnosing is worse than no diagnostic.
+ */
 function localShasum(dir) {
-  const out = execFileSync("npm", ["pack", "--dry-run", "--json"], {
-    cwd: dir,
-    encoding: "utf8",
-    shell: process.platform === "win32",
-  });
-  return JSON.parse(out)[0].shasum;
+  try {
+    const out = execFileSync("npm", ["pack", "--dry-run", "--json"], {
+      cwd: dir,
+      encoding: "utf8",
+      shell: process.platform === "win32",
+    });
+    // npm has emitted both a bare array and an object with a files/entries
+    // wrapper across majors; accept either, and tolerate leading notices.
+    const parsed = JSON.parse(out.slice(out.indexOf(out.includes("[") && (!out.includes("{") || out.indexOf("[") < out.indexOf("{")) ? "[" : "{")));
+    const entry = Array.isArray(parsed) ? parsed[0] : parsed;
+    return entry?.shasum ?? entry?.integrity ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function alreadyPublished(fullName, version, dir) {
@@ -88,7 +107,7 @@ async function alreadyPublished(fullName, version, dir) {
   // against cannot happen. The useful behaviour is to say so loudly and let
   // the remaining packages proceed.
   const local = localShasum(dir);
-  const bytesMatch = !remote.dist?.shasum || remote.dist.shasum === local;
+  const bytesMatch = local === null || !remote.dist?.shasum || remote.dist.shasum === local;
   if (!bytesMatch) {
     console.log(
       `    note: tarball bytes differ from the published copy\n` +
