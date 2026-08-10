@@ -211,9 +211,15 @@ jobs:
         env:
           VADUNO_PUBLISH_TRACE: "1"
 
-      - name: Publish the six dependents
-        run: node scripts/publish-ordered.mjs transparency revocation x402 stripe postgres agent
+      # Derived from the filesystem, never hand-listed. v0.7.0 shipped with
+      # @vaduno/cloudflare missing from a hardcoded list here: the workflow
+      # predated the package, published the seven it knew about, and reported
+      # success — the exact "reports success while dropping what it did not
+      # handle" failure this project keeps finding elsewhere. A list that has to
+      # be remembered will eventually be forgotten, so it is computed instead.
+      - name: Publish every dependent
+        run: node scripts/publish-ordered.mjs $(ls packages | grep -v '^guard$' | tr '\n' ' ')
 
       - name: Confirm the registry agrees
         if: env.DRY_RUN != 'true'
-        run: node scripts/publish-ordered.mjs --verify guard transparency revocation x402 stripe postgres agent
+        run: node scripts/publish-ordered.mjs --verify $(ls packages | tr '\n' ' ')
