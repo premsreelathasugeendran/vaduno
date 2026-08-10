@@ -123,7 +123,7 @@ const sdk = bindClaudeAgentSdk(createSpendHooks({ guard, resolve }));
 > the first one back as correct.
 >
 > The harness that found them is in
-> [`examples/claude-code-hook`](../../examples/claude-code-hook) — a passive
+> [`examples/cli-agent-hook`](../../examples/cli-agent-hook) — a passive
 > observer that records real payloads, and an enforcing hook that has
 > demonstrably **denied a real tool call in a live session**. Re-run the
 > observer when a host version changes; hook contracts drift.

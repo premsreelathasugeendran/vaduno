@@ -524,7 +524,7 @@ three mismatches. **Upgrade from 0.5.0 if you use the Claude Agent SDK binding.*
 
 Two tests in `@vaduno/agent` had asserted the first defect as correct — a suite
 cannot discover that its own premise is false. The harness that found it is in
-`examples/claude-code-hook`: a passive observer, and an enforcing hook that has
+`examples/cli-agent-hook`: a passive observer, and an enforcing hook that has
 denied a real tool call in a live session.
 
 ### Changed

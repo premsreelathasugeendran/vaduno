@@ -9,7 +9,7 @@
  * tests here asserted a non-payment tool returns "allow" — faithfully encoding
  * a wrong assumption about the host and reporting it back as green. A suite
  * cannot discover that its own premise is false; only contact with the real
- * host can. See examples/claude-code-hook.
+ * host can. See examples/cli-agent-hook.
  */
 import { describe, expect, it } from "vitest";
 import {
@@ -21,7 +21,7 @@ import {
 import type { PaymentIntent, SpendPolicy } from "@vaduno/guard";
 import { createSpendHooks } from "../src/hooks.js";
 import type { SpendHooks } from "../src/hooks.js";
-import { bindClaudeAgentSdk, memoryInFlight } from "../src/claude-agent-sdk.js";
+import { bindClaudeAgentSdk, memoryInFlight } from "../src/agent-sdk.js";
 
 const CAP = 5_000;
 
@@ -339,7 +339,7 @@ describe("the in-flight map", () => {
 
 describe("the contract OBSERVED against a live Claude Code session", () => {
   // These payloads are not invented. They were captured by a passive hook in a
-  // real session (examples/claude-code-hook) and reduced to the fields this
+  // real session (examples/cli-agent-hook) and reduced to the fields this
   // binding reads. Each test below pins a mismatch that shipped in 0.5.0.
 
   it("a non-payment tool yields NO OPINION, never an allow", async () => {

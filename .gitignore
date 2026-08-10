@@ -19,14 +19,15 @@ docs/research/
 *.tgz
 packcheck/
 vad/
-.claude/worktrees/
+# Local harness/editor config: machine-specific paths, not project source.
+.claude/
 
-# Live-hook session artifacts (examples/claude-code-hook): captured payloads,
+# Live-hook session artifacts (examples/cli-agent-hook): captured payloads,
 # decision logs and the file-backed cap state. Evidence from one session, not
 # fixtures — regenerate by running the hook, never commit.
-examples/claude-code-hook/.state/
-examples/claude-code-hook/observed-payloads.jsonl
-examples/claude-code-hook/guard-hook.log
+examples/cli-agent-hook/.state/
+examples/cli-agent-hook/observed-payloads.jsonl
+examples/cli-agent-hook/guard-hook.log
 
 # Throwaway testnet wallet for examples/x402-live. Worthless faucet tokens on
 # one testnet, but a private key is a private key — never commit it.

@@ -29,7 +29,7 @@
     "payments",
     "spend-control",
     "guardrails",
-    "claude-agent-sdk",
+    "agent-sdk",
     "tool-approval"
   ],
   "scripts": {

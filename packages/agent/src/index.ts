@@ -14,4 +14,4 @@ export {
   type PostToolUseInput,
   type PreToolUseInput,
   type PreToolUseOutput,
-} from "./claude-agent-sdk.js";
+} from "./agent-sdk.js";

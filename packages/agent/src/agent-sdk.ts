@@ -20,7 +20,7 @@ import type { SpendDecision, SpendHooks, ToolCall } from "./hooks.js";
  *
  * Those are exactly the kind of mismatch that a green test suite cannot catch,
  * because the suite and the code shared one wrong assumption about the host.
- * The observation harness lives in `examples/claude-code-hook`; re-run it when
+ * The observation harness lives in `examples/cli-agent-hook`; re-run it when
  * a host version changes.
  *
  * The decision itself comes from `createSpendHooks`, which is framework-free
