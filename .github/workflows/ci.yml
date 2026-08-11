@@ -58,8 +58,13 @@ jobs:
       - name: Build all packages
         run: npm run build
 
-      - name: Test all packages
-        run: npm run test
+      # Per-package, honouring each package's declared engines. @vaduno/cloudflare
+      # needs node >=20 — viem's generatePrivateKey wants global WebCrypto, which
+      # only became a global in node 19, and viem declares no engines to say so.
+      # The other seven genuinely support 18, so that leg keeps its coverage. The
+      # skip list is derived from package.json, never hardcoded here.
+      - name: Test the packages supported on this node
+        run: node scripts/test-supported.mjs
 
   demos:
     name: demos actually run
