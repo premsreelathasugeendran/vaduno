@@ -94,7 +94,7 @@ honestly as a demonstration of engineering rather than a product seeking users.
 
 ## What is true regardless of the outcome
 
-If the gate fails, what remains is a published, MIT-licensed library with 1,202
+If the gate fails, what remains is a published, MIT-licensed library with 1,201
 passing tests, twenty-two payments settled on a live chain — the count from an
 exhaustive on-chain scan of every USDC transfer out of the experiment wallet
 (re-measured 2026-08-10, genesis to tip, zero dropped RPC chunks; an earlier count of

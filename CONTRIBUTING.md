@@ -155,6 +155,47 @@ It checks npm, GitHub and domains automatically, then refuses to clear the
 name until a human has done the USPTO search. The comments in that file
 explain, unsentimentally, why it exists.
 
+## Cleaning up agent worktrees
+
+Multi-agent workflows create linked git worktrees inside the checkout so
+parallel agents don't collide on files, and nothing cleans them up — 16 of
+them (3.8 GB) accumulated here in two weeks. When you want them gone:
+
+```bash
+npm run clean:worktrees                    # dry run: reports the full plan, changes nothing
+npm run clean:worktrees -- --apply        # archive, verify, then delete
+```
+
+What it does, in order, per stale worktree: archives the tracked diff, the
+staged state (separately — a single `git diff HEAD` loses staged-vs-worktree
+divergence), and **every untracked and gitignored file** (`git diff` is blind
+to both; the manual cleanup this tool replaced nearly destroyed 39 untracked
+files, and `.env`-style ignored files are invisible even to plain `status`);
+verifies the archive is actually restorable (`git apply --check` at the base
+SHA, sha256 per copied file); re-fingerprints the worktree immediately before
+deletion so nothing written after the snapshot is lost; and only then deletes.
+Unmerged branches are kept; unmerged detached commits are pinned with a
+`refs/worktree-archive/*` ref before gc could reach them. Any worktree that
+can't be fully archived and verified is skipped loudly and the run exits 1.
+
+**Dry run is the default, and there is no unattended mode — deliberately.**
+An unattended cleanup hook is an automated version of the bug this project
+keeps re-finding: something that reports success while silently dropping what
+it could not handle. The tool is safe and one command on purpose, so that
+running it is trivial — but a human runs it, sees the plan, and passes
+`--apply`.
+
+Known limits, stated plainly: gitignored directories named `node_modules`,
+`dist`, `coverage`, `.turbo`, `.next`, or `.nuxt` are treated as build output
+and are **not** archived (each exclusion is printed; a file under one of those
+names that git does *not* ignore blocks that worktree instead of being
+guessed about). A write landing in the microseconds between the final
+re-check and the removal is unwinnable — that's what the 24h age threshold is
+for. Restore instructions land in `RESTORE.md` next to every archive;
+`npm run test:clean-worktrees` proves a deleted worktree restores
+byte-identically. Flags (`--root`, `--archive-dir`, `--max-age-hours`, …):
+`node scripts/clean-worktrees.mjs --help`.
+
 ## License
 
 By contributing you agree your contributions are licensed under the MIT

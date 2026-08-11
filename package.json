@@ -24,6 +24,8 @@
     "dashboard": "npm -w @vaduno/dashboard run demo",
     "release:check": "npm run build && npm run test && node scripts/check-release.mjs",
     "demo:cross-process": "npm -w cross-process-agent run start",
-    "demo:keyless": "npm -w keyless-agent run start"
+    "demo:keyless": "npm -w keyless-agent run start",
+    "clean:worktrees": "node scripts/clean-worktrees.mjs",
+    "test:clean-worktrees": "node --test scripts/clean-worktrees.test.mjs"
   }
 }
