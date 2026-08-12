@@ -2,7 +2,7 @@
 
 All packages are versioned together and released as a matched set.
 
-## Unreleased
+## 0.7.1 — 2026-08-12
 
 ### Fixed — `@vaduno/guard`: FileMutex survives Windows scanner interference — the acquisition budget is now TIME, and a refused unlink no longer orphans the lock
 

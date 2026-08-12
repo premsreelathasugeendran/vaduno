@@ -1,6 +1,6 @@
 {
   "name": "@vaduno/guard",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Spend firewall + tamper-evident audit ledger for AI agents. Policy-gates any payment call with deterministic rules, signed consume-once mandates, and a hash-chained flight recorder. Never holds funds or keys to funds.",
   "type": "module",
   "main": "./dist/index.js",
