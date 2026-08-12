@@ -42,10 +42,11 @@
  * and a caller-controlled object that LOOKS like that tag is escaped
  * (`{"$vadunoEscape":…}`) so the codec stays injective: decode(encode(x)) is
  * x for every accepted input, and no input decodes into something the caller
- * did not present. Anything else — Date, Map, a non-finite number — is
- * REFUSED, because JSON.stringify would silently mangle it into different
- * signed bytes, and "silently different bytes" is the defect family this
- * whole package exists to kill.
+ * did not present. Anything else — Date, Map, a non-finite number, negative
+ * zero (JSON writes it as 0), a sparse array (JSON writes each hole as
+ * null) — is REFUSED, because JSON.stringify would silently mangle it into
+ * different signed bytes, and "silently different bytes" is the defect
+ * family this whole package exists to kill.
  */
 import { guardedSigner } from "./guarded-signer.js";
 import type {
@@ -119,6 +120,13 @@ function encodeWire(v: unknown): unknown {
     if (!Number.isFinite(v)) {
       throw new WireCodecError(`a non-finite number (${v}) cannot cross the wire faithfully`);
     }
+    // structuredClone preserves -0, but JSON.stringify writes it as "0" — the
+    // host would decode a value the caller never presented. Refuse.
+    if (Object.is(v, -0)) {
+      throw new WireCodecError(
+        "negative zero cannot cross the wire faithfully (JSON silently writes it as 0)",
+      );
+    }
     return v;
   }
   if (typeof v === "bigint") {
@@ -126,7 +134,20 @@ function encodeWire(v: unknown): unknown {
     tagged[BIGINT_TAG] = v.toString(10);
     return tagged;
   }
-  if (Array.isArray(v)) return v.map(encodeWire);
+  if (Array.isArray(v)) {
+    // structuredClone preserves array HOLES, but JSON.stringify writes each
+    // hole as null — an absent index and an explicit null are different
+    // values, so a sparse array cannot cross faithfully. Refuse.
+    for (let i = 0; i < v.length; i++) {
+      if (!Object.hasOwn(v, i)) {
+        throw new WireCodecError(
+          `a sparse array (hole at index ${i}) cannot cross the wire faithfully ` +
+            "(JSON silently writes the hole as null)",
+        );
+      }
+    }
+    return v.map(encodeWire);
+  }
   if (isPlainRecord(v)) {
     const out: Record<string, unknown> = Object.create(null);
     for (const key of Object.keys(v)) {
@@ -158,6 +179,10 @@ function decodeWire(v: unknown): unknown {
   if (v === null || typeof v === "boolean" || typeof v === "string") return v;
   if (typeof v === "number") {
     if (!Number.isFinite(v)) throw new WireCodecError("non-finite number on the wire");
+    // JSON.parse("-0") really does produce -0, but encodeWire can never emit
+    // it — only a tampering transport can put it on the wire. Refuse, so the
+    // accepted domains of encode and decode stay mirror images.
+    if (Object.is(v, -0)) throw new WireCodecError("negative zero on the wire");
     return v;
   }
   if (Array.isArray(v)) return v.map(decodeWire);

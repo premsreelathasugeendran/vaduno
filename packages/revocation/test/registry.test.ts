@@ -144,6 +144,48 @@ describe("RevocationRegistry", () => {
     expect(await fresh.assignIndex("m-1", "agent-x")).toBe(idx);
   });
 
+  it("REGRESSION: hydrate reserves the index of an AGENTLESS inline-revoked mandate (no bit collision)", async () => {
+    // revokeMandate(id) with no prior assignIndex and no agent still allocates
+    // a status-list bit (killLocally: "allocate even for a mandate that was
+    // never registered, so the kill is publishable"). If hydrateFromLedger does
+    // not re-reserve that bit on replay, `next` stays under-advanced and the
+    // NEXT assignment reuses the same index — two mandates on one bit, which is
+    // exactly the collision the store contract forbids. The published list then
+    // reads a revoked mandate as ACTIVE to third-party verifiers.
+    const { registry, ledger } = setup();
+    const solo = await registry.revokeMandate("m-solo", { reason: "leaked key" });
+    const idxA = await registry.assignIndex("m-A", "agent-1");
+    expect(solo.record.index).toBe(0);
+    expect(idxA).toBe(1); // distinct in the live run
+
+    const fresh = new RevocationRegistry({
+      issuer: "prem@vaduno.dev",
+      listId: "https://vaduno.example/status/1",
+      privateKeyPem: keys.privateKeyPem,
+      store: new MemoryRevocationStore(),
+      ledger,
+    });
+    await fresh.hydrateFromLedger();
+
+    const soloIdx = (await fresh.isRevoked("m-solo"))?.index;
+    const aIdx = await fresh.assignIndex("m-A", "agent-1");
+    // After a restart the two mandates must STILL hold distinct bits.
+    expect(soloIdx).toBe(0);
+    expect(aIdx).toBe(1);
+    expect(aIdx).not.toBe(soloIdx);
+
+    // And the fail-open consequence must not occur: revoke m-A, publish, and a
+    // third party reading m-A at its ORIGINAL stamped index (1) must see it
+    // revoked — never "active".
+    await fresh.revokeMandate("m-A", { reason: "compromised" });
+    const cred = await fresh.publish(1);
+    const check = checkStatus(cred, idxA, {
+      publicKeyPem: keys.publicKeyPem,
+      expectedPurpose: "revocation",
+    });
+    expect(check.revoked).toBe(true);
+  });
+
   it("revokes a mandate with immediate local effect and audits it", async () => {
     const { registry, ledger } = setup();
     await registry.assignIndex("m-1", "agent-1");

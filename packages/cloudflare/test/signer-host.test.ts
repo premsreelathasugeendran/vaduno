@@ -290,6 +290,48 @@ describe("createSignerHost + remoteSigner: the key never enters the agent proces
     });
   });
 
+  it("REGRESSION: negative zero is refused, not silently flattened to 0 on the wire", async () => {
+    // structuredClone preserves -0, so it survives remoteSigner's snapshot and
+    // reaches the codec — but JSON.stringify writes it as "0". The module's
+    // contract says anything JSON would silently mangle is REFUSED; letting -0
+    // through breaks the decode(encode(x))-is-x invariant (the host decodes +0,
+    // a value the caller never presented).
+    const { host } = hostRig();
+    const { send, outbound } = recordingTransport(host);
+    const signer = remoteSigner({ address: hostAccount.address, send });
+
+    const request = transfer();
+    (request.message as Record<string, unknown>)["weird"] = -0;
+
+    await expect(signer.signTypedData(request)).rejects.toMatchObject({
+      name: "GuardSignerRefusedError",
+      code: "TYPED_DATA_NOT_SERIALIZABLE",
+    });
+    // The refusal must be CLIENT-side: no mangled bytes ever crossed the wire.
+    expect(outbound.length).toBe(0);
+  });
+
+  it("REGRESSION: a sparse array (hole) is refused, not silently rewritten to null on the wire", async () => {
+    // structuredClone preserves array holes; JSON.stringify writes them as
+    // null — a hole (absent index) and an explicit null are different values,
+    // so the codec must refuse rather than let the host decode an element the
+    // caller never presented.
+    const { host } = hostRig();
+    const { send, outbound } = recordingTransport(host);
+    const signer = remoteSigner({ address: hostAccount.address, send });
+
+    const request = transfer();
+    // eslint-disable-next-line no-sparse-arrays
+    const holey: unknown[] = [7, , 9]; // index 1 is a genuine hole: 1 in holey === false
+    (request.message as Record<string, unknown>)["list"] = holey;
+
+    await expect(signer.signTypedData(request)).rejects.toMatchObject({
+      name: "GuardSignerRefusedError",
+      code: "TYPED_DATA_NOT_SERIALIZABLE",
+    });
+    expect(outbound.length).toBe(0);
+  });
+
   it("a malformed host response is a refusal on the client, never a fabricated signature", async () => {
     const evilSend = async (): Promise<string> => JSON.stringify({ v: 1, ok: true });
     const signer = remoteSigner({ address: hostAccount.address, send: evilSend });

@@ -167,4 +167,98 @@ describe("createStripeAuthorizationHandler", () => {
     expect(body(res).approved).toBe(false);
     expect(body(res).metadata?.vaduno_reasons).toContain("DECISION_TIMEOUT");
   });
+
+  it("REGRESSION: a HUNG idempotency store get() cannot block handle() past the deadline", async () => {
+    // decisionTimeoutMs bounds the WHOLE request path, not just guard.execute.
+    // If an external DecisionStore's get() stalls (network partition, dead
+    // Redis), the response must still come back in-window and fail closed —
+    // otherwise Stripe's account default decides, which may APPROVE.
+    const { guard } = makeGuard();
+    const hungGet = {
+      get: () => new Promise<never>(() => {}), // never settles
+      set: async () => undefined,
+    };
+    const handler = createStripeAuthorizationHandler({
+      guard,
+      stripe: mockStripe(),
+      webhookSecret: "whsec_test",
+      apiVersion: "2026-06-24.dahlia",
+      decisionTimeoutMs: 50,
+      idempotencyStore: hungGet,
+    });
+    const res = await resolvesWithin(
+      handler(raw(fakeAuthEvent({ amount: 900 })), "good"),
+      500, // 10x the deadline — plenty of slack, still far under Stripe's ~2s
+      "get-hang",
+    );
+    expect(res.status).toBe(200);
+    expect(body(res).approved).toBe(false); // fail closed, never the account default
+  });
+
+  it("REGRESSION: a HUNG idempotency store set() cannot swallow an already-computed decision", async () => {
+    // The guard has already DECLINED (99,999 >> perTransactionMinor 5,000);
+    // a hung set() must not keep that answer from ever reaching Stripe.
+    const { guard } = makeGuard();
+    const hungSet = {
+      get: async () => null,
+      set: () => new Promise<never>(() => {}), // never settles
+    };
+    const handler = createStripeAuthorizationHandler({
+      guard,
+      stripe: mockStripe(),
+      webhookSecret: "whsec_test",
+      apiVersion: "2026-06-24.dahlia",
+      decisionTimeoutMs: 50,
+      idempotencyStore: hungSet,
+    });
+    const res = await resolvesWithin(
+      handler(raw(fakeAuthEvent({ amount: 99_999 })), "good"),
+      500,
+      "set-hang",
+    );
+    expect(res.status).toBe(200);
+    expect(body(res).approved).toBe(false);
+    expect(body(res).metadata?.vaduno_reasons).toContain("PER_TXN_LIMIT_EXCEEDED");
+  });
+
+  it("a SLOW-but-working set() is still awaited (bounded, not fire-and-forget)", async () => {
+    // Multi-instance retry dedupe wants the record written before we answer
+    // when the store is merely slow — only a HUNG store gets cut loose.
+    const { guard } = makeGuard();
+    let setDone = false;
+    const slowSet = {
+      get: async () => null,
+      set: () =>
+        new Promise<void>((r) =>
+          setTimeout(() => {
+            setDone = true;
+            r();
+          }, 30),
+        ),
+    };
+    const handler = createStripeAuthorizationHandler({
+      guard,
+      stripe: mockStripe(),
+      webhookSecret: "whsec_test",
+      apiVersion: "2026-06-24.dahlia",
+      decisionTimeoutMs: 1000,
+      idempotencyStore: slowSet,
+    });
+    const res = await handler(raw(fakeAuthEvent({ amount: 900 })), "good");
+    expect(body(res).approved).toBe(true);
+    expect(setDone).toBe(true); // the answer waited for the (in-budget) write
+  });
 });
+
+/** Resolve p's value if it settles within ms; otherwise fail the test loudly. */
+async function resolvesWithin<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  const sentinel = Symbol("timeout");
+  const won = await Promise.race([
+    p,
+    new Promise<typeof sentinel>((r) => setTimeout(() => r(sentinel), ms)),
+  ]);
+  if (won === sentinel) {
+    throw new Error(`${label}: handle() still pending after ${ms}ms (blocked past the deadline)`);
+  }
+  return won as T;
+}

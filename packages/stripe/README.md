@@ -144,7 +144,10 @@ intentionally left out of this package to keep it clear of PCI scope.
 - **The deadline is hard, and the adapter's is 1300ms.** Stripe's own
   authorization window is ~2 seconds; `decisionTimeoutMs` defaults to **1300ms**
   ([`handler.ts`](src/handler.ts)) so the fail-closed DECLINE is emitted *inside*
-  that window rather than racing it. Size your handler against 1300ms, not 2s.
+  that window rather than racing it. One budget bounds the whole request path —
+  the idempotency store's `get()`, `guard.execute`, and the store's `set()` —
+  so even a hung external `DecisionStore` cannot stall the answer into the
+  account default. Size your handler against 1300ms, not 2s.
   Keep it warm and deterministic and do the heavy reasoning at provisioning
   time; a cold serverless start or a slow ledger store can blow it.
 - **Fail-closed-on-timeout is a Dashboard setting the adapter can't control.**

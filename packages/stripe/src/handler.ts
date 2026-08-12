@@ -33,11 +33,15 @@ export interface StripeAuthorizationHandlerOptions {
   idempotencyStore?: DecisionStore;
   /**
    * Hard cap on how long the decision may take before the adapter itself
-   * emits an in-window fail-closed DECLINE (default 1300ms). Guarantees a
-   * decision inside Stripe's ~2s window even if the ledger store is slow —
-   * never depend on the account default. NOTE: a require_approval verdict
-   * whose approval handler blocks will hit this timeout and DECLINE (human
-   * approval cannot fit the 2s window on this rail).
+   * emits an in-window fail-closed DECLINE (default 1300ms). One budget bounds
+   * the WHOLE request path — the idempotency store's get(), guard.execute, and
+   * the store's set() — so a decision lands inside Stripe's ~2s window even if
+   * the ledger store OR the idempotency store is slow or hung; never depend on
+   * the account default. A hung get() is treated as a cache miss; a hung set()
+   * stops being waited on (the write itself keeps running) so the computed
+   * decision still reaches Stripe. NOTE: a require_approval verdict whose
+   * approval handler blocks will hit this timeout and DECLINE (human approval
+   * cannot fit the 2s window on this rail).
    */
   decisionTimeoutMs?: number;
   onDecision?: (d: {
@@ -69,8 +73,12 @@ const RECONCILE_TYPES = new Set([
  * and the guard counts the spend for its rolling windows). The decision is
  * returned within Stripe's ~2s window and recorded in the hash-chained ledger.
  *
- * The request path NEVER throws and NEVER blocks past the deadline: any error
- * or timeout fails closed to a decline. Concurrent duplicate deliveries of the
+ * The request path NEVER throws and NEVER blocks past the deadline — the
+ * idempotency store's get() and set() are raced against the same budget as
+ * guard.execute, so even a HUNG external store cannot stall the answer into
+ * Stripe's account default: any error or timeout fails closed to a decline
+ * (a decision the guard already computed still reaches Stripe when only the
+ * post-decision set() hangs). Concurrent duplicate deliveries of the
  * same authorization id are coalesced (single-flight) so the spend is counted
  * once and both deliveries get the same answer. For MULTI-INSTANCE deployments,
  * supply an idempotencyStore backed by an atomic (reserve/put-if-absent) store;
@@ -110,7 +118,11 @@ export function createStripeAuthorizationHandler(
     };
   }
 
-  async function decide(auth: StripeAuthorization, authId: string): Promise<StripeHandlerResponse> {
+  async function decide(
+    auth: StripeAuthorization,
+    authId: string,
+    deadlineAt: number,
+  ): Promise<StripeHandlerResponse> {
     let approved = false;
     let status: GuardStatus = "denied";
     let reasons: PolicyReason[] = [];
@@ -124,18 +136,18 @@ export function createStripeAuthorizationHandler(
         now,
       });
 
-      // Race the decision against a hard deadline so we always answer in-window.
+      // Race the decision against the request's hard deadline (shared with the
+      // idempotency-store read that preceded us) so we always answer in-window.
       // The no-op executor also throws once the deadline has passed, so a
       // decision that lost the race is recorded by the guard as "failed" (not
       // counted / mandate not consumed) rather than a phantom settled charge —
       // consistent with the DECLINE we return to Stripe.
-      const deadlineAt = now().getTime() + deadlineMs;
       const timedOut = await withDeadline(
         opts.guard.execute(intent, async () => {
           if (now().getTime() >= deadlineAt) throw new Error("decision deadline exceeded");
           return { approved: true };
         }),
-        deadlineMs,
+        Math.max(0, deadlineAt - now().getTime()),
       );
       if (timedOut.timedOut) {
         approved = false;
@@ -162,7 +174,16 @@ export function createStripeAuthorizationHandler(
     }
 
     const response = respond(approved, status, reasons, authId);
-    await store.set(authId, { response, decidedAt: now().toISOString() }).catch(() => undefined);
+    // Bounded, NOT fire-and-forget: give the store whatever remains of the
+    // window to record the decision (multi-instance retry dedupe reads it),
+    // but never let a hung set() keep an already-computed answer from
+    // reaching Stripe. The write itself keeps running after we stop waiting;
+    // if it lands late, a retried delivery still finds it. If it never lands,
+    // the guard's replay protection declines the retry fail-closed.
+    await withDeadline(
+      store.set(authId, { response, decidedAt: now().toISOString() }).catch(() => undefined),
+      Math.max(0, deadlineAt - now().getTime()),
+    );
     // Observability must never flip a decision or blow the deadline.
     try {
       opts.onDecision?.({ authId, approved, status, reasons, auditDegraded });
@@ -198,8 +219,19 @@ export function createStripeAuthorizationHandler(
     const auth = event.data.object as StripeAuthorization;
     const authId = typeof auth?.id === "string" ? auth.id : "(unknown)";
 
-    // A decision already made for this id (prior completed delivery).
-    const cached = await store.get(authId).catch(() => null);
+    // ONE deadline budget bounds the whole request path from here: the
+    // idempotency read, guard.execute, and the idempotency write all race the
+    // same clock, so handle() answers in-window no matter which stage stalls.
+    const deadlineAt = now().getTime() + deadlineMs;
+
+    // A decision already made for this id (prior completed delivery). A store
+    // error OR a hung get() is treated as a cache miss — the guard's replay
+    // protection declines a true duplicate fail-closed downstream.
+    const cachedRace = await withDeadline(
+      store.get(authId).catch(() => null),
+      deadlineMs,
+    );
+    const cached = cachedRace.timedOut ? null : cachedRace.result;
     if (cached) return cached.response;
 
     // Single-flight: coalesce concurrent duplicate deliveries of the same id so
@@ -207,7 +239,7 @@ export function createStripeAuthorizationHandler(
     const existing = inflight.get(authId);
     if (existing) return existing;
 
-    const task = decide(auth, authId);
+    const task = decide(auth, authId, deadlineAt);
     inflight.set(authId, task);
     try {
       return await task;

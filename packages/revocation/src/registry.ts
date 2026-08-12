@@ -196,9 +196,19 @@ export class RevocationRegistry {
           typeof d.agentId === "string"
             ? d.agentId
             : (e.agentId ?? (await this.store.agentOf(mandateId)));
-        if (typeof agentId === "string") {
-          await this.store.allocate(mandateId, agentId, this.entries);
-        }
+        // Reserve the bit even when the agent is unknown. An agentless
+        // inline-revoked mandate still consumed a status-list index in the
+        // original run (killLocally allocates one so the kill is publishable);
+        // skipping allocate here leaves `next` under-advanced, so a later
+        // assignIndex reuses the SAME bit — two mandates on one index, which
+        // makes the published list read a revoked mandate as active. The store
+        // accepts a null agent (it just does not link), and allocate is
+        // idempotent for an already-assigned mandate.
+        await this.store.allocate(
+          mandateId,
+          typeof agentId === "string" ? agentId : null,
+          this.entries,
+        );
         const idx = await this.store.indexOf(mandateId);
         await this.store.revoke({
           mandateId,

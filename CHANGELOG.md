@@ -2,6 +2,50 @@
 
 All packages are versioned together and released as a matched set.
 
+## Unreleased
+
+### Fixed — `@vaduno/revocation`: hydrate now reserves the bit of an agentless inline-revoked mandate
+
+`hydrateFromLedger` only re-allocated a status-list index for a replayed
+`mandate_revoked` event when the event carried an agent id. A mandate revoked
+inline with no agent (and no prior `assignIndex`) still consumed a bit in the
+original run, so skipping the allocation left the store's `next` counter
+under-advanced: the first post-restart assignment reused the orphan's bit —
+two mandates on one index — and once the reused-bit mandate was revoked and
+the list published, a third-party `checkStatus` at the *other* mandate's
+stamped index read a **revoked mandate as ACTIVE**. Local `isRevoked()` was
+never wrong (it is keyed by mandate id, fail-closed); the damage was confined
+to the published list — exactly the artifact third parties consume. Hydrate
+now allocates unconditionally (a `null` agent just skips the agent link),
+pinned by a restart-collision regression test.
+
+### Fixed — `@vaduno/stripe`: `decisionTimeoutMs` now bounds the whole request path, not just `guard.execute`
+
+A hung idempotency-store `get()` or `set()` (dead Redis, network partition)
+could block `handle()` indefinitely — past Stripe's ~2s window — despite the
+handler's documented "never blocks past the deadline" guarantee, leaving the
+decision to the account default (which may APPROVE). Store *errors* already
+failed closed; store *hangs* did not. One deadline budget now covers the
+idempotency read, the guard decision, and the idempotency write: a hung
+`get()` degrades to a cache miss, and a hung `set()` stops being awaited
+(bounded, not fire-and-forget — the write keeps running and a merely slow
+store is still waited for in-budget) so an already-computed decision always
+reaches Stripe. Pinned by hung-get, hung-set, and slow-set regression tests.
+
+### Fixed — `@vaduno/cloudflare`: the wire codec refuses `-0` and sparse arrays instead of letting JSON mangle them
+
+`encodeWire` accepted negative zero and array holes — both survive
+`structuredClone`, so they reached the wire — where `JSON.stringify` silently
+rewrites them (`-0` → `0`, hole → `null`), breaking the codec's documented
+"anything JSON would silently mangle is REFUSED" / `decode(encode(x))`-is-`x`
+contract (the sparse-array case round-tripped to a real signature over
+rewritten bytes). No police-X-sign-Y split existed — the host polices and
+signs the same decoded value — and neither class is reachable through a
+recognized payment shape; this closes a latent trap and makes the doc claim
+true. Both classes now refuse client-side with `TYPED_DATA_NOT_SERIALIZABLE`,
+and `decodeWire` symmetrically rejects `-0` arriving from a tampering
+transport.
+
 ## 0.7.0 — 2026-08-10
 
 ### Added — `@vaduno/cloudflare`: out-of-process key custody (`createSignerHost` / `remoteSigner`)
