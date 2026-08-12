@@ -34,6 +34,18 @@ export interface PgPool {
  * A dedicated connection is not optional here: `pg_advisory_xact_lock` is
  * scoped to a transaction on one backend, so running the lock and the work on
  * different pooled connections would take a lock that guards nothing.
+ *
+ * The isolation level is pinned to READ COMMITTED, not left to the session
+ * default, because the whole lock-then-read strategy depends on it: under
+ * READ COMMITTED every statement takes a fresh snapshot, so the reads AFTER
+ * the advisory lock see the previous holder's committed writes. Under
+ * REPEATABLE READ the snapshot is fixed by the FIRST statement — the
+ * lock-acquisition SELECT itself, whose snapshot is taken before it blocks on
+ * the lock — so a waiter that finally acquires the lock still cannot see what
+ * the previous holder committed, and two "serialized" reserves both pass the
+ * same cap. The pool is caller-supplied and
+ * `default_transaction_isolation = 'repeatable read'` is a common global
+ * setting, so this cannot be assumed; it must be stated per transaction.
  */
 export async function inTransaction<T>(
   pool: PgPool,
@@ -42,7 +54,7 @@ export async function inTransaction<T>(
   const client = await pool.connect();
   let failed = false;
   try {
-    await client.query("BEGIN");
+    await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
     const out = await fn(client);
     await client.query("COMMIT");
     return out;

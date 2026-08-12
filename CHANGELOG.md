@@ -4,6 +4,64 @@ All packages are versioned together and released as a matched set.
 
 ## Unreleased
 
+### Fixed — `@vaduno/postgres`: transactions pin READ COMMITTED, closing an overspend under a `repeatable read` session default
+
+`inTransaction` issued a bare `BEGIN`, inheriting whatever isolation level the
+caller-supplied pool's sessions default to. The advisory-lock strategy every
+store's atomicity rests on silently stops working under REPEATABLE READ: a
+waiter's snapshot is fixed by its *first* statement — the lock-acquisition
+`SELECT` itself, whose snapshot is taken *before* it blocks on the lock — so
+after finally acquiring the lock it still cannot see what the previous holder
+committed. Every queued reserve then passes the same cap check and the pair
+(or the whole queue) overspends; the same mechanism overruns `maxUses` in the
+consume store. This is Postgres's documented caveat for the advisory-lock
+pattern, `default_transaction_isolation = 'repeatable read'` is a common
+global setting, and CI never saw it because the `postgres:16` service default
+is `read committed`. `BEGIN ISOLATION LEVEL READ COMMITTED` now states the
+requirement per transaction; pinned by a gated attack test that sets a
+REPEATABLE READ session default on both pools and asserts a 40-way flood
+admits *exactly* the cap.
+
+### Fixed — `@vaduno/postgres`: `link()` before `allocate()` recorded nothing — a revoked agent's mandate could read as ACTIVE
+
+`PostgresRevocationStore.link()` issued two plain `UPDATE`s. For a mandate
+with no row yet — the normal state for a mandate linked before any status-list
+bit is allocated — both matched zero rows and the method returned void,
+success-shaped, having written **nothing**. `agentOf()` then answered `null`
+and `mandatesFor()` omitted the mandate, so `revokeAgent`'s fan-out missed it
+and its bit was never set in the published status list: a third-party verifier
+read a mandate of a **revoked agent as ACTIVE** — the same read-as-ACTIVE
+failure shape as the hydrate bug below, and the eighth instance of the
+report-success-while-dropping-work class. `MemoryRevocationStore` recorded the
+link unconditionally, so the two stores silently diverged, and the conformance
+suite's own link test asserted only on a mandate `allocate()` had already
+linked — a test that could not fail. `link()` is now a real upsert
+(`vaduno_revocation_index.idx` became nullable; `UNIQUE(idx)` ignores NULLs,
+and `migrate()` carries the idempotent `DROP NOT NULL` for existing tables),
+`allocate()` fills a link-only row's bit in later instead of treating it as
+held, and the conformance suite now pins link-before-allocate, cross-handle
+visibility, and allocate-after-link on every store.
+
+### Added — the Postgres stores get an attack suite, and the conformance suites get exact-equality teeth
+
+`@vaduno/postgres` was the one package the last audit left unprobed: its
+conformance run is env-gated, so nothing local ever exercised it, and the
+suites' concurrency assertions were inequality- or small-N-shaped — satisfiable
+by a limiter that serializes and refuses, not just by a correct one. New in
+the shared suites (run against Memory, File **and** Postgres): a 40-way
+two-handle flood asserting admitted total **equals** the cap with
+release/refill probes; exact window-boundary aging (one ms early still
+counts, at the boundary the full cap frees, a lagging clock degrades to
+denial); consume-store near-miss keys (casing, whitespace, length-shifted
+composites, `__proto__`-named ids are all distinct claims); and
+settle-of-never-claimed pinned as a no-op on every store family. New in the
+gated Postgres attack suite (`packages/postgres/test/attacks.test.ts`, same
+loud skip without `VADUNO_TEST_POSTGRES_URL`): the REPEATABLE READ override
+above, fault injection at the INSERT and at COMMIT (an aborted reserve/claim
+leaks no row, no budget, no lock), `pg_terminate_backend` mid-reserve, orphan
+reservations releasable by a peer, lock-scope collision floods, and a
+two-instance race at the exact window edge admitting the freed budget once.
+
 ### Fixed — `@vaduno/revocation`: hydrate now reserves the bit of an agentless inline-revoked mandate
 
 `hydrateFromLedger` only re-allocated a status-list index for a replayed

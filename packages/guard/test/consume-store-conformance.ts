@@ -141,7 +141,90 @@ export function runConsumeStoreConformance(harness: ConsumeStoreHarness): void {
       });
     });
 
+    // ---- key discipline: near-misses are DIFFERENT uses ---------------------
+
+    it("NEAR-MISS keys never collide: casing and whitespace variants are distinct uses", async () => {
+      // The duplicate check is byte-exact or it is not a duplicate check. A
+      // store that canonicalizes (lowercases, trims) would return "duplicate"
+      // for a key that was never claimed — refusing a legitimate payment —
+      // and, worse, would let "use-1" and "USE-1" share one budget slot's
+      // replay outcome across two different payments.
+      await withStore(async ([s]) => {
+        const variants = ["use-1", "USE-1", " use-1", "use-1 "];
+        for (const [i, v] of variants.entries()) {
+          const r = await s.claim(mkClaim("m", v), 10);
+          expect(r.winner, `variant ${JSON.stringify(v)} must be a FRESH use`).toBe(true);
+          if (r.winner) expect(r.used).toBe(i + 1);
+        }
+        expect(await s.countClaims("m")).toBe(variants.length);
+        // And each is a duplicate only of ITSELF.
+        const again = await s.claim(mkClaim("m", "use-1"), 10);
+        expect(again.winner).toBe(false);
+        if (!again.winner) expect(again.reason).toBe("duplicate");
+      });
+    });
+
+    it("COMPOSITE-KEY injectivity: (\"a:b\",\"c\") and (\"a\",\"b:c\") are different claims", async () => {
+      // A store that joins mandateId and useKey with a bare separator maps
+      // both pairs to one key: the second claim reads as a duplicate of the
+      // first — a payment against mandate \"a\" replays the outcome of a
+      // payment against mandate \"a:b\".
+      await withStore(async ([s]) => {
+        expect((await s.claim(mkClaim("a:b", "c"), 1)).winner).toBe(true);
+        expect((await s.claim(mkClaim("a", "b:c"), 1)).winner).toBe(true);
+        expect(await s.countClaims("a:b")).toBe(1);
+        expect(await s.countClaims("a")).toBe(1);
+      });
+    });
+
+    it("a useKey or mandateId naming an Object.prototype slot is DATA, not a lookup hit", async () => {
+      // Same regression class the spend-limiter suite pins: useKey is the
+      // intent id, a caller-controlled field. A store that indexes a plain JS
+      // object by it reads claims[\"__proto__\"] back as Object.prototype —
+      // truthy — and answers \"duplicate\" on an EMPTY store, replaying an
+      // \"existing\" claim that is prototype garbage instead of running a
+      // legitimate payment; or it answers winner without recording, so the
+      // budget never counts it.
+      for (const hostile of ["__proto__", "constructor", "toString", "valueOf"]) {
+        await withStore(async ([s]) => {
+          const asKey = await s.claim(mkClaim("m", hostile), 2);
+          expect(asKey.winner, `useKey ${hostile} on an empty store`).toBe(true);
+          if (asKey.winner) expect(asKey.used).toBe(1);
+          expect(await s.countClaims("m")).toBe(1);
+          const dup = await s.claim(mkClaim("m", hostile), 2);
+          expect(dup.winner).toBe(false);
+          if (!dup.winner) expect(dup.reason).toBe("duplicate");
+
+          const asMandate = await s.claim(mkClaim(hostile, "i-1"), 1);
+          expect(asMandate.winner, `mandateId ${hostile} on an empty store`).toBe(true);
+          expect(await s.countClaims(hostile)).toBe(1);
+          // And its budget is real: a second intent is exhausted, not admitted.
+          const over = await s.claim(mkClaim(hostile, "i-2"), 1);
+          expect(over.winner).toBe(false);
+          if (!over.winner) expect(over.reason).toBe("exhausted");
+        });
+      }
+    });
+
     // ---- settle ------------------------------------------------------------
+
+    it("settling a use that was NEVER claimed records nothing and fabricates nothing", async () => {
+      // Pinned so the behavior is CHOSEN, not accidental, and identical across
+      // store families: settle() of an unknown (mandateId, useKey) is a no-op.
+      // It must not throw, must not conjure a claim row (which would consume
+      // budget for a payment that never went through claim()), and a later
+      // claim of that key is FRESH — the dropped outcome does not haunt it.
+      await withStore(async ([s]) => {
+        await s.settle("m", "never-claimed", {
+          status: "executed",
+          settledAt: new Date().toISOString(),
+        });
+        expect(await s.get("m", "never-claimed")).toBeNull();
+        expect(await s.countClaims("m")).toBe(0);
+        const later = await s.claim(mkClaim("m", "never-claimed"), 1);
+        expect(later.winner).toBe(true);
+      });
+    });
 
     it("settle records a terminal outcome that get() replays", async () => {
       await withStore(async ([s]) => {

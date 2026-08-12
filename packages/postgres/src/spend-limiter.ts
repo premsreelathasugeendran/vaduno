@@ -18,7 +18,7 @@ interface SpendRow {
  *
  * HOW IT IS ATOMIC. The dangerous shape is read-totals → decide → insert, with
  * anything at all in between: two instances both read "spent $0", both pass a
- * $50 check, and the pair spends $100. Two things close it here:
+ * $50 check, and the pair spends $100. Three things close it here:
  *
  *  1. `pg_advisory_xact_lock` on (scope, currency), taken as the FIRST
  *     statement of the transaction. Every reserve for that scope is serialized
@@ -27,6 +27,10 @@ interface SpendRow {
  *  2. The transaction runs on a DEDICATED pooled connection. Advisory
  *     transaction locks belong to one backend; taking the lock on one pooled
  *     connection and inserting on another would guard nothing.
+ *  3. The transaction pins READ COMMITTED (see inTransaction). Serialization
+ *     only helps if the reads AFTER the lock can see the previous holder's
+ *     committed insert; under a REPEATABLE READ session default they cannot,
+ *     because the snapshot was fixed before the lock was acquired.
  *
  * The window arithmetic itself is deliberately NOT reimplemented in SQL — it
  * calls the same `firstViolatedWindow` the in-memory and file limiters use, so

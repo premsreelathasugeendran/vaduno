@@ -12,7 +12,8 @@ const ALLOC_LOCK = "vaduno-revocation-alloc/v1";
 
 interface IndexRow {
   mandate_id: string;
-  idx: string | number;
+  /** NULL on a row written by link() before allocate() assigned a bit. */
+  idx: string | number | null;
   agent_id: string | null;
 }
 
@@ -76,12 +77,14 @@ export class PostgresRevocationStore implements RevocationStore {
 
       // Idempotent: a mandate that already holds an index keeps it. Allocating
       // a second index for the same mandate would orphan the first bit forever.
-      const existing = await client.query<{ idx: string | number }>(
+      // A row with a NULL idx is NOT held — it was written by link() before any
+      // allocation, records only the agent association, and still needs a bit.
+      const existing = await client.query<{ idx: string | number | null }>(
         "SELECT idx FROM vaduno_revocation_index WHERE mandate_id = $1",
         [mandateId],
       );
       const held = existing.rows[0];
-      if (held) {
+      if (held && held.idx !== null) {
         if (agentId !== null) {
           await client.query(
             "UPDATE vaduno_revocation_index SET agent_id = $2 WHERE mandate_id = $1",
@@ -105,8 +108,18 @@ export class PostgresRevocationStore implements RevocationStore {
       // `unpublishable` — a full list must never silently reuse a bit.
       if (next >= capacity) return null;
 
+      // Upsert rather than a bare INSERT: link() may have written an idx-less
+      // row for this mandate (before the SELECT above, or concurrently — link
+      // does not take the allocation lock). The COALESCEs keep whichever half
+      // each row already has: an existing idx is never overwritten (only a
+      // concurrent allocate could have set one, and the lock excludes that),
+      // and a NULL agentId from this call never erases a linked agent.
       await client.query(
-        "INSERT INTO vaduno_revocation_index (mandate_id, idx, agent_id) VALUES ($1, $2, $3)",
+        `INSERT INTO vaduno_revocation_index (mandate_id, idx, agent_id)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (mandate_id) DO UPDATE SET
+           idx = COALESCE(vaduno_revocation_index.idx, EXCLUDED.idx),
+           agent_id = COALESCE(EXCLUDED.agent_id, vaduno_revocation_index.agent_id)`,
         [mandateId, next, agentId],
       );
       return next;
@@ -114,20 +127,31 @@ export class PostgresRevocationStore implements RevocationStore {
   }
 
   async indexOf(mandateId: string): Promise<number | null> {
-    const rows = await this.pool.query<{ idx: string | number }>(
+    const rows = await this.pool.query<{ idx: string | number | null }>(
       "SELECT idx FROM vaduno_revocation_index WHERE mandate_id = $1",
       [mandateId],
     );
     const row = rows.rows[0];
-    return row ? toSafeInt(row.idx, "idx") : null;
+    // A NULL idx is a link()-only row: the mandate is known but holds no bit.
+    // (toSafeInt would coerce null to 0 — a bit this mandate does NOT own.)
+    if (!row || row.idx === null) return null;
+    return toSafeInt(row.idx, "idx");
   }
 
   async link(mandateId: string, agentId: string): Promise<void> {
-    // A mandate may be linked before it holds an index, so this upserts a row
-    // with a NULL-free idx only when one exists; otherwise it records the
-    // association on the record side. Keep both in step.
+    // A mandate is routinely linked BEFORE it holds an index. This must be a
+    // real upsert: the previous version issued two plain UPDATEs, and when the
+    // mandate had neither row — the normal state for a mandate linked before
+    // allocate() — both matched zero rows and the call returned void,
+    // success-shaped, having recorded NOTHING. agentOf() then answered null,
+    // mandatesFor() omitted the mandate, and revokeAgent's fan-out missed it,
+    // so its status-list bit was never set and a verifier read a revoked
+    // agent's mandate as ACTIVE. The idx stays NULL until allocate() assigns
+    // a bit; UNIQUE(idx) permits any number of NULLs.
     await this.pool.query(
-      `UPDATE vaduno_revocation_index SET agent_id = $2 WHERE mandate_id = $1`,
+      `INSERT INTO vaduno_revocation_index (mandate_id, idx, agent_id)
+       VALUES ($1, NULL, $2)
+       ON CONFLICT (mandate_id) DO UPDATE SET agent_id = EXCLUDED.agent_id`,
       [mandateId, agentId],
     );
     await this.pool.query(

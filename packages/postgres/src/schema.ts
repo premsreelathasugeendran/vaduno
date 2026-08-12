@@ -56,12 +56,22 @@ CREATE INDEX IF NOT EXISTS vaduno_consume_mandate
 -- allocation is not an internal inconsistency — it means one revocation
 -- silently revokes the wrong mandate, in a credential third parties read. The
 -- UNIQUE constraint makes that unrepresentable rather than merely unlikely.
+--
+-- idx is NULLABLE by design: link() records a mandate→agent association
+-- BEFORE any bit is allocated, as an idx-less row. UNIQUE ignores NULLs, so
+-- link-only rows never collide; allocate() fills the idx in later. (It was
+-- NOT NULL before 0.7.1, which forced link() into UPDATEs that silently
+-- recorded nothing for a mandate with no row yet.)
 CREATE TABLE IF NOT EXISTS vaduno_revocation_index (
   mandate_id TEXT   PRIMARY KEY,
-  idx        BIGINT NOT NULL,
+  idx        BIGINT,
   agent_id   TEXT,
   CONSTRAINT vaduno_revocation_index_unique UNIQUE (idx)
 );
+
+-- Upgrade path for tables created before idx became nullable. Idempotent:
+-- DROP NOT NULL on an already-nullable column is a no-op.
+ALTER TABLE vaduno_revocation_index ALTER COLUMN idx DROP NOT NULL;
 
 CREATE INDEX IF NOT EXISTS vaduno_revocation_index_agent
   ON vaduno_revocation_index (agent_id);

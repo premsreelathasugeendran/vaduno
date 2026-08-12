@@ -105,13 +105,36 @@ The trade-off, stated plainly: reserves for one scope serialize. That is
 deliberate — correctness over throughput on the path where being wrong means
 spending someone's money twice. Different scopes never contend.
 
+One requirement of this strategy is easy to miss and is therefore stated in
+the SQL rather than assumed: it only works under READ COMMITTED, where each
+statement takes a fresh snapshot. Under REPEATABLE READ a transaction's
+snapshot is fixed by its first statement — the lock acquisition itself, whose
+snapshot is taken *before* it blocks — so a waiter that finally gets the lock
+still cannot see what the previous holder committed, and the cap silently
+stops holding. The pool is yours and
+`default_transaction_isolation = 'repeatable read'` is a common global
+setting, so every transaction here begins with
+`BEGIN ISOLATION LEVEL READ COMMITTED` instead of inheriting the session
+default. A CI test sets a REPEATABLE READ default on both pools and asserts
+the cap still holds exactly.
+
 ## Verification
 
-Both implementations are held to the conformance suites in the
+Every store here is held to the shared conformance suites in the
 [vaduno repo](https://github.com/premsreelathasugeendran/vaduno/tree/master/packages/guard/test),
 run against a real Postgres in CI — never a mock, because the only property
 worth proving lives in the database. (The suites are test files in the repo;
 they are not published inside `@vaduno/guard`, which ships only `dist/`.)
+
+Beyond the shared suites, a Postgres-only attack suite
+(`packages/postgres/test/attacks.test.ts`, same CI job, same env gate) covers
+what a contract suite cannot: a REPEATABLE READ session default on both
+pools, injected failures at the INSERT and at COMMIT, a backend killed by
+`pg_terminate_backend` mid-reserve, orphaned reservations released by a peer
+instance, lock-key collision floods, and two instances racing the exact
+window boundary. Each asserts the *exact* state the other pool observes
+afterwards — admitted totals equal to the cap, zero leaked rows, zero held
+locks — not merely the absence of an error.
 
 The suites are worth running against your own store too, if you write one. They
 are built around the observation that a check-then-act implementation passes

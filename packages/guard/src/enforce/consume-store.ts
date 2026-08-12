@@ -80,7 +80,14 @@ export type ClaimResult =
  */
 export interface ConsumeStore {
   claim(claim: UseClaim, maxUses: number): Promise<ClaimResult>;
-  /** Record the terminal outcome of a won claim (idempotent; first write wins). */
+  /**
+   * Record the terminal outcome of a won claim (idempotent; first write wins).
+   * Settling a (mandateId, useKey) that was never claimed — or was pruned —
+   * is a NO-OP by contract: it must not throw and must not fabricate a claim
+   * row (which would consume budget for a payment that never passed claim()).
+   * The dropped outcome is deliberate; the conformance suite pins it so every
+   * store family behaves identically.
+   */
   settle(mandateId: string, useKey: string, outcome: StoredOutcome): Promise<void>;
   get(mandateId: string, useKey: string): Promise<UseClaim | null>;
   /** Total claims (pending + settled) against a mandate — its used count. */

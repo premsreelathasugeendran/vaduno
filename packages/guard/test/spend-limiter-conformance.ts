@@ -585,6 +585,83 @@ export function runSpendLimiterConformance(harness: SpendLimiterHarness): void {
       });
     });
 
+    it("CONCURRENCY FLOOD: admitted total EQUALS the cap — never less, never more", async () => {
+      // Strictly stronger than "never exceed": 40 racing reserves of 1000
+      // against a 5000 cap must admit EXACTLY 5. An inequality (<= cap) is
+      // satisfied by a limiter that panics under contention and refuses
+      // everything, or by one that serializes and then miscounts downward;
+      // exact equality is not. And a check-then-act limiter under genuine
+      // overlap admits far more than 5, so the same assertion catches the
+      // overspend direction at 4x the contention of the test above.
+      await withLimiter(async (limiters) => {
+        const N = 40;
+        const CAP = 5_000;
+        const EACH = 1_000;
+        const results = await Promise.all(
+          Array.from({ length: N }, (_, i) =>
+            limiters[i % limiters.length].reserve(
+              req(`flood-${i}`, EACH, [dayCap(CAP)], T0),
+            ),
+          ),
+        );
+        const won = results.filter((r) => r.ok);
+        expect(won).toHaveLength(CAP / EACH);
+        const totals = await limiters[0].totalsSince(
+          SCOPE,
+          new Date(T0 - DAY_MS).toISOString(),
+          CUR,
+        );
+        expect(totals.totalMinor).toBe(CAP);
+        expect(totals.count).toBe(CAP / EACH);
+
+        // Postcondition probes, so "exactly 5" cannot be an accounting fluke:
+        // the budget is FULL (one more minor unit is refused) ...
+        expect((await limiters[0].reserve(req("flood-probe", 1, [dayCap(CAP)], T0))).ok).toBe(false);
+        // ... and it is full by exactly the winners' spend: releasing one
+        // winner frees exactly EACH, no more and no less.
+        const winner = won[0];
+        if (winner?.ok) {
+          await limiters[0].release(winner.reservationId);
+          expect(
+            (await limiters[0].reserve(req("flood-refill", EACH, [dayCap(CAP)], T0))).ok,
+          ).toBe(true);
+          expect(
+            (await limiters[0].reserve(req("flood-probe-2", 1, [dayCap(CAP)], T0))).ok,
+          ).toBe(false);
+        }
+      });
+    });
+
+    // ---- window boundary ----------------------------------------------------
+
+    it("BOUNDARY: spend ages out at EXACTLY windowMs — one ms earlier it still counts", async () => {
+      // The cap has an edge and both sides of it are load-bearing. If the
+      // implementation ages spend out early (>= where > belongs), a payment
+      // is admitted while the previous one still occupies the window —
+      // overspend. If it ages spend out late (keeps the boundary row), a
+      // valid payment is refused — a livelock at every window turnover. The
+      // clock is caller-supplied (nowMs), so this is exact and deterministic.
+      await withLimiter(async ([l]) => {
+        expect((await l.reserve(req("edge-old", 5_000, [dayCap(5_000)], T0))).ok).toBe(true);
+        // One ms before the boundary: the old spend still counts.
+        const early = await l.reserve(req("edge-early", 1, [dayCap(5_000)], T0 + DAY_MS - 1));
+        expect(early.ok).toBe(false);
+        if (!early.ok) expect(early.code).toBe("PER_DAY_LIMIT_EXCEEDED");
+        // Exactly AT the boundary: the old spend no longer counts, and the
+        // full cap is available again.
+        expect(
+          (await l.reserve(req("edge-new", 5_000, [dayCap(5_000)], T0 + DAY_MS))).ok,
+        ).toBe(true);
+        // A LAGGING clock (an instance whose nowMs is behind its peer's) sees
+        // BOTH reservations inside its window and is refused: clock skew
+        // between instances degrades toward denial, never toward a second
+        // admission of the same budget.
+        expect(
+          (await l.reserve(req("edge-lag", 1, [dayCap(5_000)], T0 + DAY_MS - 1))).ok,
+        ).toBe(false);
+      });
+    });
+
     // ---- cross-handle (i.e. cross-process) ---------------------------------
 
     it("CROSS-PROCESS: a reservation on one handle is visible to another", async () => {

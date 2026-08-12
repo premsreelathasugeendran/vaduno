@@ -190,11 +190,57 @@ export function runRevocationStoreConformance(harness: RevocationStoreHarness): 
     // ---- agent links and blocks --------------------------------------------
 
     it("links a mandate to an agent and lists it back", async () => {
+      // The original version of this test called link("m-2", …) and then
+      // asserted only on "m-1" — which allocate() had already linked — so it
+      // passed against a link() that recorded nothing. A test that cannot
+      // fail proves nothing; assert on the mandate link() was given.
       await withStore(async ([s]) => {
         await s.allocate("m-1", "agent-1", CAP);
         await s.link("m-2", "agent-1");
         expect(await s.agentOf("m-1")).toBe("agent-1");
+        expect(await s.agentOf("m-2")).toBe("agent-1");
+        const mandates = await s.mandatesFor("agent-1");
+        expect(mandates).toContain("m-1");
+        expect(mandates).toContain("m-2");
+      });
+    });
+
+    it("link BEFORE allocate is RECORDED, never silently dropped", async () => {
+      // The silent-drop shape this project keeps finding: a method that
+      // reports success while writing nothing. A mandate is routinely linked
+      // before it holds a status-list bit; if that link vanishes, agentOf()
+      // answers null, mandatesFor() omits the mandate, revokeAgent's fan-out
+      // misses it, and its bit is never set in the published list — a
+      // third-party verifier reads a mandate of a REVOKED agent as ACTIVE.
+      await withStore(async (stores) => {
+        const a = stores[0];
+        await a.link("m-linked-first", "agent-7");
+        expect(await a.agentOf("m-linked-first")).toBe("agent-7");
+        expect(await a.mandatesFor("agent-7")).toContain("m-linked-first");
+        // No bit yet: linked is not allocated.
+        expect(await a.indexOf("m-linked-first")).toBeNull();
+        // And the link is durable in the SHARED state, not a handle-local
+        // fiction: the other handle (another process) must see it too.
+        const b = stores[stores.length - 1];
+        expect(await b.agentOf("m-linked-first")).toBe("agent-7");
+        expect(await b.mandatesFor("agent-7")).toContain("m-linked-first");
+      });
+    });
+
+    it("allocate AFTER link assigns a fresh bit and keeps the association", async () => {
+      await withStore(async ([s]) => {
+        expect(await s.allocate("m-0", null, CAP)).toBe(0);
+        await s.link("m-1", "agent-1");
+        // The link-only mandate holds no bit, so it must get the NEXT free
+        // one — never bit 0 (someone else's), never a phantom.
+        expect(await s.allocate("m-1", null, CAP)).toBe(1);
+        expect(await s.indexOf("m-1")).toBe(1);
+        // Allocating with a null agentId must not erase the linked agent.
+        expect(await s.agentOf("m-1")).toBe("agent-1");
         expect(await s.mandatesFor("agent-1")).toContain("m-1");
+        // Idempotency still holds through the link-then-allocate path.
+        expect(await s.allocate("m-1", null, CAP)).toBe(1);
+        expect(await s.allocate("m-2", null, CAP)).toBe(2);
       });
     });
 
