@@ -37,11 +37,16 @@ export interface StripeAuthorizationHandlerOptions {
    * the WHOLE request path — the idempotency store's get(), guard.execute, and
    * the store's set() — so a decision lands inside Stripe's ~2s window even if
    * the ledger store OR the idempotency store is slow or hung; never depend on
-   * the account default. A hung get() is treated as a cache miss; a hung set()
-   * stops being waited on (the write itself keeps running) so the computed
-   * decision still reaches Stripe. NOTE: a require_approval verdict whose
-   * approval handler blocks will hit this timeout and DECLINE (human approval
-   * cannot fit the 2s window on this rail).
+   * the account default. The budget is a single timer armed when the request
+   * arrives, and that timer is the only arbiter of expiry: once it fires, the
+   * answer is a DECLINE — an approval computed after expiry is never honoured,
+   * regardless of wall-clock/timer skew. A SLOW get() is treated as a cache
+   * miss and the guard decides in the remaining budget; a get() that consumes
+   * the whole budget declines with DECISION_TIMEOUT. A hung set() stops being
+   * waited on (the write itself keeps running) so the computed decision still
+   * reaches Stripe. NOTE: a require_approval verdict whose approval handler
+   * blocks will hit this timeout and DECLINE (human approval cannot fit the
+   * 2s window on this rail).
    */
   decisionTimeoutMs?: number;
   onDecision?: (d: {
@@ -121,7 +126,7 @@ export function createStripeAuthorizationHandler(
   async function decide(
     auth: StripeAuthorization,
     authId: string,
-    deadlineAt: number,
+    deadline: RequestDeadline,
   ): Promise<StripeHandlerResponse> {
     let approved = false;
     let status: GuardStatus = "denied";
@@ -136,18 +141,20 @@ export function createStripeAuthorizationHandler(
         now,
       });
 
-      // Race the decision against the request's hard deadline (shared with the
-      // idempotency-store read that preceded us) so we always answer in-window.
-      // The no-op executor also throws once the deadline has passed, so a
-      // decision that lost the race is recorded by the guard as "failed" (not
-      // counted / mandate not consumed) rather than a phantom settled charge —
-      // consistent with the DECLINE we return to Stripe.
-      const timedOut = await withDeadline(
+      // Race the decision against the request's hard deadline (the SAME armed
+      // timer that bounded the idempotency-store read before us) so we always
+      // answer in-window. The no-op executor also throws once that timer has
+      // fired, so a decision that lost the race is recorded by the guard as
+      // "failed" (not counted / mandate not consumed) rather than a phantom
+      // settled charge — consistent with the DECLINE we return to Stripe.
+      // Both checks read deadline.expired — a flag set by the timer callback
+      // itself, never a re-derived clock reading — so an approval can never
+      // slip through on clock skew after the budget has ended.
+      const timedOut = await deadline.race(
         opts.guard.execute(intent, async () => {
-          if (now().getTime() >= deadlineAt) throw new Error("decision deadline exceeded");
+          if (deadline.expired) throw new Error("decision deadline exceeded");
           return { approved: true };
         }),
-        Math.max(0, deadlineAt - now().getTime()),
       );
       if (timedOut.timedOut) {
         approved = false;
@@ -180,9 +187,8 @@ export function createStripeAuthorizationHandler(
     // reaching Stripe. The write itself keeps running after we stop waiting;
     // if it lands late, a retried delivery still finds it. If it never lands,
     // the guard's replay protection declines the retry fail-closed.
-    await withDeadline(
+    await deadline.race(
       store.set(authId, { response, decidedAt: now().toISOString() }).catch(() => undefined),
-      Math.max(0, deadlineAt - now().getTime()),
     );
     // Observability must never flip a decision or blow the deadline.
     try {
@@ -219,32 +225,36 @@ export function createStripeAuthorizationHandler(
     const auth = event.data.object as StripeAuthorization;
     const authId = typeof auth?.id === "string" ? auth.id : "(unknown)";
 
-    // ONE deadline budget bounds the whole request path from here: the
-    // idempotency read, guard.execute, and the idempotency write all race the
-    // same clock, so handle() answers in-window no matter which stage stalls.
-    const deadlineAt = now().getTime() + deadlineMs;
-
-    // A decision already made for this id (prior completed delivery). A store
-    // error OR a hung get() is treated as a cache miss — the guard's replay
-    // protection declines a true duplicate fail-closed downstream.
-    const cachedRace = await withDeadline(
-      store.get(authId).catch(() => null),
-      deadlineMs,
-    );
-    const cached = cachedRace.timedOut ? null : cachedRace.result;
-    if (cached) return cached.response;
-
-    // Single-flight: coalesce concurrent duplicate deliveries of the same id so
-    // guard.execute runs once and the spend is counted once.
-    const existing = inflight.get(authId);
-    if (existing) return existing;
-
-    const task = decide(auth, authId, deadlineAt);
-    inflight.set(authId, task);
+    // ONE deadline bounds the whole request path from here: a single timer,
+    // armed BEFORE any awaitable work begins, is the sole arbiter of expiry.
+    // The idempotency read, guard.execute, and the idempotency write all race
+    // this same timer, so handle() answers in-window no matter which stage
+    // stalls — and no stage can re-measure the budget on a different clock.
+    const deadline = armDeadline(deadlineMs);
     try {
-      return await task;
+      // A decision already made for this id (prior completed delivery). A
+      // store error is treated as a cache miss — the guard's replay protection
+      // declines a true duplicate fail-closed downstream. A HUNG get() eats
+      // the whole budget, so the deadline expires and the answer is a
+      // fail-closed DECISION_TIMEOUT decline.
+      const cachedRace = await deadline.race(store.get(authId).catch(() => null));
+      const cached = cachedRace.timedOut ? null : cachedRace.result;
+      if (cached) return cached.response;
+
+      // Single-flight: coalesce concurrent duplicate deliveries of the same id
+      // so guard.execute runs once and the spend is counted once.
+      const existing = inflight.get(authId);
+      if (existing) return existing;
+
+      const task = decide(auth, authId, deadline);
+      inflight.set(authId, task);
+      try {
+        return await task;
+      } finally {
+        inflight.delete(authId);
+      }
     } finally {
-      inflight.delete(authId);
+      deadline.clear();
     }
   };
 }
@@ -257,20 +267,50 @@ interface TimedOut {
   timedOut: true;
 }
 
-/** Resolve with the promise's value if it wins the race, else a timeout marker.
- *  A rejection is treated as a timeout (fail closed). Never rejects. */
-function withDeadline<T>(p: Promise<T>, ms: number): Promise<Decided<T> | TimedOut> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve({ timedOut: true }), ms);
-    p.then(
-      (result) => {
-        clearTimeout(timer);
-        resolve({ timedOut: false, result });
-      },
-      () => {
-        clearTimeout(timer);
-        resolve({ timedOut: true });
-      },
-    );
+/** One request's decision budget. `expired` is flipped by the timer callback
+ *  itself and every stage races the same expiry, so "has the budget ended?"
+ *  has exactly one answer for the whole request. */
+interface RequestDeadline {
+  /** True from the instant the deadline timer has fired. */
+  readonly expired: boolean;
+  /** Resolve with p's value if it settles before the deadline fires, else a
+   *  timeout marker. A rejection is treated as a timeout (fail closed).
+   *  Never rejects. p keeps running in the background after a timeout. */
+  race<T>(p: Promise<T>): Promise<Decided<T> | TimedOut>;
+  /** Disarm the timer once the request has been answered. */
+  clear(): void;
+}
+
+/** Arm the request deadline. A SINGLE setTimeout decides when the budget ends;
+ *  nothing re-derives expiry from Date.now(). (Timers fire on the event loop's
+ *  monotonic clock, which can disagree with the wall clock by a millisecond or
+ *  more under load — re-checking a wall-clock deadline after a timer fired is
+ *  how an already-exhausted request once got APPROVED. One clock, one answer.) */
+function armDeadline(ms: number): RequestDeadline {
+  let expired = false;
+  let signalExpiry!: () => void;
+  const expiry = new Promise<void>((resolve) => {
+    signalExpiry = resolve;
   });
+  const timer = setTimeout(() => {
+    expired = true;
+    signalExpiry();
+  }, ms);
+  return {
+    get expired() {
+      return expired;
+    },
+    race<T>(p: Promise<T>): Promise<Decided<T> | TimedOut> {
+      return Promise.race([
+        p.then(
+          (result) => ({ timedOut: false as const, result }),
+          () => ({ timedOut: true as const }),
+        ),
+        expiry.then(() => ({ timedOut: true as const })),
+      ]);
+    },
+    clear() {
+      clearTimeout(timer);
+    },
+  };
 }

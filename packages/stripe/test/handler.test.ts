@@ -195,6 +195,45 @@ describe("createStripeAuthorizationHandler", () => {
     expect(body(res).approved).toBe(false); // fail closed, never the account default
   });
 
+  it("REGRESSION: an approval computed after the deadline timer fired is never honoured (timer vs wall-clock skew)", async () => {
+    // Deterministic replay of a race seen on loaded Linux CI runners:
+    // setTimeout expires on libuv's monotonic loop clock, while the deadline
+    // arithmetic used to re-read the wall clock via now(). The two clocks can
+    // disagree by 1ms or more, so the hung-get() timeout could fire while the
+    // wall clock still read "in budget" — and the guard then APPROVED a
+    // request whose entire budget the hung get() had already consumed. Model
+    // that skew exactly: a wall clock clamped 1ms short of the deadline. The
+    // budget genuinely ends when the deadline timer fires; the only correct
+    // answer after that is a fail-closed DECLINE, on every machine, no matter
+    // which clock is ahead.
+    const { guard } = makeGuard();
+    const hungGet = {
+      get: () => new Promise<never>(() => {}), // never settles
+      set: async () => undefined,
+    };
+    const t0 = Date.now();
+    // Wall clock that never reaches t0+50: models Date.now() lagging the
+    // monotonic timer clock by >=1ms at the moment the deadline timer fires.
+    const skewed = () => new Date(Math.min(Date.now(), t0 + 49));
+    const handler = createStripeAuthorizationHandler({
+      guard,
+      stripe: mockStripe(),
+      webhookSecret: "whsec_test",
+      apiVersion: "2026-06-24.dahlia",
+      decisionTimeoutMs: 50,
+      idempotencyStore: hungGet,
+      now: skewed,
+    });
+    const res = await resolvesWithin(
+      handler(raw(fakeAuthEvent({ amount: 900 })), "good"),
+      500,
+      "skewed-clock",
+    );
+    expect(res.status).toBe(200);
+    expect(body(res).approved).toBe(false); // the budget was consumed by the hung get(); never approve
+    expect(body(res).metadata?.vaduno_reasons).toContain("DECISION_TIMEOUT");
+  });
+
   it("REGRESSION: a HUNG idempotency store set() cannot swallow an already-computed decision", async () => {
     // The guard has already DECLINED (99,999 >> perTransactionMinor 5,000);
     // a hung set() must not keep that answer from ever reaching Stripe.

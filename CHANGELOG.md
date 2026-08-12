@@ -2,6 +2,40 @@
 
 All packages are versioned together and released as a matched set.
 
+## Unreleased
+
+### Fixed — `@vaduno/stripe`: the decision deadline is now a single timer, so an approval can no longer win a clock-skew race after the budget ended
+
+The 0.7.1 "decisionTimeoutMs bounds the whole request path" change measured
+one deadline with two clocks: `deadlineAt` and both fail-closed guards (the
+remaining-budget calculation and the no-op executor's throw) read the wall
+clock via `now()`, while the thing that actually ended the budget — the
+`withDeadline` `setTimeout` — fires on the event loop's monotonic clock. The
+two can disagree by a millisecond or more (routinely on Linux; more under
+load, when sync work stales the cached loop time; Windows' ~15ms timer
+granularity makes timers fire late instead, which is why the test passed 5/5
+locally while failing on a loaded ubuntu runner). When the hung-`get()`
+timeout fired while the wall clock still read one millisecond in-budget, both
+guards passed and the handler **APPROVED** an authorization whose entire
+budget the hung idempotency read had consumed — the exact outcome the
+fail-closed deadline exists to prevent, decided by which of two clocks was
+ahead. Reproduced in-process on WSL (4/1500 iterations approved with 20ms of
+per-iteration CPU load, 1/2000 idle; 0/800+ on native Windows, matching the
+CI-only signature). The deadline is now one `setTimeout` armed before any
+awaitable work, and that timer is the sole arbiter: its callback flips the
+`expired` flag, every stage (`get()`, `guard.execute`, `set()`) races the
+same expiry, and the executor's fail-closed check reads the flag instead of
+re-deriving expiry from `Date.now()`. Once the timer fires the answer is a
+DECLINE (`DECISION_TIMEOUT`), deterministically — an approval computed after
+expiry is never honoured. Behavioral consequence, reflected in the option
+docs: a `get()` that consumes the *whole* budget now declines instead of
+letting the guard race a zero-width window; a merely slow `get()` still
+degrades to a cache miss with the guard deciding in the remaining budget.
+Pinned by a deterministic regression test that models the skew with a wall
+clock clamped 1ms short of the deadline — it fails on the pre-fix handler on
+every platform (`expected true to be false`, the verbatim CI failure) and
+passes now.
+
 ## 0.7.1 — 2026-08-12
 
 ### Fixed — `@vaduno/guard`: FileMutex survives Windows scanner interference — the acquisition budget is now TIME, and a refused unlink no longer orphans the lock

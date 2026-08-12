@@ -147,7 +147,11 @@ intentionally left out of this package to keep it clear of PCI scope.
   that window rather than racing it. One budget bounds the whole request path —
   the idempotency store's `get()`, `guard.execute`, and the store's `set()` —
   so even a hung external `DecisionStore` cannot stall the answer into the
-  account default. Size your handler against 1300ms, not 2s.
+  account default. The budget is a **single timer armed when the request
+  arrives, and that timer alone decides expiry**: once it fires, the answer is
+  a DECLINE, and an approval computed after it fired is never honoured — the
+  outcome does not depend on scheduling order or on wall-clock/timer skew.
+  Size your handler against 1300ms, not 2s.
   Keep it warm and deterministic and do the heavy reasoning at provisioning
   time; a cold serverless start or a slow ledger store can blow it.
 - **Fail-closed-on-timeout is a Dashboard setting the adapter can't control.**
