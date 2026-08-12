@@ -138,6 +138,61 @@ describe("FileMutex never admits two simultaneous holders", () => {
     expect(ran).toBe(true);
   });
 
+  it("a live holder whose critical section outlasts the OLD one-second budget does not starve a DEFAULT waiter", async () => {
+    // The heartbeat exists precisely so a live holder inside staleMs (default
+    // 30s) is never reclaimed. Before the fix the waiter's whole acquisition
+    // budget was a retry COUNT — 50 retries x 20ms fixed cadence ≈ 1-1.5s — so
+    // a legitimate 2.5s critical section exhausted the count and the waiter
+    // threw `could not acquire ... (last errno EEXIST)`: the module's own
+    // liveness math protected holds it refused to wait for. Reproduced on CI
+    // (windows-latest, eeafd30) and on this machine. The budget is now TIME,
+    // and its default exceeds the reclaim horizon the design itself needs.
+    const holder = new FileMutex(lockPath);
+    const waiter = new FileMutex(lockPath);
+    const held = holder.run(() => sleep(2500));
+    await sleep(50); // let the holder actually take the lock
+    let acquired = false;
+    await waiter.run(() => {
+      acquired = true;
+    });
+    await held;
+    expect(acquired).toBe(true);
+  }, 20_000);
+
+  it("the default budget covers the module's own reclaim horizon — an ORPHANED lock is recovered by a DEFAULT waiter", async () => {
+    // A crashed holder leaves a lockfile with a fresh mtime and a stopped
+    // heartbeat. Recovery needs staleMs to pass, PLUS the monotonic
+    // confirmation window. With staleMs=3000 that is ~4.1s — before the fix
+    // the default budget (~1-1.5s) was ~25x smaller than the 30s-staleMs
+    // horizon, so a waiter using defaults threw instead of ever reclaiming.
+    // (This is the acquire-side half of the CI failure: on windows-latest a
+    // scanner holding the lockfile without FILE_SHARE_DELETE made release()'s
+    // unlink fail silently, orphaning the lock exactly like the crash here.)
+    const orphan = new FileMutex(lockPath, () => new Date(), { staleMs: 3_000 });
+    await (orphan as unknown as { acquire(): Promise<void> }).acquire();
+
+    const waiter = new FileMutex(lockPath, () => new Date(), { staleMs: 3_000 });
+    let ran = false;
+    await waiter.run(() => {
+      ran = true;
+    });
+    expect(ran).toBe(true);
+  }, 20_000);
+
+  it("exhausting the budget names the budget, elapsed time, attempt count and errno", async () => {
+    // The errno distinguishes contention (EEXIST, or EPERM/EACCES
+    // delete-pending on Windows) from a real permissions problem; elapsed and
+    // attempts say whether the budget was exhausted or something died early.
+    const holder = new FileMutex(lockPath);
+    const held = holder.run(() => sleep(1_000));
+    await sleep(50);
+    const waiter = new FileMutex(lockPath, () => new Date(), { budgetMs: 200 });
+    await expect(waiter.run(() => "in")).rejects.toThrow(
+      /could not acquire lock .* within its 200ms budget \(\d+ attempts over \d+ms, last errno EEXIST\)/,
+    );
+    await held;
+  }, 20_000);
+
   it("mutual exclusion holds under contention from many rivals", async () => {
     const mutexes = Array.from(
       { length: 6 },

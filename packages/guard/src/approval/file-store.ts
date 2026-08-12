@@ -1,5 +1,7 @@
-import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { FileMutex } from "../enforce/file-mutex.js";
+import type { FileMutexOpts } from "../enforce/file-mutex.js";
 import type {
   ApprovalDecision,
   ApprovalStore,
@@ -31,15 +33,27 @@ let tmpCounter = 0;
  * For higher write concurrency, use a transactional/DB-backed store.
  */
 export class FileApprovalStore implements ApprovalStore {
-  private readonly lockPath: string;
-  private queue: Promise<unknown> = Promise.resolve();
+  /**
+   * Cross-process exclusion is FileMutex — the same primitive the ledger,
+   * consume store and spend limiter share. This class used to carry its own
+   * inline copy of the lock loop, and that copy drifted exactly as the
+   * FileMutex docblock predicts two copies of a subtle lock would: no
+   * heartbeat, unconfirmed wall-clock stale reclaim, and a fixed-count/
+   * fixed-cadence retry budget (~1s) that starved under Windows CI contention.
+   */
+  private readonly mutex: FileMutex;
 
   constructor(
     private readonly filePath: string,
     private readonly now: () => Date = () => new Date(),
-    private readonly lockOpts: { retries?: number; delayMs?: number; staleMs?: number } = {},
+    lockOpts: FileMutexOpts = {},
   ) {
-    this.lockPath = `${filePath}.lock`;
+    // Preserve this store's historical default staleness (10s, not FileMutex's
+    // 30s): approval mutations are short read-modify-writes.
+    this.mutex = new FileMutex(`${filePath}.lock`, now, {
+      ...lockOpts,
+      staleMs: lockOpts.staleMs ?? 10_000,
+    });
   }
 
   private async load(): Promise<FileShape> {
@@ -81,55 +95,9 @@ export class FileApprovalStore implements ApprovalStore {
     await rename(tmp, this.filePath);
   }
 
-  /** Run `fn` holding both the in-process mutex and the cross-process lock. */
+  /** Run `fn` holding both FileMutex's in-process queue and the cross-process lock. */
   private mutate<T>(fn: (data: FileShape) => T | Promise<T>): Promise<T> {
-    const task = this.queue.then(async () => {
-      await this.acquireLock();
-      try {
-        const data = await this.load();
-        const result = await fn(data);
-        return result;
-      } finally {
-        await this.releaseLock();
-      }
-    });
-    this.queue = task.then(
-      () => undefined,
-      () => undefined,
-    );
-    return task;
-  }
-
-  private async acquireLock(): Promise<void> {
-    const retries = this.lockOpts.retries ?? 50;
-    const delayMs = this.lockOpts.delayMs ?? 20;
-    const staleMs = this.lockOpts.staleMs ?? 10_000;
-    await mkdir(dirname(this.lockPath), { recursive: true });
-    for (let i = 0; i <= retries; i++) {
-      try {
-        const fd = await open(this.lockPath, "wx");
-        await fd.close();
-        return;
-      } catch (err: unknown) {
-        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-        // Reclaim a stale lock left by a crashed process.
-        try {
-          const st = await stat(this.lockPath);
-          if (this.now().getTime() - st.mtimeMs > staleMs) {
-            await rm(this.lockPath, { force: true });
-            continue;
-          }
-        } catch {
-          /* lock vanished between checks; retry immediately */
-        }
-        await new Promise((r) => setTimeout(r, delayMs));
-      }
-    }
-    throw new Error(`FileApprovalStore: could not acquire lock ${this.lockPath}`);
-  }
-
-  private async releaseLock(): Promise<void> {
-    await rm(this.lockPath, { force: true });
+    return this.mutex.run(async () => fn(await this.load()));
   }
 
   async enqueue(pending: PendingApproval): Promise<void> {

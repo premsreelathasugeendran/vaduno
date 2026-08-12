@@ -4,6 +4,50 @@ All packages are versioned together and released as a matched set.
 
 ## Unreleased
 
+### Fixed — `@vaduno/guard`: FileMutex survives Windows scanner interference — the acquisition budget is now TIME, and a refused unlink no longer orphans the lock
+
+The months-old Windows-only CI flake ("could not acquire lock ... after 50
+retries (last errno EEXIST)" in the two-handle ledger conformance tests, while
+the strictly harsher 30-append HEAVY test passed in the same run) was
+previously hunted, survived 5 isolated runs and 3 full-suite runs without
+reproducing, and was honestly recorded as "could not reproduce, not disproven".
+It has now reproduced under real CI load (windows-latest, commit eeafd30) and
+locally under a scanner emulation, and turned out to be two compounding
+defects, both shape-independent — which is why WHICH tests died looked
+random. First,
+`release()` swallowed a refused unlink: a real-time scanner (Defender runs on
+`windows-latest`) briefly holds a just-written lockfile open without
+`FILE_SHARE_DELETE`, the `rm` fails `EBUSY`, and the catch read that as
+"already gone" — orphaning the lock with a fresh mtime and a stopped
+heartbeat. Second, the acquisition budget was a retry COUNT: 50 retries at a
+fixed 20ms cadence ≈ 1-1.5s of wall time, ~20x smaller than the ≤30s live
+holds the heartbeat exists to protect and ~25x smaller than the ~40s an
+orphan needs to become reclaimable (staleMs + confirmation window) — the
+module refused to wait for outcomes its own design promised. Every waiter also
+polled on the same fixed cadence, colliding, backing off identically, and
+colliding again. Now: `acquire()` takes a TIME budget (`FileMutexOpts.budgetMs`,
+default staleMs + confirmation window + headroom, so one acquire always
+outlasts both a slow live holder and a full orphan reclaim; a caller-supplied
+`retries`/`delayMs` pair still bounds the wait to the wall time it used to
+spend, retries x delayMs), polls with exponential backoff under full jitter
+(capped so a released lock is noticed promptly), and reports budget, attempt
+count, elapsed time and last errno on failure — the errno still distinguishes
+delete-pending contention from a real permissions problem. `release()` retries
+transient unlink refusals (`EBUSY`/`EPERM`/`EACCES`) for up to a second, and a
+confirmed stale reclaim whose unlink is refused keeps its confirmation instead
+of paying a fresh window per refusal. Heartbeat and monotonic confirmed-reclaim
+semantics are untouched and their tests unchanged. `FileApprovalStore`'s inline
+copy of the old lock loop — which had drifted exactly as the FileMutex docblock
+warned two copies would (no heartbeat, unconfirmed wall-clock reclaim, same 1s
+count budget) — now delegates to FileMutex. Verified against a scan-on-change
+scanner harness (open without delete share, 120ms hold, once per file change):
+the pre-fix code fails back-to-back rounds with the verbatim CI error and the
+dead holder's token still in the lockfile; the fixed code passes 200/200
+rounds. Residual limit documented in the docblock: a file pinned open
+*continuously* without delete share defeats any unlink-based recovery — real
+scanners hold once per change event, which is exactly what release() now
+outwaits.
+
 ### Fixed — `@vaduno/postgres`: transactions pin READ COMMITTED, closing an overspend under a `repeatable read` session default
 
 `inTransaction` issued a bare `BEGIN`, inheriting whatever isolation level the
